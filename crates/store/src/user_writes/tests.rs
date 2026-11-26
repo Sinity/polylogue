@@ -41,6 +41,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     );
     for request in [&kept, &saved] {
         w.writer
+            .archive()
             .user(crate::writer::UserSubmission {
                 request: request.clone(),
                 scope: None,
@@ -63,7 +64,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     }
     for request in [kept.clone(), retry] {
         assert!(matches!(
-            w.writer.user(request),
+            w.writer.archive().user(request),
             Err(StoreError::Conflict(_))
         ));
     }
@@ -128,7 +129,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
         );
         assert!(
             matches!(
-                w.writer.user(request),
+                w.writer.archive().user(request),
                 Err(StoreError::Refused(polylogue_model::Reason::BadKeptResult { id: refused, field: named, .. })) if refused == id && named == field
             ),
             "{id}"
@@ -156,6 +157,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
         })),
     );
     w.writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: saved,
             scope: None,
@@ -188,7 +190,7 @@ fn typed_setting_catalog_refuses_bad_writes_without_recording_a_request() {
             },
         };
         assert!(matches!(
-            w.writer.user(request),
+            w.writer.archive().user(request),
             Err(StoreError::Refused(_))
         ));
         let reads = crate::ReadPool::open(&w.archive).unwrap();
@@ -212,7 +214,7 @@ fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
             machine: None,
         },
     };
-    w.writer.user(request).unwrap();
+    w.writer.archive().user(request).unwrap();
     let reads = crate::ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     let setting = reader
@@ -253,7 +255,7 @@ fn host_settings_default_to_the_accepting_machine_and_do_not_leak_to_other_hosts
             machine: None,
         },
     };
-    w.writer.user(request).unwrap();
+    w.writer.archive().user(request).unwrap();
     let reads = crate::ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(
@@ -302,12 +304,12 @@ fn annotation_retry_ignores_object_key_order_and_preserves_array_and_value_ident
             annotations: vec![statement(original.clone())],
         },
     );
-    assert!(!w.writer.user(request.clone()).unwrap().repeat);
+    assert!(!w.writer.archive().user(request.clone()).unwrap().repeat);
     let mut retry = request.clone();
     retry.write = UserWrite::Assert {
         annotations: vec![statement(reordered)],
     };
-    assert!(w.writer.user(retry).unwrap().repeat);
+    assert!(w.writer.archive().user(retry).unwrap().repeat);
     for value in [
         serde_json::json!({"text":"choose A","constraints":["two","one"]}),
         serde_json::json!({"text":"choose B","constraints":["one","two"]}),
@@ -317,7 +319,7 @@ fn annotation_retry_ignores_object_key_order_and_preserves_array_and_value_ident
             annotations: vec![statement(value)],
         };
         assert!(matches!(
-            w.writer.user(changed),
+            w.writer.archive().user(changed),
             Err(StoreError::Conflict(_))
         ));
     }
@@ -367,12 +369,18 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         })),
     );
     let submitted = || {
-        w.writer.user_receipt(crate::writer::UserSubmission {
-            request: request.clone(),
-            scope: None,
-            preparation: Some(PreparationContext::new(vec!["codex".into()])),
-            parent: None,
-        })
+        w.writer
+            .archive()
+            .submit(
+                crate::writer::UserSubmission {
+                    request: request.clone(),
+                    scope: None,
+                    preparation: Some(PreparationContext::new(vec!["codex".into()])),
+                    parent: None,
+                },
+                None,
+            )
+            .map(|committed| committed.outcome)
     };
     let error = submitted().unwrap_err();
     assert!(
@@ -439,10 +447,17 @@ fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
             }],
         },
     );
-    let first = archive.writer.user(request.clone()).unwrap();
+    let first = archive.writer.archive().user(request.clone()).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let before_repeat = pool.reader().unwrap().change_position().unwrap();
-    assert!(archive.writer.user(request.clone()).unwrap().repeat);
+    assert!(
+        archive
+            .writer
+            .archive()
+            .user(request.clone())
+            .unwrap()
+            .repeat
+    );
     let reader = pool.reader().unwrap();
     assert_eq!(reader.change_position().unwrap(), before_repeat);
     assert_eq!(reader.user_request(&request.id).unwrap().unwrap(), request);
@@ -499,6 +514,7 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
     };
     let seed = world
         .writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "seed-tag".into(),
             UserWrite::Assert {
@@ -515,11 +531,17 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
             resolved: vec![first.clone(), second.clone()],
         },
     );
-    let accepted = world.writer.user_receipt(request.clone()).unwrap();
+    let accepted = world
+        .writer
+        .archive()
+        .submit(request.clone(), None)
+        .map(|committed| committed.outcome)
+        .unwrap();
     assert_eq!(accepted.written.len(), 1);
     assert_eq!(accepted.already, vec![first.clone()]);
     world
         .writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "withdraw-seed".into(),
             UserWrite::WithdrawAnnotations {
@@ -530,7 +552,12 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
             },
         ))
         .unwrap();
-    let repeated = world.writer.user_receipt(request.clone()).unwrap();
+    let repeated = world
+        .writer
+        .archive()
+        .submit(request.clone(), None)
+        .map(|committed| committed.outcome)
+        .unwrap();
     assert!(repeated.outcome.repeat);
     assert_eq!(repeated.written, accepted.written);
     assert_eq!(repeated.already, vec![first]);
@@ -540,7 +567,11 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
     };
     annotation.value = Some(serde_json::json!({"value":"different"}));
     assert!(matches!(
-        world.writer.user_receipt(changed),
+        world
+            .writer
+            .archive()
+            .submit(changed, None)
+            .map(|committed| committed.outcome),
         Err(StoreError::Conflict(_))
     ));
 }

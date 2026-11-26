@@ -593,7 +593,6 @@ fn key_input(key: &[u8]) -> Result<&str> {
 pub struct BuildWorker {
     conn: Connection,
     register: Connection,
-    blobs: Arc<crate::blobs::Blobs>,
     tables: Vec<Table>,
     sorter: Sorter,
     number: u32,
@@ -677,7 +676,6 @@ impl BuildWorker {
         Ok(Self {
             conn,
             register,
-            blobs: Arc::new(archive.blobs()?),
             tables,
             sorter: Sorter::new(
                 &paths.runs,
@@ -727,7 +725,6 @@ impl BuildWorker {
             input: input.id.clone(),
             chain,
             writer,
-            blobs: &self.blobs,
             out: Out {
                 sorter: &mut self.sorter,
                 tables: &self.tables,
@@ -766,7 +763,6 @@ pub struct OpenChain<'w> {
     input: String,
     chain: i64,
     writer: &'w WriterSender,
-    blobs: &'w Arc<crate::blobs::Blobs>,
     out: Out<'w>,
 }
 
@@ -821,10 +817,7 @@ impl super::chain::ChainSink for OpenChain<'_> {
 
     fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
         if !batch.batch.blobs.is_empty() {
-            for result in self
-                .writer
-                .store_group(vec![batch], Arc::clone(self.blobs))?
-            {
+            for result in self.writer.store_group(vec![batch])? {
                 result?;
             }
         }

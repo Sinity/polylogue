@@ -24,7 +24,7 @@ pub fn record<T>(
     completed_at: impl FnOnce() -> Timestamp,
     execute: impl FnOnce() -> Result<Completed<T>, Error>,
 ) -> Result<T, Error> {
-    writer.begin_query_run(run.clone(), parent)?;
+    writer.archive().begin_query_run(run.clone(), parent)?;
     let result = execute();
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
@@ -48,11 +48,14 @@ pub fn record<T>(
     };
     // The answer cites `run:<id>`, so its outcome is committed before the
     // answer returns: a caller that reads the run next sees how it ended.
-    let committed = writer.finish_query_run(outcome).and_then(|committed| {
-        committed
-            .recv()
-            .map_err(|_| polylogue_store::StoreError::WriterGone)?
-    });
+    let committed = writer
+        .archive()
+        .finish_query_run(outcome)
+        .and_then(|committed| {
+            committed
+                .recv()
+                .map_err(|_| polylogue_store::StoreError::WriterGone)?
+        });
     match result {
         Ok(completed) => {
             committed?;

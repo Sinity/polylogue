@@ -502,7 +502,7 @@ fn work(
             );
         }
         let Some(task) = task else {
-            if !flush(&mut group, shared, writer, store, acknowledge) {
+            if !flush(&mut group, shared, writer, acknowledge) {
                 return;
             }
             continue;
@@ -528,14 +528,14 @@ fn work(
                 group.waiting.push((batch, result, size));
                 group.bytes += size;
                 if (live || group.bytes >= GROUP_BYTES)
-                    && !flush(&mut group, shared, writer, store, acknowledge)
+                    && !flush(&mut group, shared, writer, acknowledge)
                 {
                     return;
                 }
             }
             Task::Capture(capture) => {
                 // Earlier ranges go to the writer before this worker waits on it.
-                if !flush(&mut group, shared, writer, store, acknowledge) {
+                if !flush(&mut group, shared, writer, acknowledge) {
                     return;
                 }
                 let captured = capture.run(archive, store, writer, chains.read_memory);
@@ -553,7 +553,7 @@ fn work(
                     InFlight::new(move || release(&shared, bytes))
                 };
                 // Earlier ranges leave this worker before its whole-chain write.
-                if !flush(&mut group, shared, writer, store, acknowledge) {
+                if !flush(&mut group, shared, writer, acknowledge) {
                     return;
                 }
                 let mut bytes_read = 0;
@@ -767,7 +767,6 @@ fn flush(
     group: &mut Group,
     shared: &Arc<Shared>,
     writer: &WriterSender,
-    store: &Arc<polylogue_store::blobs::Blobs>,
     acknowledge: &Sender<Pending>,
 ) -> bool {
     if group.waiting.is_empty() {
@@ -789,7 +788,7 @@ fn flush(
             release(shared, *size);
         }
     }
-    let results = writer.enqueue_group(batches, Arc::clone(store));
+    let results = writer.enqueue_group(batches);
     group.bytes = 0;
     let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
     acknowledge

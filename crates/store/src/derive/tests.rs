@@ -938,7 +938,7 @@ fn user_write_served_between_derive_commits() {
         while due() == i64::try_from(sessions).unwrap() {
             std::thread::yield_now();
         }
-        let writing = scope.spawn(|| sender.query_object(object.clone(), None).unwrap());
+        let writing = scope.spawn(|| sender.archive().query_object(object.clone(), None).unwrap());
         pause.wait().unwrap();
         let remaining = due();
         assert!(

@@ -2,7 +2,6 @@ use super::*;
 use crate::staging::PreparedBatch;
 #[cfg(feature = "faults")]
 use crate::staging::StoredInput;
-use std::sync::Arc;
 
 #[cfg(feature = "faults")]
 fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Result<StoredInput> {
@@ -34,13 +33,10 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         release: Default::default(),
     };
     writer
-        .store_group(
-            vec![PreparedBatch {
-                batch,
-                files: file.into_iter().collect(),
-            }],
-            Arc::new(archive.blobs()?),
-        )?
+        .store_group(vec![PreparedBatch {
+            batch,
+            files: file.into_iter().collect(),
+        }])?
         .into_iter()
         .next()
         .expect("one batch")
@@ -64,9 +60,7 @@ fn group_commits_one_sync_and_one_blob_for_equal_bytes() {
             files: file.into_iter().collect(),
         });
     }
-    let results = writer
-        .store_group(group, Arc::new(archive.blobs().unwrap()))
-        .unwrap();
+    let results = writer.store_group(group).unwrap();
     assert!(results.iter().all(Result::is_ok));
     let report = writer.flush_rows().unwrap();
     assert_eq!(
@@ -113,16 +107,61 @@ fn segment_crash_child() {
     panic!("the configured durability boundary was not reached");
 }
 
+/// The rows an uninterrupted run leaves, apart from observation identities.
+#[cfg(feature = "faults")]
+fn record(archive: &Archive) -> Vec<String> {
+    let conn = crate::archive::open_read(&archive.archive_db()).unwrap();
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT 'revision', input, number, chain, length, produced FROM revision ORDER BY input, number",
+        "SELECT 'extent', input, chain, offset, length, hex(blob) FROM extent ORDER BY input, chain, offset",
+        "SELECT 'blob', hex(hash), size, '', '', '' FROM blob ORDER BY hash",
+    ] {
+        let mut statement = conn.prepare(sql).unwrap();
+        let mut query = statement.query([]).unwrap();
+        while let Some(row) = query.next().unwrap() {
+            rows.push(
+                (0..6)
+                    .map(|n| match row.get_ref(n).unwrap() {
+                        rusqlite::types::ValueRef::Text(text) => {
+                            String::from_utf8_lossy(text).into_owned()
+                        }
+                        rusqlite::types::ValueRef::Integer(n) => n.to_string(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+    }
+    rows
+}
+
+/// A crash during a put, between a put and the archive commit that cites
+/// it, inside that commit or after it restarts to the state of an
+/// uninterrupted run: an uncommitted tail is cut, and a blob put before the
+/// crash is found by the resumed write and not stored again.
 #[cfg(feature = "faults")]
 #[test]
 fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
-    for point in [
-        "segment.after_append",
-        "segment.after_sync",
-        "segment.after_commit",
+    let first = b"first immutable source\n";
+    let second = b"second immutable source\n";
+    let uninterrupted = {
+        let directory = tempfile::tempdir().unwrap();
+        let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        append(&archive, &writer, "first", first).unwrap();
+        append(&archive, &writer, "second", second).unwrap();
+        record(&archive)
+    };
+    for (point, put, committed) in [
+        ("segment.after_append", false, false),
+        ("segment.after_sync", false, false),
+        ("capture.between_put_and_commit", true, false),
+        ("write.archive_commit", true, false),
+        ("capture.after_commit", true, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let first = b"first immutable source\n";
         let original = {
             let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
             let writer = Writer::start(&archive).unwrap();
@@ -168,18 +207,29 @@ fn crash_leaves_only_a_tail_at_each_product_commit_boundary() {
         let end: i64 = conn
             .query_row("SELECT committed_end FROM segment", [], |row| row.get(0))
             .unwrap();
+        let segment = directory.path().join("segments/current.hb");
         assert_eq!(
-            std::fs::metadata(directory.path().join("segments/current.hb"))
-                .unwrap()
-                .len(),
-            end as u64
+            std::fs::metadata(&segment).unwrap().len(),
+            end as u64,
+            "{point}"
         );
-        let expected = 1 + i64::from(point == "segment.after_commit");
         assert_eq!(
             conn.query_row("SELECT count(*) FROM blob", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            expected
+            1 + i64::from(put),
+            "{point}"
         );
+        if !committed {
+            // The resumed write finds a blob put before the crash.
+            append(&archive, &writer, "second", second).unwrap();
+            let report = writer.flush_rows().unwrap();
+            assert_eq!(
+                (report.blobs_appended, report.blobs_deduplicated),
+                (u64::from(!put), u64::from(put)),
+                "{point}"
+            );
+        }
+        assert_eq!(record(&archive), uninterrupted, "{point}");
         append(
             &archive,
             &writer,

@@ -1,5 +1,6 @@
 //! The writer checks a new operation's producing parent after queue waits.
 use super::*;
+use crate::Result;
 
 /// Captured producing-transport lifetime. This is runtime state, never wire data.
 /// Unlike a read limit, it carries no SQL stages, counters, or archive scopes.
@@ -51,14 +52,16 @@ impl Inner {
         parent: Option<&ParentLifetime>,
     ) -> Result<()> {
         #[cfg(any(test, feature = "fixture"))]
-        self.dispatch.reach(id, DispatchPhase::BeforeParentCheck)?;
+        self.shared
+            .dispatch
+            .reach(id, DispatchPhase::BeforeParentCheck)?;
         if let Some(parent) = parent {
             parent.check()?;
         }
         // This successful dispatch check transfers ownership to the writer.
         // Expiry after this point must not suppress effects or their ACK cleanup.
         #[cfg(any(test, feature = "fixture"))]
-        self.dispatch.reach(id, DispatchPhase::Owned)?;
+        self.shared.dispatch.reach(id, DispatchPhase::Owned)?;
         let _ = id;
         Ok(())
     }
@@ -67,6 +70,7 @@ impl Inner {
 #[cfg(any(test, feature = "fixture"))]
 mod fixture {
     use super::*;
+    use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,7 +87,7 @@ mod fixture {
     }
 
     #[derive(Clone, Default)]
-    pub(in crate::writer) struct DispatchPauses(Arc<Mutex<Vec<Pause>>>);
+    pub(crate) struct DispatchPauses(Arc<Mutex<Vec<Pause>>>);
 
     /// One writer dispatch pause. Dropping it releases the worker thread.
     pub struct DispatchPause {
@@ -107,7 +111,7 @@ mod fixture {
         }
     }
     impl DispatchPauses {
-        pub(in crate::writer) fn reach(&self, id: &str, phase: DispatchPhase) -> Result<()> {
+        pub(crate) fn reach(&self, id: &str, phase: DispatchPhase) -> Result<()> {
             let pause = {
                 let mut pauses = self.0.lock().map_err(|_| StoreError::WriterGone)?;
                 pauses
@@ -123,7 +127,7 @@ mod fixture {
             Ok(())
         }
     }
-    impl WriterSender {
+    impl ArchiveSender {
         #[cfg(any(test, feature = "fixture"))]
         pub fn pause_user_dispatch_for_test(
             &self,
@@ -146,6 +150,6 @@ mod fixture {
     }
 }
 #[cfg(any(test, feature = "fixture"))]
-pub(super) use fixture::DispatchPauses;
+pub(crate) use fixture::DispatchPauses;
 #[cfg(any(test, feature = "fixture"))]
 pub use fixture::{DispatchPause, DispatchPhase};

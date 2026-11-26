@@ -9,6 +9,7 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
     let deliver = |id: &str, cwd: Option<&str>| {
         archive
             .writer
+            .archive()
             .user(operator_request(
                 id.into(),
                 UserWrite::Deliver(Delivery {
@@ -30,6 +31,7 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
     deliver("unknown-scope", None);
     archive
         .writer
+        .archive()
         .user(operator_request(
             "ack-old".into(),
             UserWrite::DeliveryEvent {
@@ -153,6 +155,7 @@ fn delivery_sender_and_event_refuse_unknown_values() {
     let archive = WriterArchive::new();
     archive
         .writer
+        .archive()
         .user(operator_request(
             "to-session".into(),
             UserWrite::Deliver(Delivery {

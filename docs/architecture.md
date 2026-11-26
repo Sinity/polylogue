@@ -88,9 +88,11 @@ Sinex's lifecycle decided. Every operation is the same in both modes; what diffe
    browser extension's captures and hook events as they arrive, and takes
    exports when a user runs `polylogue import PATH`
    ([capture](capture.md), [extension](extension.md)).
-2. **Store.** Each new revision of an input is hashed, compressed and made
-   durable; its extents and the input's revision and chain rows commit
-   together to the record ([archive](archive.md#stored-inputs)).
+2. **Store.** Each new revision of an input is hashed and compressed, and
+   its bytes are put: made durable and recorded as blobs. Its extents and
+   the input's revision and chain rows then commit together to the record
+   ([archive](archive.md#stored-inputs)); nothing parsed from those bytes
+   reaches the index before that commit.
 3. **Parse.** A per-origin parser reads each chain that is due into a reading:
    the sessions, messages, blocks, tool calls and attachments its records
    state ([archive](archive.md#parsing)).
@@ -107,7 +109,9 @@ Sinex's lifecycle decided. Every operation is the same in both modes; what diffe
    ([annotations](annotations.md#the-write-path)).
 
 The daemon is the only process that opens the archive. It holds the archive
-lock, runs the one writer and serves every client over its socket; a command
+lock, runs its two writers (the archive writer, which writes `archive.db`,
+and the index writer, which writes `index.db`) and serves every client over
+its socket; a command
 that needs the archive with no daemon running fails with `not_running`, naming the archive and `polylogue daemon`
 ([exit codes](interfaces.md#exit-codes)).
 
@@ -130,19 +134,22 @@ has not acknowledged yet ([primary mode](primary-mode.md#local-state)).
 
 Writes reach disk in one order:
 
-1. Bytes are made durable: appended to a segment and synced, once for all the
-   write groups waiting together.
+1. Bytes are put: appended to a segment and synced, once for all the puts
+   waiting together, and their blob rows commit, with how far the segment is
+   committed, in a small transaction of their own before any of those puts
+   returns.
 2. The record rows that cite them (extents, revisions, chains and
-   observations) commit in one transaction, together with any authored
-   records of the same group.
-3. `index.db` commits a reading's rows together with the state of the chain
-   they were read from, the shown rows of the sessions they touch, and the
-   record position the index has taken in.
+   observations) commit in one transaction of the archive writer. Authored
+   records commit in transactions of their own on the same writer.
+3. `index.db` commits a reading's rows, read from bytes the record already
+   names, together with the state of the chain they were read from, the
+   shown rows of the sessions they touch, and the record position the index
+   has taken in.
 4. Source cursors (how far a growing file has been read) are saved only for
    committed bytes.
 
 Three invariants hold at every commit. No row of the record names bytes that
-are not durable. Every reading in the index is the reading of its chain's
+are not durable, and no put returns before the record knows its blob. Every reading in the index is the reading of its chain's
 bytes up to the length its state names. The shown rows equal the composition
 of the readings present ([pipeline](#pipeline)).
 
@@ -151,7 +158,8 @@ from each:
 
 | Left by a crash | The start |
 |---|---|
-| a segment tail past the last committed extent | truncates it when the segment opens |
+| a segment tail past the last recorded blob | cuts it when the segment opens; a segment holding more than that tail past the end its record names means `archive.db` is older than its segment (put back from a copy), and the open stops, naming both lengths, without cutting anything ([operations](operations.md#restoring-archivedb-alone)) |
+| a blob recorded that no extent cites yet | keeps it: the resumed write finds the blob and does not store it again |
 | the record ahead of the index: a chain stored further than its reading, or record rows the index has not taken in | reads on from where each reading ends; a reading is a function of the bytes, so the rows are those an uninterrupted run would have written |
 | sessions marked due for their derived values, texts waiting for their search entries | computes and writes them |
 | a source cursor behind its committed bytes | re-reads and finds the bytes already stored |
@@ -162,9 +170,9 @@ A blob is stored once: a resumed write finds the bytes it was storing.
 Those states cover a process crash. A power loss or kernel panic also drops
 writes the kernel had not yet flushed, so the stores that hold irreplaceable
 data sync every commit: `embeddings.db` (paid vectors) commits with SQLite's
-`synchronous=FULL`; the writer syncs `archive.db`'s log after each commit,
-before the commit is acknowledged or anything is written after it; and
-segments sync before their extents commit. `index.db` is rebuilt from those,
+`synchronous=FULL`; each `archive.db` commit's log is synced before the
+commit is acknowledged or anything is written after it; and segments sync
+before their blob rows commit. `index.db` is rebuilt from those,
 so it commits with `NORMAL`. The `archive.db` sync happens after the commit is
 visible and outside the lock readers take to start a read, so a read never
 waits for a disk sync; a power loss during that sync loses only that commit,
@@ -204,8 +212,9 @@ store's module documentation, not of this page.
 
 - **The record is the one account of what was captured and authored.** It is
   `archive.db` with the bytes it cites: inputs, their chains and
-  observations, authored records and the request log. The same code writes
-  it in both modes through four operations: put bytes (durable on this host
+  observations, authored records and the request log. One writer, on its own
+  thread, writes it; the byte home records the blobs it puts. The same code
+  writes it in both modes through four operations: put bytes (durable on this host
   before the call returns), open bytes by hash and range, commit a group of
   captured inputs or authored writes, and read what was committed after a
   position. Nothing above those operations knows where bytes are kept or
@@ -404,9 +413,14 @@ The daemon reaches the index two ways, which must agree.
 A writer's transactions are sized by the bytes and rows they cover, not by
 input boundaries: a growing file is read and committed in steps, and each
 record lies whole inside one transaction. A user's write waits for at most
-the transaction being written.
+the archive commit being written, never for an index transaction or a build
+step: user writes have their own queue on the archive writer, served before
+its next bulk group, and the index writer follows the archive. What follows
+in the index from archive commits alone (the progress of chains stored
+without parsed rows, alternate text) is applied by the index writer from
+what each commit hands it, up to the record position it keeps.
 
-One connection writes the index: the writer's. Derivation and full-text
+One connection writes the index: the index writer's. Derivation and full-text
 entries are computed beside it on read connections from committed rows, and
 the writer applies the values in its own transactions, so no write waits on
 another writer's lock.

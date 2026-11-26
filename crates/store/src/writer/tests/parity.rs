@@ -537,8 +537,7 @@ fn capture(
         if !parse {
             step.batch.parse.clear();
         }
-        let store = Arc::new(w.archive.blobs().unwrap());
-        let results = w.writer.store_group(vec![step], store).unwrap();
+        let results = w.writer.store_group(vec![step]).unwrap();
         let [Ok(stored)] = &results[..] else {
             panic!("{results:?}");
         };
@@ -618,10 +617,7 @@ fn reference(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
             }
         })
         .collect();
-    let results = w
-        .writer
-        .store_group(group, Arc::new(w.archive.blobs().unwrap()))
-        .unwrap();
+    let results = w.writer.store_group(group).unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
     replies(&w)
@@ -802,12 +798,8 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
         rewrite: None,
     };
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
     w.writer
-        .store_group(
-            vec![stored_step(&w, 0, &child, 0, 0, 1)],
-            Arc::clone(&store),
-        )
+        .store_group(vec![stored_step(&w, 0, &child, 0, 0, 1)])
         .unwrap();
     w.writer.flush().unwrap();
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
@@ -828,7 +820,7 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
     );
     // m0 is in session s0; its arrival changes no row of s1.
     w.writer
-        .store_group(vec![stored_step(&w, 1, &parent, 0, 0, 1)], store)
+        .store_group(vec![stored_step(&w, 1, &parent, 0, 0, 1)])
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(row(&conn), before);
@@ -855,15 +847,11 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
         child: 1,
     }]);
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
     w.writer
-        .store_group(
-            vec![
-                stored_step(&w, 0, &linking, 0, 0, 1),
-                stored_step(&w, 1, &input(vec![message(1)]), 0, 0, 1),
-            ],
-            Arc::clone(&store),
-        )
+        .store_group(vec![
+            stored_step(&w, 0, &linking, 0, 0, 1),
+            stored_step(&w, 1, &input(vec![message(1)]), 0, 0, 1),
+        ])
         .unwrap();
     w.writer.flush().unwrap();
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
@@ -885,13 +873,10 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
     batch.observation = None;
     let results = w
         .writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch,
-                files: Vec::new(),
-            }],
-            store,
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch,
+            files: Vec::new(),
+        }])
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
@@ -904,7 +889,6 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
 #[test]
 fn a_text_leaves_with_its_last_row_and_its_search_entries() {
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
     let one = Input {
         route: Route::Live,
         records: vec![Row::Message {
@@ -915,7 +899,7 @@ fn a_text_leaves_with_its_last_row_and_its_search_entries() {
         rewrite: None,
     };
     w.writer
-        .store_group(vec![stored_step(&w, 0, &one, 0, 0, 1)], Arc::clone(&store))
+        .store_group(vec![stored_step(&w, 0, &one, 0, 0, 1)])
         .unwrap();
     w.writer.flush().unwrap();
     let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();

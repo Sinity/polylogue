@@ -22,6 +22,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     let cursor = initial["read_at"]["cursor"].as_str().unwrap();
     engine
         .writer()
+        .archive()
         .user(polylogue_store::writer::UserSubmission {
             request: UserRequest {
                 authorship: polylogue_model::authorship::Authorship {
@@ -112,7 +113,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     );
     engine
         .writer()
-        .user(UserRequest {
+        .archive().user(UserRequest {
     authorship: polylogue_model::authorship::Authorship {
         author: polylogue_model::Author::Operator,
         via: polylogue_model::authorship::Channel::Cli,

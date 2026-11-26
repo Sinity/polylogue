@@ -26,7 +26,7 @@ fn a_failed_outcome_write_is_retried_and_reported() {
             left_out: vec![],
         }),
     );
-    writes.user(delivery).unwrap();
+    writes.archive().user(delivery).unwrap();
     let barrier = invocation.request(
         "outcome-status-barrier".into(),
         UserWrite::SetSetting {
@@ -35,7 +35,7 @@ fn a_failed_outcome_write_is_retried_and_reported() {
             machine: None,
         },
     );
-    writes.user(barrier.clone()).unwrap();
+    writes.archive().user(barrier.clone()).unwrap();
     let outcome = invocation.request(
         "retry-outcome".into(),
         UserWrite::DeliveryEvent {
@@ -51,7 +51,7 @@ fn a_failed_outcome_write_is_retried_and_reported() {
     let held = {
         let mut state = daemon.daemon.queued_deliveries.0.locked();
         submit(&mut state, writes, outcome.clone(), None, None).unwrap();
-        let Queued::Committing(held) = writes.try_enqueue_user(barrier.clone()).unwrap() else {
+        let Queued::Committing(held) = writes.archive().try_submit(barrier.clone()).unwrap() else {
             panic!("the fixture writer queue has room")
         };
         held
@@ -78,6 +78,7 @@ fn a_failed_outcome_write_is_retried_and_reported() {
         .unwrap();
     // A normal commit gives the scope worker its next bounded hand-over turn.
     writes
+        .archive()
         .user(invocation.request(
             "outcome-retry-wake".into(),
             UserWrite::SetSetting {
@@ -97,7 +98,7 @@ fn a_failed_outcome_write_is_retried_and_reported() {
         .queued_deliveries
         .submit(writes, outcome, None, None)
         .unwrap();
-    writes.user(barrier).unwrap();
+    writes.archive().user(barrier).unwrap();
     assert_eq!(
         daemon.daemon.queued_deliveries.pending_outcomes(),
         (0, None)
@@ -125,15 +126,18 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
         },
     );
     reply
-        .send(Ok(polylogue_store::user_writes::WriteResult {
-            outcome: polylogue_model::user::UserOutcome {
-                id: "advice-request".into(),
-                repeat: false,
-                pending: true,
+        .send(Ok(polylogue_store::archive::writer::Committed {
+            position: polylogue_store::archive::writer::Position(1),
+            outcome: polylogue_store::user_writes::WriteResult {
+                outcome: polylogue_model::user::UserOutcome {
+                    id: "advice-request".into(),
+                    repeat: false,
+                    pending: true,
+                },
+                save: None,
+                written: Vec::new(),
+                already: Vec::new(),
             },
-            save: None,
-            written: Vec::new(),
-            already: Vec::new(),
         }))
         .unwrap();
     let first = queued.pending_advice("codex:recipient").unwrap();
@@ -169,15 +173,18 @@ fn asking_whether_a_committed_preparation_is_owned_does_not_consume_its_receipt(
         },
     );
     reply
-        .send(Ok(polylogue_store::user_writes::WriteResult {
-            outcome: polylogue_model::user::UserOutcome {
-                id: "brief-request".into(),
-                repeat: false,
-                pending: false,
+        .send(Ok(polylogue_store::archive::writer::Committed {
+            position: polylogue_store::archive::writer::Position(1),
+            outcome: polylogue_store::user_writes::WriteResult {
+                outcome: polylogue_model::user::UserOutcome {
+                    id: "brief-request".into(),
+                    repeat: false,
+                    pending: false,
+                },
+                save: None,
+                written: Vec::new(),
+                already: Vec::new(),
             },
-            save: None,
-            written: Vec::new(),
-            already: Vec::new(),
         }))
         .unwrap();
     drop(reply);

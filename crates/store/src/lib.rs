@@ -15,6 +15,7 @@ pub mod annotations;
 pub mod archive;
 pub mod assets;
 pub mod blobs;
+pub mod bytes;
 pub mod calendar;
 pub mod cancellation;
 mod chain_progress;

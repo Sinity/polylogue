@@ -185,45 +185,41 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
 #[test]
 fn shorter_prefix_has_a_commit_and_keeps_progress() {
     use crate::{Batch, Change, InputKey, Observation, Writer};
-    use std::sync::Arc;
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("archive");
     let (archive, lock) = crate::Archive::open_or_create(&root).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let (blob, prepared) = archive.prepare_blob(b"abcdefgh").unwrap();
     let results = writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: Batch {
-                    input: InputKey {
-                        id: "native".into(),
-                        format: "synthetic".into(),
-                        route: polylogue_model::Route::Live,
-                    },
-                    change: Change::First,
-                    observation: Some(Observation {
-                        machine: "machine".into(),
-                        host: "host".into(),
-                        path: "/home/op/session".into(),
-                        path_bytes: b"/home/op/session".to_vec(),
-                        facts: None,
-                        seen_at_ms: 10,
-                        import: None,
-                        container: None,
-                        database: None,
-                    }),
-                    continues: false,
-                    new_blob: Some(blob),
-                    blobs: Vec::new(),
-                    length: 8,
-                    parse: Vec::new(),
-                    capture_read: None,
-                    release: Default::default(),
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: Batch {
+                input: InputKey {
+                    id: "native".into(),
+                    format: "synthetic".into(),
+                    route: polylogue_model::Route::Live,
                 },
-                files: prepared.into_iter().collect(),
-            }],
-            Arc::new(archive.blobs().unwrap()),
-        )
+                change: Change::First,
+                observation: Some(Observation {
+                    machine: "machine".into(),
+                    host: "host".into(),
+                    path: "/home/op/session".into(),
+                    path_bytes: b"/home/op/session".to_vec(),
+                    facts: None,
+                    seen_at_ms: 10,
+                    import: None,
+                    container: None,
+                    database: None,
+                }),
+                continues: false,
+                new_blob: Some(blob),
+                blobs: Vec::new(),
+                length: 8,
+                parse: Vec::new(),
+                capture_read: None,
+                release: Default::default(),
+            },
+            files: prepared.into_iter().collect(),
+        }])
         .unwrap();
     assert!(results[0].is_ok());
     let (prefix_blob, prepared) = archive.prepare_blob(b"abcd").unwrap();

@@ -18,10 +18,12 @@ fn setup() -> (
 }
 
 fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
-    writer.user(crate::fixture::authored::operator_request(
-        crate::user_writes::new_request_id(),
-        write,
-    ))
+    writer
+        .archive()
+        .user(crate::fixture::authored::operator_request(
+            crate::user_writes::new_request_id(),
+            write,
+        ))
 }
 
 fn new(id: &str, key: &str, needs_approval: bool) -> NewChatAction {
@@ -172,7 +174,7 @@ fn write_at(
     let mut request =
         crate::fixture::authored::operator_request(crate::user_writes::new_request_id(), write);
     request.at = polylogue_model::Timestamp::from_unix_ms(at).unwrap();
-    writer.user(request)
+    writer.archive().user(request)
 }
 
 #[test]

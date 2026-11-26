@@ -15,7 +15,7 @@ Polylogue runs as one resident daemon per archive, `polylogue daemon [--until-id
 2. takes the archive lock, an exclusive `flock` on `<archive>/lock` opened through the resolved directory path, and writes its pid into it; a second daemon on the same archive, by any path, exits 1 naming the pid of the daemon that has the lock;
 3. opens `archive.db` and `embeddings.db` at the current format, adding to an `embeddings.db` from an earlier build the tables added since, or refuses with exit 78 when either is in another format, naming the version it found for `archive.db` and what differs from the nearest schema for `embeddings.db`; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
 4. opens `index.db` at its saved positions; with no index, or one written for another schema, it builds a new one in a private file and installs it when the build ends ([installing.md#replacing-an-index-from-another-schema](installing.md#replacing-an-index-from-another-schema));
-5. opens the segment log at its last committed extent;
+5. opens the segment log at its last recorded blob, or stops when the segment holds more than an unfinished put past it ([restoring `archive.db` alone](#restoring-archivedb-alone));
 6. binds the socket, serves requests, then starts its work.
 
 No step rewrites `archive.db`, the segment log or the embeddings store to get past a format difference; the only change at open is adding new tables to the embeddings store.
@@ -53,7 +53,7 @@ Daemon and hosted-session messages carry service-journal priorities: errors for 
 
 ### Storage failure
 
-The writer syncs `archive.db`'s log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
+Each writer of `archive.db` syncs its log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
 
 - **It stops.** The writer stops at once, so no request gets a reply after the failure, not even a retry that would find its rows already stored. The journal names the file and the operating system's error number (`storage I/O error syncing …/archive.db-wal: … (errno 5); writing stopped for this boot`), and the daemon exits 74 however the run ends: a stop signal or an idle end that arrives with the failure still exits 74 and keeps the failure. The service does not restart it.
 - **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74 (a machine without a boot identifier keeps nothing, and only the stopped process refuses). After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
@@ -62,9 +62,13 @@ Recovery:
 
 1. Check the device and the filesystem: `dmesg` for I/O errors; on btrfs, `btrfs device stats` and `btrfs scrub`. Replace or repair the device before writing to it again.
 2. Reboot.
-3. Start the daemon. Opening the archive recovers it as after a crash: SQLite's log recovery keeps only the frames whose checksums hold, ending at the last complete commit, and a segment tail past its last committed extent is truncated.
+3. Start the daemon. Opening the archive recovers it as after a crash: SQLite's log recovery keeps only the frames whose checksums hold, ending at the last complete commit, and a segment tail past its last recorded blob is cut.
 4. Run `polylogue status --verify` ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)) and restore from backup if it names a problem.
 5. What the lost commits held is read again where its source still has it. Files that tools keep where they wrote them (session logs, the hook spools, which are never deleted, and the browser host's capture logs) are re-read from their source positions, which are saved only for committed rows. Not re-readable from the machine: a tool database row the tool has since deleted; a file a tool has since pruned or rewritten; an AI Studio prompt revision whose spooled body the Drive collector removed after delivery (only Drive itself or a Takeout has it); an export, which is stored again only by importing it again. Records written through Polylogue itself (notes, tags, judgments, settings and other annotations, and query runs) have no other source; one whose commit was lost is gone, and the client that wrote it was not told it was stored, because the writer stopped before replying.
+
+### Restoring `archive.db` alone
+
+Putting back an older copy of `archive.db` beside the segment log and index of a later run leaves a segment holding blobs the older record does not name. The daemon's start does not cut them off: the segment's open compares the end the record names with the largest end any commit recorded (kept beside the segment), and stops, naming both lengths, when the segment holds bytes a newer record committed. Nothing is changed. To go on from the older record, put back the segment directory from the same copy, or the newer `archive.db`; to keep the newer bytes the older record lacks, import them again where their sources still hold them.
 
 ## Idle and steady-state work
 

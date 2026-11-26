@@ -5,6 +5,7 @@ pub(crate) mod generation;
 pub mod index_build;
 pub mod index_rebuild;
 mod metadata;
+pub mod writer;
 pub use metadata::Mode;
 
 use crate::ConnExt as _;

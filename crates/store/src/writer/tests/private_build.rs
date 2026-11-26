@@ -26,13 +26,10 @@ fn store_message(archive: &Archive, writer: &Writer, input: &str, text: &str) ->
     let mut reading = one_message(input, &format!("{input}-m"), text);
     reading.new_blob = Some(blob);
     let stored = writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: reading,
-                files: file.into_iter().collect(),
-            }],
-            std::sync::Arc::new(archive.blobs().unwrap()),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: reading,
+            files: file.into_iter().collect(),
+        }])
         .unwrap();
     let chain = stored.into_iter().next().unwrap().unwrap().chain;
     let report = writer.flush().unwrap();

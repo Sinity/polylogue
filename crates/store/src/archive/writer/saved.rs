@@ -1,14 +1,12 @@
 //! A saved query's objects are stored before the assertion that names them.
 //! The private preflight orders the proposals and writes nothing else.
 use super::*;
-use polylogue_model::{
-    annotation::AnnotationKind,
-    user::{UserRequest, UserWrite},
-};
+use polylogue_model::annotation::AnnotationKind;
 
 impl Inner {
     pub(super) fn preflight_saved(
         &mut self,
+        index: &Connection,
         request: &UserRequest,
         preparation: Option<&crate::user_writes::PreparationContext>,
         scope: Option<&crate::ReadScopeToken>,
@@ -27,19 +25,19 @@ impl Inner {
         if !needed {
             return Ok(None);
         }
-        if crate::authored_records::known_request(&self.index, request)?.is_some() {
+        if crate::authored_records::known_request(index, request)?.is_some() {
             return Ok(None);
         }
         let selected = match scope {
             Some(scope) => scope.clone(),
-            None => self.location.scope_token()?,
+            None => self.shared.location.scope_token()?,
         };
-        scoped::require_current(&self.location, Some(&selected))?;
+        scoped::require_current(&self.shared.location, Some(&selected))?;
         let mut provisional = crate::selection::ProvisionalQueries::default();
-        let prepared = crate::authored_records::with_overlay(&self.index, |authored| {
+        let prepared = crate::authored_records::with_overlay(index, |authored| {
             crate::user_writes::apply_resolving(
                 authored,
-                &self.index,
+                index,
                 request,
                 // Copied and pending baseline records use zero. Keep the
                 // proposal separate when capturing its private effects.

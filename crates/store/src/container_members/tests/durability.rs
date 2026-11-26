@@ -3,7 +3,7 @@ use crate::fault::{self, Action};
 
 #[test]
 fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
-    for point in ["segment.after_sync", "segment.after_commit"] {
+    for point in ["segment.after_sync", "capture.after_commit"] {
         fault::clear();
         let dir = tempfile::tempdir().unwrap();
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -11,11 +11,11 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
         let store = Arc::new(archive.blobs().unwrap());
         fault::arm(point, "", Action::Fail, 0, 1);
         let outcomes = writer
-            .store_group(linked(&archive, "interrupted", false), Arc::clone(&store))
+            .store_group(linked(&archive, "interrupted", false))
             .unwrap();
         assert!(outcomes.iter().all(Result::is_err), "{point}: {outcomes:?}");
         fault::clear();
-        let committed = point == "segment.after_commit";
+        let committed = point == "capture.after_commit";
         let db = crate::archive::open_read(&archive.archive_db()).unwrap();
         for table in ["input", "revision", "extent", "blob", "observation"] {
             let count: i64 = db
@@ -32,7 +32,7 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
         let results = writer
-            .store_group(linked(&archive, "exact-retry", false), Arc::clone(&store))
+            .store_group(linked(&archive, "exact-retry", false))
             .unwrap();
         assert!(results.iter().all(Result::is_ok), "{results:?}");
         assert!(
@@ -52,7 +52,7 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
             .unwrap()
             .len();
         let results = writer
-            .store_group(linked(&archive, "duplicate", false), store)
+            .store_group(linked(&archive, "duplicate", false))
             .unwrap();
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(

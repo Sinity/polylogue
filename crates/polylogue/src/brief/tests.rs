@@ -834,6 +834,7 @@ fn numeric_default_and_unlimited_budgets_keep_distinct_meanings() {
     let source = "complete synthetic context passage ".repeat(2000);
     archive
         .writer
+        .archive()
         .restore_annotation(
             AnnotationFact {
                 root: "budget-source".into(),
@@ -1085,6 +1086,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     );
     archive
         .writer
+        .archive()
         .restore_annotation(original.clone(), None)
         .unwrap();
     let correction_text =
@@ -1107,7 +1109,11 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
             },
         ],
     );
-    archive.writer.restore_annotation(correction, None).unwrap();
+    archive
+        .writer
+        .archive()
+        .restore_annotation(correction, None)
+        .unwrap();
     let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let note = reader
@@ -1338,6 +1344,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     let agent_correction = "Accepted agent correction: retain this qualification.";
     archive
         .writer
+        .archive()
         .restore_annotation(
             fact("subject", claim.into(), Author::Operator, vec![]),
             None,
@@ -1345,6 +1352,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         .unwrap();
     archive
         .writer
+        .archive()
         .restore_annotation(
             fact(
                 "operator-correction",
@@ -1357,6 +1365,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         .unwrap();
     archive
         .writer
+        .archive()
         .restore_annotation(
             fact(
                 "accepted-agent",
@@ -1369,6 +1378,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         .unwrap();
     archive
         .writer
+        .archive()
         .restore_annotation(
             fact(
                 "unjudged-agent",
@@ -1396,7 +1406,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         },
     );
     judgment.at = Timestamp::from_unix_ms(T0 + 1).unwrap();
-    archive.writer.user(judgment).unwrap();
+    archive.writer.archive().user(judgment).unwrap();
     let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let note = reader

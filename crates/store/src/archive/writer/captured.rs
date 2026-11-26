@@ -1,13 +1,220 @@
-//! Archive rows for stored bytes: blobs, revisions, extents and
-//! observations, numbered by the archive's write counter.
+//! Archive rows for captured inputs whose bytes are put: inputs,
+//! revisions, extents and observations, numbered by the archive's write
+//! counter, committed in one transaction per group.
 
 use super::*;
+use crate::ConnExt as _;
+use crate::blobs::Change;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
+use crate::{ImportMember, NewBlob};
+use polylogue_model::BlobHash;
+use rusqlite::{OptionalExtension, Transaction, params};
+use std::collections::BTreeSet;
+
+impl Inner {
+    /// Commits the rows of `batches`, whose blobs are put, in one
+    /// transaction, and answers where each batch's bytes are. A batch that
+    /// only parses stored bytes, and an import already recorded the same
+    /// way, write nothing.
+    pub(super) fn captured(
+        &mut self,
+        mut batches: Vec<Batch>,
+        mut added: BTreeMap<BlobHash, u64>,
+    ) -> Result<Committed<Vec<StoredInput>>> {
+        for batch in &batches {
+            check(&self.conn, batch)?;
+        }
+        if let Some(stored) = repeated_imports(&self.conn, &batches)? {
+            return Ok(Committed {
+                position: self.position()?,
+                outcome: stored,
+            });
+        }
+        if batches.iter().all(|batch| {
+            matches!(batch.change, Change::Reparse { .. })
+                && batch.new_blob.is_none()
+                && batch.observation.is_none()
+                && batch.blobs.is_empty()
+                && batch.capture_read.is_none()
+        }) {
+            let stored = batches
+                .iter()
+                .map(|b| {
+                    Ok(StoredInput {
+                        input: b.input.id.clone(),
+                        chain: stored_reading_chain(&self.conn, b)?,
+                        length: b.length,
+                        already_stored: true,
+                        bytes_written: 0,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(Committed {
+                position: self.position()?,
+                outcome: stored,
+            });
+        }
+        // A member read from a container needs its container stored, earlier
+        // in this group or before.
+        let staged: BTreeSet<&str> = batches.iter().map(|b| b.input.id.as_str()).collect();
+        for batch in &batches {
+            if let Some(zip) = crate::container_members::container_of(batch)
+                && !staged.contains(zip.input.as_str())
+            {
+                crate::container_members::require_original(&self.conn, &zip.input)?;
+            }
+        }
+        let tx = self.begin()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+        let seq = bump_counter(&tx)?;
+        let counted = tx.total_changes();
+        let mut stored = Vec::new();
+        let mut seen = BTreeSet::new();
+        for b in &mut batches {
+            let bytes_written = b
+                .new_blob
+                .iter()
+                .chain(&b.blobs)
+                .flat_map(NewBlob::parts)
+                .filter_map(|part| added.remove(&part.hash))
+                .sum();
+            // An immutable import named by its bytes may be stored already, or
+            // appear twice in a group (equal container members).
+            let known: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT chain, length FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1",
+                    [&b.input.id],
+                    |r| <(_, _)>::try_from(r),
+                )
+                .optional()?;
+            let again = !seen.insert(b.input.id.clone());
+            if b.input.route.is_imported() && b.new_blob.is_some() && (known.is_some() || again) {
+                let new_blob = b.new_blob.as_ref().expect("checked new_blob");
+                // Empty bytes are stored with no extent.
+                let same: bool = tx.scalar("SELECT CASE WHEN ?2 <> ?3 THEN 0 WHEN ?3 = 0 THEN count(*) = 0
+                            ELSE count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4 END
+                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)", params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]])?;
+                if !same {
+                    return Err(StoreError::Conflict(
+                        "an import named by its bytes holds other bytes".into(),
+                    ));
+                }
+                b.change = Change::Unchanged;
+                b.new_blob = None;
+            }
+            let (chain, _) = write_bytes(&tx, b, seq)?;
+            let chain = chain.or_invalid("stored bytes produced no chain")?;
+            crate::fault::check("import.rows", &b.input.id)?;
+            let already_stored =
+                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
+            stored.push(StoredInput {
+                input: b.input.id.clone(),
+                chain,
+                length: b.length,
+                already_stored,
+                bytes_written,
+            });
+        }
+        if tx.total_changes() == counted {
+            // A step that names the chain its stored bytes are in writes nothing.
+            tx.rollback()?;
+            return Ok(Committed {
+                position: self.position()?,
+                outcome: stored,
+            });
+        }
+        crate::fault::check("write.archive_commit", "")?;
+        let position = self.commit(tx, seq, crate::completion::Committed::CONTENT)?;
+        self.shared.report.locked().batches +=
+            batches.iter().filter(|b| b.parse.is_empty()).count() as u64;
+        Ok(Committed {
+            position,
+            outcome: stored,
+        })
+    }
+}
+
+/// What a batch must satisfy before any of its rows are written.
+fn check(conn: &Connection, b: &Batch) -> Result<()> {
+    if b.input.id.is_empty() {
+        return Err(StoreError::Invalid("stored bytes need an input".into()));
+    }
+    crate::to_i64(b.length, "input exceeds archive address space")?;
+    check_import_format(
+        conn,
+        &b.input.id,
+        b.observation.as_ref().and_then(|o| o.import.as_ref()),
+    )?;
+    if b.new_blob.as_ref().is_some_and(|new_blob| {
+        new_blob.parts().map(|part| part.size).sum::<u64>() != new_blob.size
+    }) {
+        return Err(StoreError::Invalid(
+            "the chunks of new bytes do not add up to their length".into(),
+        ));
+    }
+    if b.input.route.is_imported()
+        && let Some(new_blob) = &b.new_blob
+        && (b.input.id != new_blob.hash.to_string() || new_blob.size != b.length || b.continues)
+    {
+        return Err(StoreError::Invalid(
+            "an import must be named by its complete bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A retry of an unchanged import group has nothing new to write. A new
+/// path, receiver or import membership is a new observation even for known
+/// bytes.
+fn repeated_imports(conn: &Connection, group: &[Batch]) -> Result<Option<Vec<StoredInput>>> {
+    let mut stored = Vec::with_capacity(group.len());
+    for b in group {
+        let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
+            return Ok(None);
+        };
+        if !b.input.route.is_imported() || !b.parse.is_empty() || !b.blobs.is_empty() {
+            return Ok(None);
+        }
+        let details = observation
+            .import
+            .as_ref()
+            .map(|member| {
+                serde_json::to_string(
+                    &serde_json::json!({"import":member,"import_format":member.format}),
+                )
+            })
+            .transpose()?;
+        let known = conn.query_row(
+            "SELECT r.chain,r.length,
+               EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))
+             FROM revision r WHERE r.input=?1
+               AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
+               AND r.length=?2
+               AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
+               AND EXISTS(SELECT 1 FROM extent x JOIN blob b ON b.hash=x.blob
+                   WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0
+                     AND x.length=?2 AND x.blob_offset=0 AND x.blob=?3 AND b.size=?2)",
+            params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
+            |row| <(i64, i64, bool)>::try_from(row),
+        ).optional()?;
+        let Some((chain, length, true)) = known else {
+            return Ok(None);
+        };
+        stored.push(StoredInput {
+            input: b.input.id.clone(),
+            chain,
+            length: length as u64,
+            already_stored: true,
+            bytes_written: 0,
+        });
+    }
+    Ok(Some(stored))
+}
 
 /// Stores the bytes' rows and returns the revision chain the batch's
 /// records are in (`None` when there is none: a disappearance before any
 /// revision), with the archive rows it wrote, if any.
-pub(super) fn write_bytes(
+pub(crate) fn write_bytes(
     tx: &Transaction<'_>,
     b: &Batch,
     seq: i64,
@@ -31,7 +238,7 @@ pub(super) fn write_bytes(
 // A chain only grows. Seek the latest revision first so replay of
 // a long append history does not revisit that history for every parsed chunk.
 // Older chains keep their original existence check, including sparse inputs.
-pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i64> {
+pub(crate) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i64> {
     let Change::Reparse { chain } = batch.change else {
         return Err(StoreError::Invalid(
             "a stored reading must name its chain".into(),
@@ -229,7 +436,7 @@ fn never_shorter(b: &Batch, stored: i64) -> Result<()> {
 /// that holds them. The blob is committed even for an empty capture read;
 /// extents describe covered source bytes, so empty
 /// bytes have none.
-pub(super) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent> {
+pub(crate) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent> {
     let mut offset = offset as i64;
     new_blob
         .parts()
@@ -276,7 +483,7 @@ pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<S
     ))
 }
 
-pub(super) fn check_import_format(
+pub(crate) fn check_import_format(
     tx: &Connection,
     input: &str,
     member: Option<&ImportMember>,
@@ -303,7 +510,7 @@ pub(super) fn check_import_format(
 /// The observation a step records, checked against what the archive
 /// already holds for the input. `staged` holds the inputs staged earlier in
 /// this capture group, which are not in the archive yet.
-pub(super) fn observation(
+pub(crate) fn observation(
     tx: &Connection,
     b: &Batch,
     class: &str,

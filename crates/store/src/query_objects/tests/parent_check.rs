@@ -14,7 +14,7 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
         .pause_user_dispatch_for_test(&object.id.to_string(), DispatchPhase::BeforeParentCheck);
     let queued = sender.clone();
     let supplied = object.clone();
-    let task = std::thread::spawn(move || queued.query_object(supplied, Some(parent)));
+    let task = std::thread::spawn(move || queued.archive().query_object(supplied, Some(parent)));
     pause.wait().unwrap();
     cancellation.cancel();
     pause.release();
@@ -30,7 +30,7 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
             .is_none()
     );
     // Store the question independently, then exercise the closed Begin alternate.
-    sender.query_object(object.clone(), None).unwrap();
+    sender.archive().query_object(object.clone(), None).unwrap();
     let expected = run(
         &object,
         "parent-queued-begin",
@@ -43,7 +43,7 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
         sender.pause_user_dispatch_for_test(expected.id.as_str(), DispatchPhase::BeforeParentCheck);
     let queued = sender.clone();
     let supplied = expected.clone();
-    let task = std::thread::spawn(move || queued.begin_query_run(supplied, Some(parent)));
+    let task = std::thread::spawn(move || queued.archive().begin_query_run(supplied, Some(parent)));
     pause.wait().unwrap();
     cancellation.cancel();
     pause.release();
@@ -62,7 +62,7 @@ fn checked_begin_finishes_after_parent_cancellation() {
     let sender = archive.writer.sender();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let object = question("sessions where title:owned");
-    sender.query_object(object.clone(), None).unwrap();
+    sender.archive().query_object(object.clone(), None).unwrap();
     let expected = run(
         &object,
         "parent-owned-begin",
@@ -74,7 +74,7 @@ fn checked_begin_finishes_after_parent_cancellation() {
     let pause = sender.pause_user_dispatch_for_test(expected.id.as_str(), DispatchPhase::Owned);
     let queued = sender.clone();
     let supplied = expected.clone();
-    let task = std::thread::spawn(move || queued.begin_query_run(supplied, Some(parent)));
+    let task = std::thread::spawn(move || queued.archive().begin_query_run(supplied, Some(parent)));
     pause.wait().unwrap();
     cancellation.cancel();
     pause.release();
@@ -82,6 +82,7 @@ fn checked_begin_finishes_after_parent_cancellation() {
     let completed = outcome(&expected, 3);
     // Finish has no producing-parent argument and validates its prior Begin.
     sender
+        .archive()
         .finish_query_run(completed.clone())
         .unwrap()
         .recv()
@@ -99,10 +100,14 @@ fn checked_begin_finishes_after_parent_cancellation() {
 fn a_preexpired_parent_cannot_even_replay_an_existing_question() {
     let archive = WriterArchive::new();
     let object = question("sessions");
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let parent = ParentLifetime::capture(Some(Instant::now()), Default::default());
     assert!(matches!(
-        archive.writer.query_object(object, Some(parent)),
+        archive.writer.archive().query_object(object, Some(parent)),
         Err(StoreError::ReadDeadlineExceeded)
     ));
 }

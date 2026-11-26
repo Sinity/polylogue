@@ -12,8 +12,10 @@ impl Carried {
         writer: &polylogue_store::Writer,
     ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
         match self {
-            Self::Request(record) => writer.restore_authored(record.prepared),
-            Self::Annotation(record) => writer.restore_annotation(record.annotation, None),
+            Self::Request(record) => writer.archive().restore_authored(record.prepared),
+            Self::Annotation(record) => {
+                writer.archive().restore_annotation(record.annotation, None)
+            }
         }
     }
 }

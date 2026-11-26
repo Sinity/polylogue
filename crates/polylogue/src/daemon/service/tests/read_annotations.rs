@@ -13,6 +13,7 @@ fn write(d: &Daemon, id: &str, annotation: NewAnnotation) {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(polylogue_store::fixture::authored::operator_request(
             id.into(),
             UserWrite::Assert {
@@ -502,7 +503,7 @@ fn write_at(d: &Daemon, id: &str, annotation: NewAnnotation, at: Timestamp) {
         },
     );
     request.at = at;
-    d.writes.as_ref().unwrap().user(request).unwrap();
+    d.writes.as_ref().unwrap().archive().user(request).unwrap();
 }
 
 #[test]
@@ -556,6 +557,7 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             .writes
             .as_ref()
             .unwrap()
+            .archive()
             .restore_annotation(unknown, None)
             .unwrap();
 

@@ -7,7 +7,7 @@ pub struct ChainParse {
     file: Option<BufWriter<std::fs::File>>,
     path: tempfile::TempPath,
     first: bool,
-    decoded: Vec<crate::staging::PreparedBatch>,
+    pub(super) decoded: Vec<crate::staging::PreparedBatch>,
 }
 
 impl ChainParse {
@@ -164,10 +164,9 @@ impl Inner {
             ));
         }
         if !reading.decoded.is_empty() {
-            let store = Arc::new(self.location.blobs()?);
-            for result in self.store_group(std::mem::take(&mut reading.decoded), store) {
-                result?;
-            }
+            return Err(StoreError::internal(
+                "a replacement's decoded bytes are stored before its rows reach the index writer",
+            ));
         }
         let mut local_steps = false;
         let mut version = None;

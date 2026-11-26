@@ -1,4 +1,9 @@
 use super::*;
+use crate::blobs::Change;
+use crate::{Archive, Writer};
+use crate::{InputKey, Observation};
+use polylogue_model::Timestamp;
+use polylogue_model::authored::PreparedRequest;
 use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_model::{
     AlternateKind, AlternateRelation, Author, BlobHash, NewAlternate, NewAlternatePart,
@@ -20,7 +25,7 @@ fn prepared_at(write: UserWrite, at: Timestamp) -> PreparedRequest {
         at,
         write,
     };
-    archive.writer.user(request).unwrap();
+    archive.writer.archive().user(request).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let mut record = None;
     pool.reader()
@@ -58,12 +63,16 @@ fn writer_restore_changes_the_snapshot_once() {
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
     destination
         .writer
+        .archive()
         .restore_authored(original.clone())
         .unwrap();
+    // The alternate's text reaches the index once the index writer follows.
+    destination.writer.flush_rows().unwrap();
     let first = pool.reader().unwrap().change_position().unwrap();
     assert!(
         destination
             .writer
+            .archive()
             .restore_authored(original.clone())
             .unwrap()
             .repeat
@@ -74,6 +83,7 @@ fn writer_restore_changes_the_snapshot_once() {
     assert!(
         destination
             .writer
+            .archive()
             .restore_authored(original.clone())
             .unwrap()
             .repeat
@@ -120,9 +130,9 @@ fn commit_subscribers_wake_for_new_commits_and_skip_retries() {
             machine: None,
         },
     };
-    archive.writer.user(request.clone()).unwrap();
+    archive.writer.archive().user(request.clone()).unwrap();
     commits.try_recv().unwrap();
-    archive.writer.user(request.clone()).unwrap();
+    archive.writer.archive().user(request.clone()).unwrap();
     assert!(matches!(
         commits.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
@@ -132,7 +142,7 @@ fn commit_subscribers_wake_for_new_commits_and_skip_retries() {
         *value = "off".into();
     }
     assert!(matches!(
-        archive.writer.user(changed),
+        archive.writer.archive().user(changed),
         Err(StoreError::Conflict(_))
     ));
     assert!(matches!(
@@ -188,7 +198,11 @@ fn assert_refused_start(archive: &Archive) {
         Err(StoreError::StorageFailed(failure)) => {
             let mut log = archive.archive_db().into_os_string();
             log.push("-wal");
-            assert_eq!(failure.path, std::path::PathBuf::from(log));
+            // The same file, whichever path names it.
+            assert_eq!(
+                std::fs::canonicalize(&failure.path).unwrap(),
+                std::fs::canonicalize(std::path::PathBuf::from(log)).unwrap()
+            );
             assert_eq!(crate::storage_failure::recorded(), Some(failure));
         }
         Err(other) => panic!("refused for another reason: {other}"),
@@ -206,9 +220,9 @@ fn a_failed_sync_refuses_an_authored_retry_and_every_later_writer() {
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
     fail_next_sync();
-    let first = writer.restore_authored(original.clone());
+    let first = writer.archive().restore_authored(original.clone());
     assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
-    let retry = writer.restore_authored(original.clone());
+    let retry = writer.archive().restore_authored(original.clone());
     assert!(
         matches!(retry, Err(StoreError::WriterGone)),
         "a retry was answered after the failed sync: {retry:?}"
@@ -224,14 +238,13 @@ fn a_failed_sync_refuses_an_authored_retry_and_every_later_writer() {
 fn a_failed_sync_refuses_a_repeated_import_and_every_later_writer() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
-    let blobs = || Arc::new(archive.blobs().unwrap());
     let bytes = b"exported conversation bytes\n";
     let writer = Writer::start(&archive).unwrap();
     let sender = writer.sender();
     fail_next_sync();
-    let first = sender.store_group(vec![imported(&archive, bytes)], blobs());
+    let first = sender.store_group(vec![imported(&archive, bytes)]);
     assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
-    let retry = sender.store_group(vec![imported(&archive, bytes)], blobs());
+    let retry = sender.store_group(vec![imported(&archive, bytes)]);
     assert!(
         matches!(retry, Err(StoreError::WriterGone)),
         "a repeated import was answered after the failed sync: {retry:?}"
@@ -248,8 +261,10 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     let original = alternate();
     destination
         .writer
+        .archive()
         .restore_authored(original.clone())
         .unwrap();
+    destination.writer.flush_rows().unwrap();
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
     let read = || {
         let mut alternates = Vec::new();
@@ -295,7 +310,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
                 UserWrite::Deliver(body)
             },
         );
-        destination.writer.user(request).unwrap();
+        destination.writer.archive().user(request).unwrap();
         assert_eq!(serde_json::to_value(read()).unwrap(), before);
         assert_eq!(
             conn.query_row("SELECT n FROM test_variant_writes", [], |r| r
@@ -336,3 +351,5 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
         steps.load(Ordering::Relaxed)
     );
 }
+
+mod commits;

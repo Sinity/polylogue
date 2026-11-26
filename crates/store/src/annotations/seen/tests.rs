@@ -30,7 +30,12 @@ fn seen_mark_written_only_when_it_advances() {
         at: position,
     };
     let first_request = request("seen-first", mark.clone());
-    let receipt = archive.writer.user_receipt(first_request.clone()).unwrap();
+    let receipt = archive
+        .writer
+        .archive()
+        .submit(first_request.clone(), None)
+        .map(|committed| committed.outcome)
+        .unwrap();
     assert!(!receipt.outcome.repeat);
     assert!(
         receipt.written.is_empty(),
@@ -40,6 +45,7 @@ fn seen_mark_written_only_when_it_advances() {
     assert!(
         archive
             .writer
+            .archive()
             .user(request("seen-same", mark.clone()))
             .unwrap()
             .repeat
@@ -63,6 +69,7 @@ fn seen_mark_written_only_when_it_advances() {
     assert!(
         !archive
             .writer
+            .archive()
             .user(request("seen-later", later.clone()))
             .unwrap()
             .repeat
@@ -70,6 +77,7 @@ fn seen_mark_written_only_when_it_advances() {
     assert!(
         archive
             .writer
+            .archive()
             .user(request("seen-backward", mark.clone()))
             .unwrap()
             .repeat
@@ -92,7 +100,7 @@ fn seen_mark_written_only_when_it_advances() {
     drop(pool);
     archive.restart();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    assert!(archive.writer.user(first_request).unwrap().repeat);
+    assert!(archive.writer.archive().user(first_request).unwrap().repeat);
     assert_eq!(
         pool.reader()
             .unwrap()
@@ -102,7 +110,7 @@ fn seen_mark_written_only_when_it_advances() {
     );
     let mut other = request("seen-other-author", mark.clone());
     other.authorship.author = Author::Agent(None);
-    assert!(!archive.writer.user(other).unwrap().repeat);
+    assert!(!archive.writer.archive().user(other).unwrap().repeat);
     assert_eq!(
         pool.reader()
             .unwrap()
@@ -128,7 +136,10 @@ fn seen_mark_on_a_session_refuses_an_item_that_is_not_a_message_or_block() {
         at: position,
     };
     assert!(matches!(
-        archive.writer.user(request("seen-session-item", mark)),
+        archive
+            .writer
+            .archive()
+            .user(request("seen-session-item", mark)),
         Err(StoreError::Refused(
             polylogue_model::Reason::SeenMarkNeedsItem {}
         ))
@@ -154,6 +165,7 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
     };
     archive
         .writer
+        .archive()
         .user(request("seen-before", old.clone()))
         .unwrap();
     let before_reset = pool.reader().unwrap().change_position().unwrap();
@@ -169,6 +181,7 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
     };
     archive
         .writer
+        .archive()
         .user(request("seen-after", new.clone()))
         .unwrap();
     assert_eq!(
@@ -179,7 +192,7 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
         vec![new]
     );
     assert!(matches!(
-        archive.writer.user(request("seen-stale", old)),
+        archive.writer.archive().user(request("seen-stale", old)),
         Err(StoreError::Refused(
             polylogue_model::Reason::SeenFromAnotherGeneration {}
         ))
@@ -252,6 +265,7 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
     assert!(
         !archive
             .writer
+            .archive()
             .user(request("seen-inherited", mark(&branch)))
             .unwrap()
             .repeat
@@ -259,6 +273,7 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
     assert!(
         !archive
             .writer
+            .archive()
             .user(request("seen-child", mark(&own)))
             .unwrap()
             .repeat
@@ -266,6 +281,7 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
     assert!(
         archive
             .writer
+            .archive()
             .user(request("seen-reverse", mark(&branch)))
             .unwrap()
             .repeat
@@ -275,7 +291,7 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
         ("seen-unrelated", &unrelated),
     ] {
         assert!(matches!(
-            archive.writer.user(request(id, mark(item))),
+            archive.writer.archive().user(request(id, mark(item))),
             Err(StoreError::Refused(polylogue_model::Reason::NotInSession { item: ref named, ref session }))
                 if *named == format!("message:{}", item.id)
                     && *session == format!("session:{}", crate::fixture::writer::sid("child"))
@@ -332,6 +348,7 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     assert!(
         !archive
             .writer
+            .archive()
             .user(request("seen-copy", mark(&copied)))
             .unwrap()
             .repeat
@@ -339,6 +356,7 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     assert!(
         !archive
             .writer
+            .archive()
             .user(request("seen-copy-own", mark(&own)))
             .unwrap()
             .repeat
@@ -346,12 +364,13 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     assert!(
         archive
             .writer
+            .archive()
             .user(request("seen-copy-reverse", mark(&copied)))
             .unwrap()
             .repeat
     );
     assert!(matches!(
-        archive.writer.user(request("seen-copy-excluded", mark(&excluded))),
+        archive.writer.archive().user(request("seen-copy-excluded", mark(&excluded))),
         Err(StoreError::Refused(polylogue_model::Reason::NotInSession { item: ref named, ref session }))
             if *named == format!("message:{}", excluded.id)
                 && *session == format!("session:{}", crate::fixture::writer::sid("child"))
@@ -397,7 +416,10 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     drop(selection);
     drop(reader);
     assert!(matches!(
-        archive.writer.user(request("seen-copy-conflict", mark)),
+        archive
+            .writer
+            .archive()
+            .user(request("seen-copy-conflict", mark)),
         Err(StoreError::IncompleteParents(_))
     ));
     assert!(

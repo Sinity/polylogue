@@ -641,10 +641,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     assert!(
         matches!(&source_read.generation, Some(polylogue_store::capture_read::ObservedState::File { observed, .. }) if observed.size == 0)
     );
-    let results = engine
-        .writer
-        .store_group(vec![prepared], std::sync::Arc::clone(&engine.blobs))
-        .unwrap();
+    let results = engine.writer.store_group(vec![prepared]).unwrap();
     assert!(results.into_iter().all(|result| result.is_ok()));
     let hash = hashed_blobs::Hash(*blake3::hash(b"").as_bytes());
     assert_eq!(engine.blobs.extent(&hash).unwrap().decoded_len, 0);

@@ -21,7 +21,9 @@ fn assert_catalogued(engine: &Engine, hash: &hashed_blobs::Hash, present: bool) 
 }
 
 #[test]
-fn a_refused_import_commits_no_blob_extent_or_source_rows() {
+/// A refused import commits no source rows; the blob its put recorded
+/// stays, cited by nothing, and the next import of the same bytes finds it.
+fn a_refused_import_commits_no_source_rows_and_keeps_its_put_blob() {
     for changed in [false, true] {
         let home = ClaudeHome::new();
         let path = home.dir.path().join("manual.jsonl");
@@ -42,8 +44,9 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
                 )
                 .unwrap();
             assert!(!rejected.pass.errors.is_empty());
-            assert_catalogued(&engine, &hash, false);
-            for table in ["input", "revision", "extent", "blob", "observation"] {
+            assert_catalogued(&engine, &hash, true);
+            assert_eq!(home.count("SELECT count(*) AS n FROM a.blob"), 1);
+            for table in ["input", "revision", "extent", "observation"] {
                 assert_eq!(
                     home.count(&format!("SELECT count(*) AS n FROM a.{table}")),
                     0,
@@ -57,7 +60,7 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
             .unwrap();
         let (mut engine, _lock) = engine(&home, 64);
         assert!(engine.run_pass().unwrap().errors.is_empty());
-        assert_catalogued(&engine, &hash, false);
+        assert_catalogued(&engine, &hash, true);
         if changed {
             std::fs::write(
                 &path,
@@ -75,7 +78,7 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
             )
             .unwrap();
         assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
-        assert_catalogued(&engine, &hash, !changed);
+        assert_catalogued(&engine, &hash, true);
     }
 }
 

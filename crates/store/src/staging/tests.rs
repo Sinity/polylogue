@@ -1,6 +1,5 @@
 use super::*;
 use crate::{Archive, Batch, Change, InputKey, Observation, Writer};
-use std::sync::Arc;
 
 /// The writer copies a staged encoding into the segment as it is: it checks
 /// the encoding's length and digest against the descriptor its preparation
@@ -46,13 +45,10 @@ fn writer_never_decodes_staged_input() {
         release: Default::default(),
     };
     let results = writer
-        .store_group(
-            vec![PreparedBatch {
-                batch,
-                files: vec![file],
-            }],
-            Arc::new(archive.blobs().unwrap()),
-        )
+        .store_group(vec![PreparedBatch {
+            batch,
+            files: vec![file],
+        }])
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].as_ref().unwrap().length, bytes.len() as u64);

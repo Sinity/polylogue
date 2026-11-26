@@ -39,13 +39,10 @@ impl Fixture {
         batch.new_blob = Some(blob);
         let mut stored = self
             .writer
-            .store_group(
-                vec![PreparedBatch {
-                    batch,
-                    files: file.into_iter().collect(),
-                }],
-                Arc::new(self.archive.blobs().unwrap()),
-            )
+            .store_group(vec![PreparedBatch {
+                batch,
+                files: file.into_iter().collect(),
+            }])
             .unwrap();
         stored.pop().expect("one capture").unwrap();
         assert!(self.writer.flush().unwrap().errors.is_empty());

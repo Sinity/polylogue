@@ -118,7 +118,7 @@ pub(crate) fn page(
         call.daemon
             .writes
             .as_ref()
-            .map(|writer| writer.reserve_history())
+            .map(|writer| writer.archive().reserve_history())
             .transpose()?
     } else {
         None

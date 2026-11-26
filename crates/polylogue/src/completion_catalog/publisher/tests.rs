@@ -60,6 +60,7 @@ fn publication_uses_the_captured_clock_and_machine_scoped_setting() {
     ] {
         archive
             .writer
+            .archive()
             .user(requests.request(
                 id.into(),
                 UserWrite::SetSetting {
@@ -186,7 +187,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     let object = parent.query_object().unwrap();
     assert!(object.edges.iter().any(|edge| matches!(edge,polylogue_model::query_objects::QueryEdge::Saved{query} if *query==child.id)));
 
-    archive.writer.restore_annotation(AnnotationFact {
+    archive.writer.archive().restore_annotation(AnnotationFact {
         id:"historical-definition".into(),root:"historical-definition".into(),kind:AnnotationKind::SavedQuery,
         key:Some("historical".into()),value:Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author:Author::Operator,via:Channel::Import,machine:"synthetic-machine".into(),created_at: Some(Timestamp::from_unix_ms(1).unwrap()),valid_until:None,links:vec![],
@@ -201,7 +202,11 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     drop(cached);
     drop(state);
     let mut state = State::new(super::super::tests::request_metadata());
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -216,7 +221,11 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         "the parent keeps its own immutable dependencies"
     );
     let before = state.position.clone().unwrap();
-    archive.writer.query_object(child.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(child.clone(), None)
+        .unwrap();
     let reader = reads.reader().unwrap();
     let changed = reader.completion_changed_queries(before.archive).unwrap();
     assert!(changed.contains(&child.id.to_string()) && changed.contains(&object.id.to_string()));
@@ -236,7 +245,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
             .any(|field| field.name == "count")
     );
     drop(cached);
-    archive.writer.restore_annotation(AnnotationFact {
+    archive.writer.archive().restore_annotation(AnnotationFact {
         id: "colliding-definition".into(), root: "colliding-definition".into(), kind: AnnotationKind::SavedQuery,
         key: Some("historical".into()), value: Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Some(Timestamp::from_unix_ms(2).unwrap()), valid_until: None, links: vec![],
@@ -257,6 +266,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     drop(cache);
     archive
         .writer
+        .archive()
         .user(polylogue_store::fixture::authored::operator_request(
             "withdraw-collision".into(),
             UserWrite::WithdrawAnnotations {
@@ -279,6 +289,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     drop(cache);
     archive
         .writer
+        .archive()
         .user(polylogue_store::fixture::authored::operator_request(
             "withdraw-historical".into(),
             UserWrite::WithdrawAnnotations {
@@ -313,6 +324,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     let save = |id: &str, name: &str| {
         archive
             .writer
+            .archive()
             .user(polylogue_store::writer::UserSubmission {
                 request: polylogue_store::fixture::authored::operator_request(
                     id.into(),
@@ -394,6 +406,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     };
     donor
         .writer
+        .archive()
         .user(polylogue_store::writer::UserSubmission {
             request: keep(),
             scope: None,
@@ -435,7 +448,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     let mut archive =
         polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
     let writer = polylogue_store::Writer::start(&archive.archive).unwrap();
-    let error = writer.query_object(object, None).unwrap_err();
+    let error = writer.archive().query_object(object, None).unwrap_err();
     assert!(
         matches!(&error, polylogue_store::StoreError::NotFound(what) if what == "stored result schema result:late-kept"),
         "{error:?}"
@@ -445,6 +458,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     archive.saved_query("dependent", &parent).unwrap();
     // Account for the fixture's seeded source record before measuring deltas.
     writer
+        .archive()
         .user(polylogue_store::writer::UserSubmission {
             request: polylogue_store::fixture::authored::operator_request(
                 "seed-position".into(),
@@ -486,6 +500,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     drop(state);
     let mut state = State::new(super::super::tests::request_metadata());
     writer
+        .archive()
         .user(polylogue_store::writer::UserSubmission {
             request: keep(),
             scope: None,
@@ -592,6 +607,7 @@ fn historical_drive_intent_is_removed_from_initial_and_incremental_completions()
     let set = |id: &str, value: &str| {
         archive
             .writer
+            .archive()
             .user(requests.request(
                 id.into(),
                 polylogue_model::user::UserWrite::SetSetting {
@@ -818,7 +834,7 @@ fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
     use polylogue_model::user::{Save, UserWrite};
     let archive = polylogue_store::fixture::writer::WriterArchive::new();
     let save = |id: &str, name: Option<&str>, query: &str| {
-        archive.writer.user(polylogue_store::writer::UserSubmission {
+        archive.writer.archive().user(polylogue_store::writer::UserSubmission {
             request: polylogue_store::fixture::authored::operator_request(id.into(),
                 UserWrite::Save(Box::new(Save {
                     name: name.map(str::to_owned), query: query.into(),

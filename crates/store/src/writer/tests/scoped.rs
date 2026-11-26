@@ -19,12 +19,15 @@ fn queued_read_action_rejects_an_obsolete_generation_without_committing() {
     archive.archive.read_scope.begin_reset().unwrap();
     archive.archive.read_scope.finish_reset();
     assert!(matches!(
-        archive.writer.user(crate::writer::UserSubmission {
-            request: setting("stale"),
-            scope: Some(token),
-            preparation: None,
-            parent: None
-        }),
+        archive
+            .writer
+            .archive()
+            .user(crate::writer::UserSubmission {
+                request: setting("stale"),
+                scope: Some(token),
+                preparation: None,
+                parent: None
+            }),
         Err(StoreError::ScopeChanged)
     ));
     let source = Connection::open(archive.archive.archive_db()).unwrap();
@@ -38,6 +41,7 @@ fn queued_read_action_rejects_an_obsolete_generation_without_committing() {
     assert_eq!(count, 0);
     archive
         .writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: setting("current"),
             scope: Some(archive.archive.scope_token().unwrap()),
@@ -60,7 +64,7 @@ fn a_current_token_from_another_archive_cannot_authorize_an_action() {
     let target = test_archive();
     let other = test_archive();
     assert!(matches!(
-        target.writer.user(crate::writer::UserSubmission {
+        target.writer.archive().user(crate::writer::UserSubmission {
             request: setting("foreign"),
             scope: Some(other.archive.scope_token().unwrap()),
             preparation: None,
@@ -81,12 +85,13 @@ fn a_full_user_queue_returns_the_entire_submission() {
     let sender = archive.writer.sender();
     let pause = sender.pause_user_dispatch_for_test("hold-full-queue", DispatchPhase::Owned);
     let held = sender.clone();
-    let holding = std::thread::spawn(move || held.user(setting("hold-full-queue")));
+    let holding = std::thread::spawn(move || held.archive().user(setting("hold-full-queue")));
     pause.wait().unwrap();
     let mut queued = Vec::new();
-    for index in 0..USER_QUEUE {
+    for index in 0..crate::archive::writer::USER_QUEUE {
         match sender
-            .try_enqueue_user(setting(&format!("queued-{index}")))
+            .archive()
+            .try_submit(setting(&format!("queued-{index}")))
             .unwrap()
         {
             Queued::Committing(result) => queued.push(result),
@@ -104,7 +109,7 @@ fn a_full_user_queue_returns_the_entire_submission() {
         ])),
         parent: Some(Arc::clone(&parent)),
     };
-    let Queued::Full(returned) = sender.try_enqueue_user(submission).unwrap() else {
+    let Queued::Full(returned) = sender.archive().try_submit(submission).unwrap() else {
         panic!("a full queue accepted another submission");
     };
     assert_eq!(returned.request, request);
@@ -119,5 +124,5 @@ fn a_full_user_queue_returns_the_entire_submission() {
     for result in queued {
         result.recv().unwrap().unwrap();
     }
-    sender.user(*returned).unwrap();
+    sender.archive().user(*returned).unwrap();
 }

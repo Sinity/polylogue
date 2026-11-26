@@ -51,11 +51,14 @@ impl World {
     }
     fn write(&mut self, write: UserWrite) -> crate::Result<UserOutcome> {
         let id = self.id();
-        self.archive.writer.user(operator_request(id, write))
+        self.archive
+            .writer
+            .archive()
+            .user(operator_request(id, write))
     }
     fn write_via(&mut self, via: Channel, write: UserWrite) -> crate::Result<UserOutcome> {
         let id = self.id();
-        self.archive.writer.user(request(
+        self.archive.writer.archive().user(request(
             id,
             write,
             Authorship {
@@ -292,6 +295,7 @@ fn a_request_commits_all_of_its_writes_or_none_and_numbers_them_from_one() {
     let outcome = world
         .archive
         .writer
+        .archive()
         .user(operator_request(
             id.clone(),
             UserWrite::Assert {

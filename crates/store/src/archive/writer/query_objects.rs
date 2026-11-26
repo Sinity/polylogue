@@ -1,5 +1,6 @@
 //! Saved questions are written before their asynchronous execution history.
 use super::*;
+use crate::completion::Committed as Changed;
 use polylogue_model::query_objects::{QueryObject, QueryRun, QueryRunOutcome};
 
 /// Content and scope validation of a saved query.s objects.
@@ -33,7 +34,7 @@ impl PreparedObjects {
 /// Dropping it returns capacity without creating a run.
 pub struct HistorySlot {
     slot: super::user_queue::QueueSlot,
-    writer: WriterQueue,
+    writer: ArchiveSender,
 }
 
 pub(super) struct History {
@@ -60,7 +61,7 @@ impl HistorySlot {
     }
 }
 
-impl WriterSender {
+impl ArchiveSender {
     /// Reserve bounded writer capacity before preparing a read. The request's
     /// existing deadline and cancellation cover this reservation.
     pub fn reserve_history(&self) -> Result<HistorySlot> {
@@ -69,7 +70,7 @@ impl WriterSender {
         let slot = self.0.users.reserve(limit.as_ref())?;
         Ok(HistorySlot {
             slot,
-            writer: self.0.clone(),
+            writer: self.clone(),
         })
     }
 
@@ -80,9 +81,7 @@ impl WriterSender {
         parent: Option<Arc<ParentLifetime>>,
     ) -> Result<()> {
         let (reply, wait) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryObject(Box::new(object), parent, reply))
-            .map_err(|_| StoreError::WriterGone)?;
+        self.send_user(UserMsg::QueryObject(Box::new(object), parent, reply))?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
@@ -93,18 +92,14 @@ impl WriterSender {
         parent: Option<Arc<ParentLifetime>>,
     ) -> Result<()> {
         let (reply, wait) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryRun(Box::new(run), parent, reply))
-            .map_err(|_| StoreError::WriterGone)?;
+        self.send_user(UserMsg::QueryRun(Box::new(run), parent, reply))?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Dropping the completion answer never cancels accepted history work.
     pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
         let (reply, wait) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))
-            .map_err(|_| StoreError::WriterGone)?;
+        self.send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))?;
         Ok(wait)
     }
 }
@@ -115,9 +110,9 @@ impl Inner {
         prepared: PreparedObjects,
     ) -> Result<crate::ReadScopeToken> {
         for object in prepared.queries.objects() {
-            scoped::require_current(&self.location, Some(&prepared.scope))?;
+            scoped::require_current(&self.shared.location, Some(&prepared.scope))?;
             self.persist_query_object(object, Some(&prepared.scope))?;
-            scoped::require_current(&self.location, Some(&prepared.scope))?;
+            scoped::require_current(&self.shared.location, Some(&prepared.scope))?;
         }
         Ok(prepared.scope)
     }
@@ -143,21 +138,18 @@ impl Inner {
             ));
         }
         crate::query_objects::validate_result_bindings(
-            &self.archive,
-            crate::source::Source::of(&self.archive)?,
+            &self.conn,
+            crate::source::Source::of(&self.conn)?,
             object,
         )?;
-        let tx = self.archive.transaction()?;
+        let tx = self.begin()?;
         let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
         crate::query_objects::apply_object(&tx, object, commit_seq)?;
         crate::query_objects::apply_run(&tx, run, commit_seq, 0)?;
         crate::query_objects::apply_run_outcome(&tx, outcome)?;
         if tx.total_changes() != before {
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::QUERY_RECORDS);
-            self.report.transactions += 1;
+            self.commit(tx, commit_seq, Changed::QUERY_RECORDS)?;
         } else {
             tx.rollback()?;
         }
@@ -167,8 +159,8 @@ impl Inner {
     pub(super) fn write_query_object(&mut self, object: &QueryObject) -> Result<()> {
         crate::query_objects::validate_object(object)?;
         crate::query_objects::validate_result_bindings(
-            &self.archive,
-            crate::source::Source::of(&self.archive)?,
+            &self.conn,
+            crate::source::Source::of(&self.conn)?,
             object,
         )?;
         self.persist_query_object(object, None)
@@ -182,17 +174,14 @@ impl Inner {
         object: &QueryObject,
         scope: Option<&crate::ReadScopeToken>,
     ) -> Result<()> {
-        scoped::require_current(&self.location, scope)?;
-        let tx = self.archive.transaction()?;
+        scoped::require_current(&self.shared.location, scope)?;
+        let tx = self.begin()?;
         let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
         crate::query_objects::apply_object(&tx, object, commit_seq)?;
         if tx.total_changes() != before {
-            scoped::require_current(&self.location, scope)?;
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::QUERY_RECORDS);
-            self.report.transactions += 1;
+            scoped::require_current(&self.shared.location, scope)?;
+            self.commit(tx, commit_seq, Changed::QUERY_RECORDS)?;
         } else {
             tx.rollback()?;
         }
@@ -201,15 +190,12 @@ impl Inner {
 
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<()> {
         crate::query_objects::validate_run(run)?;
-        let tx = self.archive.transaction()?;
+        let tx = self.begin()?;
         let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
         crate::query_objects::apply_run(&tx, run, commit_seq, 0)?;
         if tx.total_changes() != before {
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::QUERY_RECORDS);
-            self.report.transactions += 1;
+            self.commit(tx, commit_seq, Changed::QUERY_RECORDS)?;
         } else {
             tx.rollback()?;
         }
@@ -217,15 +203,12 @@ impl Inner {
     }
     pub(super) fn write_query_run_outcome(&mut self, outcome: &QueryRunOutcome) -> Result<()> {
         crate::query_objects::validate_run_outcome(outcome)?;
-        let tx = self.archive.transaction()?;
+        let tx = self.begin()?;
         let before = tx.total_changes();
         crate::query_objects::apply_run_outcome(&tx, outcome)?;
         if tx.total_changes() != before {
-            bump_counter(&tx)?;
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::QUERY_RECORDS);
-            self.report.transactions += 1;
+            let commit_seq = bump_counter(&tx)?;
+            self.commit(tx, commit_seq, Changed::QUERY_RECORDS)?;
         } else {
             tx.rollback()?;
         }

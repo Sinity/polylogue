@@ -307,6 +307,7 @@ fn only_authored_commits_wake_the_rules() {
     };
     let context = operation(&fixture.daemon).unwrap();
     writes
+        .archive()
         .user(context.request("authored-wake".into(), write))
         .unwrap();
     observe.until("authored", |phase| {
@@ -385,6 +386,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     assert_eq!(context.clock.now.as_millisecond(), FIXED);
     observe.deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let outcome = writes
+        .archive()
         .user(context.request("cue:rule".into(), write))
         .unwrap();
     assert!(!outcome.pending);
@@ -571,6 +573,7 @@ fn unavailable_dependencies_keep_the_annotation_pending() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(context.request(
             "asserted:signal".into(),
             UserWrite::Assert {

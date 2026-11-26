@@ -369,7 +369,7 @@ fn live_alternate_reads_use_one_source_snapshot_and_search_the_committed_text() 
             body: "second alternate part".into(),
         },
     ]);
-    archive.writer.user(first).unwrap();
+    archive.writer.archive().user(first).unwrap();
     assert!(before.alternate("first").unwrap().is_none());
     drop(before);
     let reader = pool.reader().unwrap();
@@ -419,6 +419,7 @@ fn live_alternate_reads_use_one_source_snapshot_and_search_the_committed_text() 
     drop(reader);
     archive
         .writer
+        .archive()
         .user(request("second-root", None, "otherword"))
         .unwrap();
     let reader = pool.reader().unwrap();
@@ -436,7 +437,7 @@ fn live_alternate_reads_use_one_source_snapshot_and_search_the_committed_text() 
         unreachable!()
     };
     alternate.source_hash = BlobHash([9; 32]);
-    archive.writer.user(fresh).unwrap();
+    archive.writer.archive().user(fresh).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader

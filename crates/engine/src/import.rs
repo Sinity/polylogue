@@ -222,7 +222,7 @@ impl Engine {
         if group.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let outcomes = self.writer.store_group(group, Arc::clone(&self.blobs))?;
+        let outcomes = self.writer.store_group(group)?;
         self.finish_import_group(metadata, outcomes, report)
     }
 

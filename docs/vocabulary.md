@@ -34,6 +34,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **segment log**: append-only files of compressed frames holding every blob;
   a **segment** is one such file.
 - **blob**: bytes stored under their hash.
+- **byte home**: where blob bytes are kept: the segment log, or a directory
+  of one file per hash. To **put** bytes is to make them durable there and
+  known to the archive; to **open** them is to read a range back.
 - **input**: one file as Polylogue tracks it: one location's history, or one
   imported file.
 - **revision**: one distinct content of an input.
@@ -473,8 +476,13 @@ generated page of the thing they belong to, or on the area page that owns them.
 ## The daemon and its surfaces
 
 - **daemon**: the one process on the archive, the background service; it
-  holds the lock, runs the writer and serves every client.
-- **writer**: the one thread that appends and commits.
+  holds the lock, runs the two writers and serves every client.
+- **archive writer**: the one thread that commits `archive.db`'s record:
+  captured inputs whose bytes are put, authored records and the request log.
+- **index writer**: the one thread that writes `index.db`, from parses of
+  bytes the archive has committed.
+- **position**: `archive.db`'s write counter after a commit; the rows a commit
+  wrote carry it.
 - **stop request**: the one request a process makes to stop, carried by the
   archive it opened; every read, wait and reconstructible write observes it.
   A request's **cancellation** (its client hung up, its stream was dropped) is

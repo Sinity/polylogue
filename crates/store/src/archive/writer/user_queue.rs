@@ -105,6 +105,17 @@ impl UserQueue {
         }
     }
 
+    /// Queues `message` whatever the queue holds: a delivery record is
+    /// accepted without waiting for room.
+    pub(super) fn push_unbounded(&self, message: UserMsg) -> Result<()> {
+        let mut state = self.state.lock().map_err(|_| StoreError::WriterGone)?;
+        if state.closed {
+            return Err(StoreError::WriterGone);
+        }
+        state.waiting.push_back(message);
+        Ok(())
+    }
+
     pub(super) fn waiting(&self) -> usize {
         self.state.locked().waiting.len()
     }

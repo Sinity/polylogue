@@ -383,7 +383,7 @@ impl RolloutCapture {
                 },
             ),
         ));
-        let reply = writer.enqueue_group(group, Arc::clone(blobs))?;
+        let reply = writer.enqueue_group(group)?;
         Ok(Some((
             Captured {
                 previous,

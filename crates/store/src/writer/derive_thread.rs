@@ -193,7 +193,8 @@ impl Worker {
             &mut |write| {
                 #[cfg(any(test, feature = "fixture"))]
                 queue
-                    .dispatch
+                    .archive
+                    .dispatch()
                     .reach(DERIVE_COMPUTED, DispatchPhase::Owned)?;
                 queue.ask(|reply| Msg::DeriveWrite(Box::new(write), reply))
             },
@@ -223,6 +224,13 @@ impl WriterSender {
     /// writer is sent anything, until the pause is released.
     #[cfg(any(test, feature = "fixture"))]
     pub fn pause_derive_for_test(&self) -> DispatchPause {
-        self.pause_user_dispatch_for_test(DERIVE_COMPUTED, DispatchPhase::Owned)
+        self.0
+            .archive
+            .pause_user_dispatch_for_test(DERIVE_COMPUTED, DispatchPhase::Owned)
+    }
+
+    /// Holds the archive writer at `phase` of the user write `id`.
+    pub fn pause_user_dispatch_for_test(&self, id: &str, phase: DispatchPhase) -> DispatchPause {
+        self.0.archive.pause_user_dispatch_for_test(id, phase)
     }
 }

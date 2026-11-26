@@ -604,6 +604,7 @@ fn alternate_true_admits_alternate_text() {
     drop(pool);
     archive
         .writer
+        .archive()
         .user(operator_request(
             "translated".into(),
             UserWrite::Alternate {
@@ -664,6 +665,7 @@ fn alternate_true_admits_alternate_text() {
     let revise = |id: &str, base: &str, body: &str| {
         archive
             .writer
+            .archive()
             .user(operator_request(
                 id.into(),
                 UserWrite::Alternate {
@@ -689,6 +691,7 @@ fn alternate_true_admits_alternate_text() {
     let withdraw = |id: &str, target: &str| {
         archive
             .writer
+            .archive()
             .user(operator_request(
                 id.into(),
                 UserWrite::WithdrawAnnotations {
@@ -1042,6 +1045,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
     archive.write("reader", vec![first.clone()]);
     let note = archive
         .writer
+        .archive()
         .user(operator_request(
             "note-for-reader".into(),
             UserWrite::Assert {
@@ -1079,6 +1083,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         .unwrap();
     archive
         .writer
+        .archive()
         .user(operator_request(
             "mark-reader".into(),
             UserWrite::MarkSeen {
@@ -1124,6 +1129,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
     assert_eq!(count(&archive, "operator", annotations), 0);
     archive
         .writer
+        .archive()
         .user(operator_request(
             "revise-reader-note".into(),
             UserWrite::ReviseAnnotations {
@@ -1173,7 +1179,11 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     )
     .unwrap();
     let object = plan.query_object().unwrap();
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let position = pool.reader().unwrap().change_position().unwrap();
     drop(pool);
@@ -1228,6 +1238,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     };
     archive
         .writer
+        .archive()
         .begin_query_run(expected.clone(), None)
         .unwrap();
     let begun = read(&archive, "runs");
@@ -1253,7 +1264,13 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
         exact: true,
         next: None,
     };
-    drop(archive.writer.finish_query_run(completed.clone()).unwrap());
+    drop(
+        archive
+            .writer
+            .archive()
+            .finish_query_run(completed.clone())
+            .unwrap(),
+    );
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     let finished = read(&archive, "runs where outcome:ok");
     assert_eq!(finished.len(), 1);
@@ -1263,9 +1280,16 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     assert!(read(&archive, "runs where outcome:error").is_empty());
     archive
         .writer
+        .archive()
         .begin_query_run(expected.clone(), None)
         .unwrap();
-    drop(archive.writer.finish_query_run(completed).unwrap());
+    drop(
+        archive
+            .writer
+            .archive()
+            .finish_query_run(completed)
+            .unwrap(),
+    );
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     assert_eq!(
         read(&archive, "runs"),
@@ -1354,6 +1378,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     };
     archive
         .writer
+        .archive()
         .begin_query_run(object_run.clone(), None)
         .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
@@ -1692,6 +1717,7 @@ fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() 
         .unwrap();
     archive
         .writer
+        .archive()
         .user(operator_request(
             "mark-both".into(),
             UserWrite::MarkSeen {

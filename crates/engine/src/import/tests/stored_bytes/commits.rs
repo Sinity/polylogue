@@ -3,7 +3,7 @@ use polylogue_store::fault::{self, Action};
 
 #[test]
 fn interrupted_import_keeps_committed_bytes_across_restart() {
-    for point in ["segment.after_sync", "segment.after_commit"] {
+    for point in ["segment.after_sync", "capture.after_commit"] {
         fault::clear();
         let home = ClaudeHome::new();
         let path = home.dir.path().join("manual.jsonl");
@@ -14,7 +14,7 @@ fn interrupted_import_keeps_committed_bytes_across_restart() {
         );
         std::fs::write(&path, &original).unwrap();
         let hash = hashed_blobs::Hash::of(original.as_bytes());
-        let committed = point == "segment.after_commit";
+        let committed = point == "capture.after_commit";
         {
             let (mut engine, _lock) = engine(&home, 64);
             fault::arm(point, "", Action::Fail, 0, 1);

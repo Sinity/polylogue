@@ -78,13 +78,10 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let mut batch = batch(&source_hash.to_string(), source.len());
     batch.new_blob = Some(NewBlob::whole(source_hash, source.len()));
     let result = writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch,
-                files: vec![source, stray],
-            }],
-            Arc::clone(&store),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch,
+            files: vec![source, stray],
+        }])
         .unwrap();
     assert!(
         result[0].is_err(),
@@ -142,7 +139,7 @@ fn open_releases_encoded_preparations_after_process_death() {
         command
             .args([
                 "--exact",
-                "writer::staging::tests::encoded_preparation_crash_child",
+                "writer::capture::tests::encoded_preparation_crash_child",
                 "--nocapture",
             ])
             .env("POLYLOGUE_ENCODED_PREP_ROOT", directory.path())
@@ -191,9 +188,7 @@ fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
         }
         let late = group[1].files[0].staged_path().to_path_buf();
         std::fs::write(late, b"synthetic damaged encoding").unwrap();
-        let result = writer
-            .store_group(group, Arc::new(archive.blobs().unwrap()))
-            .unwrap();
+        let result = writer.store_group(group).unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(Result::is_err));
         for body in bodies {
@@ -218,9 +213,7 @@ fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
             files: vec![prepared],
         });
     }
-    let results = writer
-        .store_group(group, Arc::new(archive.blobs().unwrap()))
-        .unwrap();
+    let results = writer.store_group(group).unwrap();
     assert!(results.iter().all(Result::is_ok));
     for body in bodies {
         let mut reader = archive
@@ -250,13 +243,10 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     encoded[0] ^= 1;
     std::fs::write(&path, &encoded).unwrap();
     let results = writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: item,
-                files: vec![prepared],
-            }],
-            Arc::new(archive.blobs().unwrap()),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: item,
+            files: vec![prepared],
+        }])
         .unwrap();
     assert!(results[0].is_err());
     assert!(matches!(
@@ -275,13 +265,10 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     let mut item = batch(&prepared.hash().to_string(), prepared.len());
     item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
     let results = control_writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: item,
-                files: vec![prepared],
-            }],
-            Arc::new(control.blobs().unwrap()),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: item,
+            files: vec![prepared],
+        }])
         .unwrap();
     assert!(results[0].is_ok());
     control
@@ -370,6 +357,24 @@ fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
             Err(StoreError::Invalid(_) | StoreError::Internal(_))
         ));
     }
+}
+
+/// Where each batch of a group that only reads stored bytes is, as the
+/// archive writer answers it without writing.
+fn stored_readings(conn: &Connection, group: &[PreparedBatch]) -> Result<Option<Vec<StoredInput>>> {
+    group
+        .iter()
+        .map(|item| {
+            Ok(StoredInput {
+                input: item.batch.input.id.clone(),
+                chain: crate::archive::writer::captured::stored_reading_chain(conn, &item.batch)?,
+                length: item.batch.length,
+                already_stored: true,
+                bytes_written: 0,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 fn validation_steps(revisions: usize) -> usize {

@@ -94,10 +94,9 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(archive.blobs().unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
-            .store_group(linked(&archive, import_id, true), Arc::clone(&store))
+            .store_group(linked(&archive, import_id, true))
             .unwrap();
         assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
     }
@@ -140,7 +139,6 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let store = Arc::new(archive.blobs().unwrap());
     let inner = BlobHash::of(ORIGINAL).to_string();
     let outer = b"synthetic outer container representation";
     let outer_id = BlobHash::of(outer).to_string();
@@ -172,7 +170,7 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
             }),
         ),
     ];
-    let results = writer.store_group(group, store).unwrap();
+    let results = writer.store_group(group).unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     let pool = crate::ReadPool::open(&archive).unwrap();
     let (members, _) = pool.reader().unwrap().unindexed_import_members().unwrap();
@@ -189,12 +187,8 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let blobs = Arc::new(archive.blobs().unwrap());
     let result = writer
-        .store_group(
-            vec![stage(&archive, ORIGINAL, "one", "source", None)],
-            Arc::clone(&blobs),
-        )
+        .store_group(vec![stage(&archive, ORIGINAL, "one", "source", None)])
         .unwrap();
     assert!(result[0].is_ok());
     let mut observed = stage(&archive, ORIGINAL, "two", "copy", None);
@@ -204,9 +198,7 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     };
     observed.batch.new_blob = None;
     observed.files.clear();
-    let result = writer
-        .store_group(vec![observed], Arc::clone(&blobs))
-        .unwrap();
+    let result = writer.store_group(vec![observed]).unwrap();
     assert!(result[0].as_ref().unwrap().already_stored);
     let mut wrong = stage(&archive, ORIGINAL, "three", "wrong", None);
     wrong.batch.change = Change::Observed {
@@ -215,7 +207,7 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     };
     wrong.batch.new_blob = None;
     wrong.files.clear();
-    let result = writer.store_group(vec![wrong], blobs).unwrap();
+    let result = writer.store_group(vec![wrong]).unwrap();
     assert!(matches!(
         &result[0],
         Err(crate::StoreError::Invalid(message)) if message == "observed revision point is not stored"

@@ -18,10 +18,12 @@ fn setup() -> (
 }
 
 fn write(writer: &Writer, write: UserWrite) -> Result<polylogue_model::user::UserOutcome> {
-    writer.user(crate::fixture::authored::operator_request(
-        crate::user_writes::new_request_id(),
-        write,
-    ))
+    writer
+        .archive()
+        .user(crate::fixture::authored::operator_request(
+            crate::user_writes::new_request_id(),
+            write,
+        ))
 }
 
 fn start(writer: &Writer, id: &str, provider: &str) -> polylogue_model::user::UserOutcome {

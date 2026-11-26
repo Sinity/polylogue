@@ -86,7 +86,9 @@ fn a_failed_register_sync_stops_the_daemon_and_names_the_log() {
     };
     let writes = daemon.daemon.writes.as_ref().unwrap();
     // The write commits, its sync fails, and the writer stops before answering.
-    let answer = writes.user(context.request("storage-test".into(), write));
+    let answer = writes
+        .archive()
+        .user(context.request("storage-test".into(), write));
     assert!(
         matches!(answer, Err(polylogue_store::StoreError::WriterGone)),
         "{answer:?}"

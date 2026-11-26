@@ -76,6 +76,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     );
     archive
         .writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: batch.clone(),
             scope: None,
@@ -109,6 +110,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     };
     archive
         .writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: save("changed-alpha", "alpha", "messages"),
             scope: None,
@@ -130,7 +132,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     drop(reader);
     // A retry reuses the committed batch, even after its dependencies change
     // and without a fresh preparation catalog.
-    assert!(archive.writer.user(batch).unwrap().repeat);
+    assert!(archive.writer.archive().user(batch).unwrap().repeat);
 }
 
 #[test]
@@ -142,6 +144,7 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
     assert!(
         archive
             .writer
+            .archive()
             .user(crate::writer::UserSubmission {
                 request: request(
                     "invalid-batch",
@@ -177,11 +180,12 @@ fn missing_preparation_context_refuses_new_writes_only() {
     let archive = test_archive();
     let original = save("saved", "everything", "sessions");
     assert!(matches!(
-        archive.writer.user(original.clone()),
+        archive.writer.archive().user(original.clone()),
         Err(StoreError::ReferenceUnavailable { .. })
     ));
     archive
         .writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: original.clone(),
             scope: None,
@@ -189,9 +193,10 @@ fn missing_preparation_context_refuses_new_writes_only() {
             parent: None,
         })
         .unwrap();
-    assert!(archive.writer.user(original).unwrap().repeat);
+    assert!(archive.writer.archive().user(original).unwrap().repeat);
     archive
         .writer
+        .archive()
         .user(request(
             "ordinary-setting",
             UserWrite::SetSetting {
@@ -210,18 +215,22 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
     let population = plan("sessions", &bindings());
     let missing = save("figure", "total", "sessions | count");
     assert!(matches!(
-        archive.writer.user(crate::writer::UserSubmission {
-            request: missing,
-            scope: None,
-            preparation: Some(context()),
-            parent: None
-        }),
+        archive
+            .writer
+            .archive()
+            .user(crate::writer::UserSubmission {
+                request: missing,
+                scope: None,
+                preparation: Some(context()),
+                parent: None
+            }),
         Err(StoreError::Query(
             polylogue_query::QueryError::Invalid { .. }
         ))
     ));
     archive
         .writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: request(
                 "figure",
@@ -277,6 +286,7 @@ fn kept_names_follow_run_time_and_exact_opaque_ids_stay_addressable() {
         request.at = polylogue_model::Timestamp::from_unix_ms(at).unwrap();
         archive
             .writer
+            .archive()
             .user(crate::writer::UserSubmission {
                 request,
                 scope: None,
@@ -317,6 +327,7 @@ fn kept_names_follow_run_time_and_exact_opaque_ids_stay_addressable() {
         request.at = polylogue_model::Timestamp::from_unix_ms(at).unwrap();
         archive
             .writer
+            .archive()
             .user(crate::writer::UserSubmission {
                 request,
                 scope: None,

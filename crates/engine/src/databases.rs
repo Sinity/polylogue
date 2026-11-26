@@ -233,7 +233,6 @@ struct InputWriter<'a> {
     archive: &'a Archive,
     writer: &'a polylogue_store::WriterSender,
     source: &'a DatabaseInput,
-    blobs: Arc<polylogue_store::blobs::Blobs>,
     length: u64,
     exists: bool,
     staged: Vec<PreparedBatch>,
@@ -259,7 +258,6 @@ impl<'a> InputWriter<'a> {
             archive,
             writer,
             source,
-            blobs: Arc::new(archive.blobs()?),
             length: progress.as_ref().map_or(0, |p| p.length),
             exists: progress.is_some(),
             staged: Vec::new(),
@@ -361,7 +359,7 @@ impl<'a> InputWriter<'a> {
         // The read transaction has completed before the group is written.
         self.acknowledgment = Some(
             self.writer
-                .enqueue_group(std::mem::take(&mut self.staged), Arc::clone(&self.blobs))?,
+                .enqueue_group(std::mem::take(&mut self.staged))?,
         );
         Ok(())
     }
