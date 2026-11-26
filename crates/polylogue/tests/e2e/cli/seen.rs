@@ -39,20 +39,23 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
     let displayed = env
         .command()
         .env("PAGER", "cat")
-        .args([
-            target,
-            "read",
-            "--view",
-            "context",
-            "--at",
-            "claude-code:u2",
-            "--to",
-            "pager",
-        ])
+        .args([target, "read", "--to", "pager"])
         .output()
         .unwrap();
     assert!(displayed.status.success(), "{displayed:?}");
     assert_eq!(count(&env), 1);
+    // What the session appends after the displayed reading is its remainder.
+    let mut capture = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join("home/.claude/projects/-pager/pager.jsonl"))
+        .unwrap();
+    capture
+        .write_all(line("u4", "pager", "fourth marker delta").as_bytes())
+        .unwrap();
+    drop(capture);
+    wait_status(&env, |status| {
+        status["store"]["messages"] == 4 && status["store"]["search_pending"] == 0
+    });
     let after = cli(
         &env,
         &[
@@ -62,7 +65,7 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
     let after = read_page(json(&after));
     let mut text = super::read_current::Items::default();
     text.push(&after);
-    assert_eq!(text.text(), "second marker betathird marker gamma");
+    assert_eq!(text.text(), "fourth marker delta");
     let file_after = dir.path().join("after.json");
     let out = cli(
         &env,
@@ -82,7 +85,7 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
         serde_json::from_slice(&std::fs::read(file_after).unwrap()).unwrap();
     let mut items = super::read_current::Items::default();
     items.push_document(&document);
-    assert_eq!(items.text(), "second marker betathird marker gamma");
+    assert_eq!(items.text(), "fourth marker delta");
     assert_eq!(
         count(&env),
         1,
@@ -99,7 +102,7 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
     items.push(&again);
     assert_eq!(
         items.text(),
-        "second marker betathird marker gamma",
+        "fourth marker delta",
         "export must leave the accepted mark unchanged"
     );
 }
@@ -140,12 +143,18 @@ fn actual_mcp_returned_page_marks_and_from_seen_reads_the_remainder() {
             serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
         read_page(answer.value().unwrap().clone())
     };
-    let first = read(request(
-        json!({"verb":"read", "view":"context", "at":"claude-code:u2", "budget":100000}),
+    // One item a page, until the first message is shown whole; each page
+    // the MCP call returns is displayed.
+    let mut page = read(request(
+        json!({"verb":"read", "budget":1, "hide":["annotations"]}),
     ));
     let mut text = super::read_current::Items::default();
-    text.push(&first);
-    assert_eq!(text.text(), "opening question");
+    text.push(&page);
+    while text.text() != "opening question" {
+        let next = page.document.footer.next.expect("a next page");
+        page = read(next.request);
+        text.push(&page);
+    }
     assert_eq!(count(&env), 1);
     let mut page = read(request(
         json!({"verb":"read", "from":"seen", "budget":100000}),

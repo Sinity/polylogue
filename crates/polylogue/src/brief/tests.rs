@@ -89,7 +89,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let ask = Ask::Recall {
+    let ask = Ask::Words {
         text: "Quokka!".into(),
         cwd: None,
         for_session: None,
@@ -430,7 +430,7 @@ fn recall_pages_continue_by_cursor() {
     let mut cursor = None;
     let mut first_next = None;
     loop {
-        let ask = Ask::Recall {
+        let ask = Ask::Words {
             text: "wombat".into(),
             cwd: None,
             for_session: None,
@@ -466,7 +466,7 @@ fn recall_pages_continue_by_cursor() {
     unique.dedup();
     assert_eq!(unique.len(), 45, "no hit repeats across pages");
     // A cursor belongs to its text.
-    let ask = Ask::Recall {
+    let ask = Ask::Words {
         text: "other".into(),
         cwd: None,
         for_session: None,
@@ -741,7 +741,7 @@ fn takeover_prompt_times_match_records() {
         },
         &SharedScopeIndex::default(),
         &[],
-        &Ask::Takeover {
+        &Ask::Session {
             session: SessionId::parse("codex:synthetic-takeover").unwrap(),
             for_session: None,
         },
@@ -796,7 +796,7 @@ fn named_context_default_budgets_and_tight_budgets_fit() {
     };
     assert_eq!(ask.default_budget_tokens(), 4000);
     assert_eq!(
-        Ask::Takeover {
+        Ask::Session {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
             for_session: None
         }
