@@ -605,12 +605,19 @@ impl Engine {
                     .ok_or_else(|| {
                         EngineError::internal("capture observation time is out of range")
                     })?;
-            if let Err(error) = self.writer.coverage(polylogue_model::capture::Coverage {
-                version: 1,
-                machine: self.config.machine.clone(),
-                observed_at,
-                roots: scan.roots,
-            }) {
+            // With no installed index the walk after the rebuild's install
+            // reports it.
+            let coverage = if self.archive.index_files()?.serves() {
+                self.writer.coverage(polylogue_model::capture::Coverage {
+                    version: 1,
+                    machine: self.config.machine.clone(),
+                    observed_at,
+                    roots: scan.roots,
+                })
+            } else {
+                Ok(())
+            };
+            if let Err(error) = coverage {
                 errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
             (scan.found, scan.unreadable)

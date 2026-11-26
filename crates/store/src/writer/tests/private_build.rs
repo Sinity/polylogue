@@ -233,8 +233,8 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
 }
 
 /// The index writer never writes the rebuild's file. With no installed
-/// index, a write during the rebuild is stored in the archive and refused
-/// for the index with `index_building`; the installed rebuild covers the
+/// index, a write during the rebuild is stored in the archive and its parse
+/// is not written anywhere; the installed rebuild covers the
 /// archive up to the position it started at, and the chain stored after it
 /// is due (docs/architecture.md, Durability: the index file).
 #[test]
@@ -267,8 +267,9 @@ fn a_rebuild_is_private_until_installed_and_reads_answer_its_progress() {
     )
     .unwrap();
     let started_at = rebuild.position();
-    // A write while the rebuild runs: its bytes are stored, its parse is
-    // refused for the index, which does not exist yet.
+    // A write while the rebuild runs: its bytes are stored; its parse has
+    // no index to go into, so nothing of it is written and its chain stays
+    // due.
     let (blob, file) = archive.prepare_blob(&SOURCE_RECORD).unwrap();
     let mut reading = one_message("during-build", "during-build-m", "stored while building");
     reading.new_blob = Some(blob);
@@ -278,10 +279,7 @@ fn a_rebuild_is_private_until_installed_and_reads_answer_its_progress() {
             files: file.into_iter().collect(),
         }])
         .unwrap();
-    assert!(
-        matches!(&stored[..], [Err(StoreError::IndexBuilding(build))] if build.reason == RebuildReason::NoIndex),
-        "{stored:?}"
-    );
+    assert!(matches!(&stored[..], [Ok(_)]), "{stored:?}");
     let pipeline = ReadPool::open(&archive).unwrap();
     assert_eq!(messages(&pipeline), 0);
     assert_eq!(journal_mode(&paths.build), "delete");
@@ -1003,7 +1001,7 @@ fn commits_during_a_rebuild_reach_the_index_after_its_install_and_one_round() {
             writer.send(reading).unwrap();
         }
         let report = writer.flush().unwrap();
-        assert_eq!(report.errors.is_empty(), current, "{:?}", report.errors);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
         rebuild.finish(runs, 0, 2, &writer.sender()).unwrap();
         // The installed rebuild holds what the archive had when it started;
         // what came after is due, and one round of incremental updates

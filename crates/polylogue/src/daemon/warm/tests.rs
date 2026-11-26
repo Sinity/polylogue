@@ -859,7 +859,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
 /// nothing does, so reads are served.
 fn installed(archive: &polylogue_store::Archive) {
     polylogue_store::fixture::install_empty_rebuild(
-        &archive,
+        archive,
         &polylogue_store::Writer::start(archive).unwrap().sender(),
     )
     .unwrap();

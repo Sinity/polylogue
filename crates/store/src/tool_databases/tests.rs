@@ -18,6 +18,8 @@ impl Test {
         Connection::open(&db).unwrap().execute_batch(sql).unwrap();
         let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
         let writer = Writer::start(&archive).unwrap();
+        // A new archive's first index is its empty rebuild, installed.
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         Self {
             observation: Observation {
                 machine: "test-machine".into(),
