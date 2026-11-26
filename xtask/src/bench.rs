@@ -340,8 +340,8 @@ fn year(path: &Path) -> Option<u64> {
 }
 
 /// The draw's candidates: each listed file with its group, and the stratum
-/// of its group (the origin of the group's first file and the year its
-/// newest file was written).
+/// of its group (the origin of the group's own file, nearest the root, and
+/// the year its newest file was written).
 fn candidates(listed: &[Listed]) -> Vec<Candidate> {
     let mut groups: BTreeMap<String, Vec<&Listed>> = BTreeMap::new();
     let mut alone = Vec::new();
@@ -358,9 +358,15 @@ fn candidates(listed: &[Listed]) -> Vec<Candidate> {
         .flat_map(|(group, mut files)| {
             files.sort_by(|a, b| a.layout.cmp(&b.layout));
             let year = files.iter().filter_map(|f| year(&f.path)).max();
+            // The session's own file is the one nearest the root.
+            let origin = &files
+                .iter()
+                .min_by_key(|f| f.layout.components().count())
+                .expect("a group has a file")
+                .origin;
             let stratum = match year {
-                Some(year) => format!("{}@{year}", files[0].origin),
-                None => files[0].origin.clone(),
+                Some(year) => format!("{origin}@{year}"),
+                None => origin.clone(),
             };
             files
                 .into_iter()

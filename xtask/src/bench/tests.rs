@@ -104,11 +104,8 @@ fn a_session_is_grouped_with_its_subagents_and_tool_results() {
     assert_eq!(
         groups,
         [
-            (
-                ".claude/projects/-w/s1.jsonl".into(),
-                s1.clone(),
-                "claude-code".into()
-            ),
+            // Paths order by component, so a session's directory comes
+            // before its own file.
             (
                 ".claude/projects/-w/s1/subagents/agent-a.jsonl".into(),
                 s1.clone(),
@@ -116,6 +113,11 @@ fn a_session_is_grouped_with_its_subagents_and_tool_results() {
             ),
             (
                 ".claude/projects/-w/s1/tool-results/t1.txt".into(),
+                s1.clone(),
+                "claude-code".into()
+            ),
+            (
+                ".claude/projects/-w/s1.jsonl".into(),
                 s1,
                 "claude-code".into()
             ),
