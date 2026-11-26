@@ -48,25 +48,25 @@ fn chains_behind() -> String {
     use crate::source::{IMPORT_FORMAT, IMPORT_FORMAT_ORDER, STATES_IMPORT_FORMAT};
     format!(
         r#"first_paths AS MATERIALIZED (
-                SELECT input, min(rowid) AS observation
+                SELECT input, min(id) AS observation
                 FROM observations GROUP BY input
             ), formats AS (
-                SELECT o.input, o.path, o.path_bytes, {IMPORT_FORMAT} AS format,
+                SELECT o.input, o.path_bytes, {IMPORT_FORMAT} AS format,
                     row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
                 FROM observations o WHERE {STATES_IMPORT_FORMAT}
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
                 COALESCE(f.format, i.format) AS format,
-                COALESCE(f.path, o.path),
+                COALESCE(f.path_bytes, o.path_bytes),
                 COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
-                CASE WHEN f.path IS NOT NULL THEN f.path_bytes ELSE o.path_bytes END
+                COALESCE(f.path_bytes, o.path_bytes)
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
             LEFT JOIN first_paths fp ON fp.input = c.input
-            LEFT JOIN observations o ON o.rowid = fp.observation
+            LEFT JOIN observations o ON o.id = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE (c.length > 0
@@ -95,12 +95,12 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
     let (revisions, observations) = if selected {
         (
             "SELECT r.* FROM chosen CROSS JOIN source_revision r ON r.input=chosen.input",
-            "SELECT o.rowid,o.* FROM chosen CROSS JOIN source_observation o ON o.input=chosen.input",
+            "SELECT o.* FROM chosen CROSS JOIN source_observation o ON o.input=chosen.input",
         )
     } else {
         (
             "SELECT * FROM source_revision",
-            "SELECT rowid,* FROM source_observation",
+            "SELECT * FROM source_observation",
         )
     };
     // Keep the selected chain lengths once: flattening the current-chain MAX
@@ -293,7 +293,9 @@ impl Reader<'_> {
                 current: row.get(3)?,
                 source: StoredSource {
                     format: origin,
-                    path: row.get(6)?,
+                    path: row
+                        .get::<_, Option<Vec<u8>>>(6)?
+                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
                     path_bytes: row.get(15)?,
                 },
                 reading_changed,

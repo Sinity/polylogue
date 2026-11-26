@@ -317,7 +317,7 @@ fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
     // states. Their parser diagnosis must not require full byte coverage.
     for (number, chain, length) in [(1, 1, 0), (2, 2, 100), (3, 2, 200), (4, 4, 10)] {
         conn.execute(
-            "INSERT INTO revision VALUES ('input',?1,'rewritten',?2,?3,1)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',?1,'rewritten',?2,?3,1)",
             params![number, chain, length],
         )
         .unwrap();
@@ -383,7 +383,7 @@ fn validation_steps(revisions: usize) -> usize {
         let tx = conn.transaction().unwrap();
         for number in 1..=revisions {
             tx.execute(
-                "INSERT INTO revision VALUES ('input',?1,'appended',1,?1,1)",
+                "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',?1,'appended',1,?1,1)",
                 [number as i64],
             )
             .unwrap();

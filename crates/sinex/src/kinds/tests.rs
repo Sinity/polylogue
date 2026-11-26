@@ -310,6 +310,7 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
             input: "input-a".into(),
             origin: "codex".into(),
             revision: None,
+            chain: None,
             extents: vec![polylogue_store::input_rows::Extent {
                 chain: 1,
                 offset: 0,

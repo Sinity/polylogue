@@ -73,3 +73,35 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     assert_eq!(st.chain, Some(1));
     assert_eq!(plan.parse_pos, stored.len() as u64);
 }
+
+/// A file that comes back holding fewer bytes than its chain, each equal to
+/// the stored byte at its place, is observed back with the length it holds,
+/// and starts no chain (docs/archive.md, stored inputs).
+#[test]
+fn a_shorter_equal_file_is_observed_back_and_starts_no_chain() {
+    let first = claude_user("u1", "back", "stored body");
+    let second = claude_user("u2", "back", "more stored body");
+    let home = ClaudeHome::new();
+    home.append("back.jsonl", &first);
+    home.append("back.jsonl", &second);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let path = home.file("back.jsonl");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, &first).unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    engine.writer().flush_rows().unwrap();
+    assert_eq!(
+        home.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+        1
+    );
+    assert_eq!(
+        home.count(&format!(
+            "SELECT count(*) AS n FROM a.observation WHERE class = 'back' AND revision IS NULL
+               AND chain = 1 AND length = {}",
+            first.len()
+        )),
+        1
+    );
+}

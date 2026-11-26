@@ -473,7 +473,10 @@ impl Engine {
         };
         Ok(RolloutStep::Capture(Box::new(RolloutCapture {
             path: path.clone(),
-            input: format!("codex:rollout:{session_id}"),
+            input: polylogue_sources::origin::InputIdentity::provider_named(
+                &format!("codex:rollout:{session_id}"),
+                &self.config.machine,
+            ),
             priority,
             found_origin: found.origin,
             facts,

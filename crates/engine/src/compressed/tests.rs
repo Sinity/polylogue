@@ -25,7 +25,10 @@ fn moved_and_reencoded_rollouts_share_one_input() {
     let (mut e, lock) = engine(&w, 64);
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
-    assert_eq!(captured(&e, "codex:rollout:same-native"), bytes.as_bytes());
+    assert_eq!(
+        captured(&e, "codex:rollout:same-native@test-machine"),
+        bytes.as_bytes()
+    );
     let sessions = polylogue_model::SessionId::parse("codex:same-native").unwrap();
     assert_eq!(
         e.reads
@@ -55,7 +58,7 @@ fn moved_and_reencoded_rollouts_share_one_input() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:same-native'"),
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:same-native@test-machine'"),
         1
     );
     assert_eq!(
@@ -68,7 +71,10 @@ fn moved_and_reencoded_rollouts_share_one_input() {
     let (mut e, _lock) = engine(&w, 64);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert_eq!(captured(&e, "codex:rollout:same-native"), bytes.as_bytes());
+    assert_eq!(
+        captured(&e, "codex:rollout:same-native@test-machine"),
+        bytes.as_bytes()
+    );
 }
 
 #[test]
@@ -94,7 +100,7 @@ fn appended_rollout_extends_chain_but_corrupt_does_not() {
         appended.bytes_stored,
         b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n".len() as u64
     );
-    assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-native'"),1);
+    assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-native@test-machine'"),1);
     std::fs::write(dir.join("rollout-corrupt.jsonl.zst"), b"not zstd").unwrap();
     let before = w.count("SELECT count(*) AS n FROM a.input");
     let p = e.run_pass().unwrap();
@@ -114,7 +120,7 @@ fn a_large_compressed_record_has_no_decoded_size_cap() {
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
     assert_eq!(
-        captured(&e, "codex:rollout:large-native"),
+        captured(&e, "codex:rollout:large-native@test-machine"),
         header.as_bytes()
     );
 }
@@ -150,10 +156,10 @@ fn stale_alias_keeps_old_revision_and_the_input() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native@test-machine'"),
         2
     );
-    let rows=e.reads.reader().unwrap().query("SELECT revision,length FROM a.observation WHERE input='codex:rollout:alias-native' ORDER BY rowid DESC LIMIT 1",&[]).unwrap();
+    let rows=e.reads.reader().unwrap().query("SELECT revision,length FROM a.observation WHERE input='codex:rollout:alias-native@test-machine' ORDER BY id DESC LIMIT 1",&[]).unwrap();
     assert_eq!(rows[0]["revision"], 1);
     assert_eq!(rows[0]["length"], original.len() as u64);
     std::fs::write(
@@ -167,7 +173,7 @@ fn stale_alias_keeps_old_revision_and_the_input() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:alias-native@test-machine'"),
         2
     );
     let id = polylogue_model::SessionId::parse("codex:alias-native").unwrap();
@@ -189,7 +195,7 @@ fn stale_alias_keeps_old_revision_and_the_input() {
     .unwrap();
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:alias-native'"),2);
+    assert_eq!(w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:alias-native@test-machine'"),2);
 }
 
 #[test]
@@ -235,7 +241,7 @@ fn equal_decoded_read_keeps_its_body_without_a_revision() {
         .unwrap();
     assert_eq!(body, whole);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:body-native'"),
+        w.count("SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:body-native@test-machine'"),
         2
     );
 }
@@ -265,13 +271,16 @@ fn codex_compressing_a_plain_rollout_in_place_keeps_one_input_and_its_newer_tail
     std::fs::remove_file(&plain).unwrap();
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert_eq!(captured(&e, "codex:rollout:in-place-native"), whole);
+    assert_eq!(
+        captured(&e, "codex:rollout:in-place-native@test-machine"),
+        whole
+    );
     assert_eq!(
         captured(&e, blake3::hash(&encoded).to_hex().as_ref()),
         encoded
     );
     assert_eq!(
-        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:in-place-native'"),
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:in-place-native@test-machine'"),
         1
     );
     let id = polylogue_model::SessionId::parse("codex:in-place-native").unwrap();
@@ -301,7 +310,10 @@ fn a_rollout_written_as_several_zstd_frames_decodes_across_every_frame() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let whole: Vec<u8> = head.bytes().chain(tail.iter().copied()).collect();
-    assert_eq!(captured(&e, "codex:rollout:multi-frame-native"), whole);
+    assert_eq!(
+        captured(&e, "codex:rollout:multi-frame-native@test-machine"),
+        whole
+    );
     assert_eq!(
         captured(&e, blake3::hash(&encoded).to_hex().as_ref()),
         encoded
@@ -326,7 +338,7 @@ fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() 
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        captured(&e, "codex:rollout:truncated-native"),
+        captured(&e, "codex:rollout:truncated-native@test-machine"),
         bytes.as_bytes()
     );
 }
@@ -350,7 +362,7 @@ fn rollout_without_session_meta_grows_one_input() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        captured(&e, "codex:rollout:grow-native"),
+        captured(&e, "codex:rollout:grow-native@test-machine"),
         complete.as_bytes()
     );
     let mut file = std::fs::OpenOptions::new()
@@ -363,7 +375,7 @@ fn rollout_without_session_meta_grows_one_input() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(inputs(&w), before + 1);
     assert_eq!(
-        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:grow-native'"),
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:grow-native@test-machine'"),
         1
     );
 }
@@ -463,7 +475,7 @@ fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
         first.len() + appended.len()
     );
     assert_eq!(
-        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-cost'"),
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-cost@test-machine'"),
         1
     );
     let whole = ClaudeHome::new();
@@ -497,11 +509,37 @@ fn a_rollout_rewritten_in_place_and_grown_is_not_an_append() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:rewrite-tail'"),
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:rewrite-tail@test-machine'"),
         2
     );
     let texts = texts(&e, "codex:rewrite-tail");
     assert_eq!(texts.len(), 42);
     assert!(texts.iter().any(|text| text == "ANSWER 39"), "{texts:?}");
     assert!(!texts.iter().any(|text| text == "answer 39"), "{texts:?}");
+}
+
+/// No two machines write chains of one input: every origin names its inputs
+/// by the machine and the location, by its own ID with the machine, or by
+/// the bytes alone (docs/archive.md, stored inputs).
+#[test]
+fn every_input_identity_contains_its_machine_or_is_its_content_hash() {
+    use polylogue_sources::origin::{InputIdentity, ORIGINS};
+    let path = std::path::Path::new("/home/op/.codex/sessions/rollout.jsonl");
+    for origin in ORIGINS {
+        match origin.input_identity {
+            InputIdentity::Location => assert_ne!(
+                crate::location_id("machine-one", path),
+                crate::location_id("machine-two", path),
+                "{}",
+                origin.name
+            ),
+            InputIdentity::ProviderId => {
+                let one = InputIdentity::provider_named("codex:rollout:session", "machine-one");
+                let two = InputIdentity::provider_named("codex:rollout:session", "machine-two");
+                assert_ne!(one, two, "{}", origin.name);
+                assert!(one.ends_with("@machine-one"), "{one}");
+            }
+            InputIdentity::Content => {}
+        }
+    }
 }

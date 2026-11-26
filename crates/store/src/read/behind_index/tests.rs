@@ -21,7 +21,7 @@ fn expected(
         source: StoredSource {
             format: source.0.into(),
             path: source.1.map(str::to_owned),
-            path_bytes: None,
+            path_bytes: source.1.map(|path| path.as_bytes().to_vec()),
         },
         progress: ChainProgress {
             chain,
@@ -41,22 +41,22 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch(
         "INSERT INTO input VALUES ('z','fallback'),('a','fallback'),('b','native'),('c','native');
-         INSERT INTO revision VALUES
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES
            ('a',1,'imported',1,20,1),('a',2,'rewritten',2,90,2),
            ('a',3,'rewritten',3,30,3),('a',4,'appended',2,40,4),
            ('a',5,'rewritten',5,50,5),('a',6,'rewritten',6,0,6),
            ('a',7,'appended',1,15,7),
            ('b',1,'first',1,10,1),('c',1,'imported',1,10,1),
            ('z',1,'imported',1,10,1);
-         INSERT INTO observation(id,input,machine,path,class,details_json,polylogue_version,seen_at) VALUES
-           ('first','z','m','/home/op/first','first','{}','test',99),
-           ('later','z','m','/home/op/later','first','{}','test',1),
-           ('invalid','z','m','/home/op/invalid','imported','invalid','test',2),
-           ('nontext','z','m','/home/op/nontext','imported','{\"import_format\":7}','test',3),
-           ('old-format','a','m','/home/op/old','imported','{\"import_format\":\"old\"}','test',99),
-           ('format','a','m','/home/op/format','imported','{\"import_format\":\"codex-rollout\"}','test',1),
-           ('export','a','m','/home/op/export','imported','{\"import_format\":\"export-file\"}','test',100),
-           ('export-only','c','m','/home/op/export-only','imported','{\"import_format\":\"export-file\"}','test',1);"
+         INSERT INTO observation(id,input,machine,path_bytes,class,details_json,polylogue_version,seen_at) VALUES
+           ('01-first','z','m', CAST('/home/op/first' AS BLOB),'first','{}','test',99),
+           ('02-later','z','m', CAST('/home/op/later' AS BLOB),'first','{}','test',1),
+           ('03-invalid','z','m', CAST('/home/op/invalid' AS BLOB),'imported','invalid','test',2),
+           ('04-nontext','z','m', CAST('/home/op/nontext' AS BLOB),'imported','{\"import_format\":7}','test',3),
+           ('05-old-format','a','m', CAST('/home/op/old' AS BLOB),'imported','{\"import_format\":\"old\"}','test',99),
+           ('06-format','a','m', CAST('/home/op/format' AS BLOB),'imported','{\"import_format\":\"codex-rollout\"}','test',1),
+           ('07-export','a','m', CAST('/home/op/export' AS BLOB),'imported','{\"import_format\":\"export-file\"}','test',100),
+           ('08-export-only','c','m', CAST('/home/op/export-only' AS BLOB),'imported','{\"import_format\":\"export-file\"}','test',1);"
     ).unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
@@ -134,13 +134,13 @@ fn history_work(revisions: usize) -> usize {
     let chains = revisions / 4;
     for number in 1..=revisions {
         tx.execute(
-            "INSERT INTO revision VALUES ('synthetic',?1,'appended',?2,?1,?1)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('synthetic',?1,'appended',?2,?1,?1)",
             params![number as i64, ((number - 1) % chains + 1) as i64],
         )
         .unwrap();
         tx.execute(
-            "INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at)
-             VALUES (?1,'synthetic','m','/home/op/session.jsonl','appended','test',?2)",
+            "INSERT INTO observation(id,input,machine,path_bytes,class,polylogue_version,seen_at)
+             VALUES (?1,'synthetic','m', CAST('/home/op/session.jsonl' AS BLOB),'appended','test',?2)",
             params![number.to_string(), (revisions - number) as i64],
         )
         .unwrap();
@@ -210,7 +210,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     archive
         .execute_batch(
             "INSERT INTO input VALUES ('metadata','no-parser');
-        INSERT INTO revision VALUES ('metadata',1,'first',1,100,1);",
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('metadata',1,'first',1,100,1);",
         )
         .unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
@@ -237,7 +237,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     archive
         .execute(
-            "INSERT INTO revision VALUES ('metadata',2,'appended',1,140,2)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('metadata',2,'appended',1,140,2)",
             [],
         )
         .unwrap();
@@ -279,7 +279,7 @@ fn stopped_selection_uses_its_attempt_even_after_a_full_length_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
-    archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
+    archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     let attempt = polylogue_model::batch::StoppedAttempt {
         executable: polylogue_model::BlobHash::of(b"first program"),
@@ -332,9 +332,9 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch(
         "INSERT INTO input VALUES ('a','native'),('b','native'),('c','native');
-         INSERT INTO revision VALUES ('a',1,'first',1,10,1),('a',2,'rewritten',2,20,2),('b',1,'first',1,30,3),('c',1,'first',1,40,4);
-         INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES
-         ('a','a','m','/home/op/a','first','test',30),('b','b','m','/home/op/b','first','test',40),('c','c','m','/home/op/c','first','test',20);"
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('a',1,'first',1,10,1),('a',2,'rewritten',2,20,2),('b',1,'first',1,30,3),('c',1,'first',1,40,4);
+         INSERT INTO observation(id,input,machine,path_bytes,class,polylogue_version,seen_at) VALUES
+         ('a','a','m', CAST('/home/op/a' AS BLOB),'first','test',30),('b','b','m', CAST('/home/op/b' AS BLOB),'first','test',40),('c','c','m', CAST('/home/op/c' AS BLOB),'first','test',20);"
     ).unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
@@ -408,13 +408,13 @@ fn selected_history_work(unselected: usize) -> usize {
             .unwrap();
         for revision in 1..=4 {
             tx.execute(
-                "INSERT INTO revision VALUES (?1,?2,'appended',1,?2,?2)",
+                "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES (?1,?2,'appended',1,?2,?2)",
                 params![input, revision],
             )
             .unwrap();
             tx.execute(
-                "INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at)
-                VALUES (?1,?2,'m','/home/op/input','first','test',?3)",
+                "INSERT INTO observation(id,input,machine,path_bytes,class,polylogue_version,seen_at)
+                VALUES (?1,?2,'m', CAST('/home/op/input' AS BLOB),'first','test',?3)",
                 params![format!("{input}-{revision}"), input, revision],
             )
             .unwrap();
@@ -483,13 +483,13 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch(
         "INSERT INTO input VALUES ('native','claude-code'),('manual','export-file'),('fallback','export-file');
-         INSERT INTO revision VALUES ('native',1,'first',1,10,1),('manual',1,'imported',1,10,2),('fallback',1,'imported',1,10,3);
-         INSERT INTO observation(id,input,machine,path,path_bytes,class,details_json,polylogue_version,seen_at) VALUES
-           ('native','native','m','/display/session.jsonl',X'2f6e61746976652fff2e6a736f6e6c','first','{}','test',1),
-           ('first','manual','m','/first.json',X'2f66697273742e6a736f6e','first','{}','test',1),
-           ('selected','manual','m','/selected.json',X'2f73656c65637465642e6a736f6e','imported','{\"import_format\":\"claude-export\"}','test',2),
-           ('first-fallback','fallback','m','/fallback.json',X'2f66616c6c6261636b2e6a736f6e','first','{}','test',1),
-           ('no-native','fallback','m','/selected-without-bytes.json',NULL,'imported','{\"import_format\":\"claude-export\"}','test',2);"
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('native',1,'first',1,10,1),('manual',1,'imported',1,10,2),('fallback',1,'imported',1,10,3);
+         INSERT INTO observation(id,input,machine,path_bytes,class,details_json,polylogue_version,seen_at) VALUES
+           ('native','native','m',X'2f6e61746976652fff2e6a736f6e6c','first','{}','test',1),
+           ('first','manual','m',X'2f66697273742e6a736f6e','first','{}','test',1),
+           ('selected','manual','m',X'2f73656c65637465642e6a736f6e','imported','{\"import_format\":\"claude-export\"}','test',2),
+           ('first-fallback','fallback','m',X'2f66616c6c6261636b2e6a736f6e','first','{}','test',1),
+           ('no-native','fallback','m',CAST('/selected-without-bytes.json' AS BLOB),'imported','{\"import_format\":\"claude-export\"}','test',2);"
     ).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -506,9 +506,10 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
             )
             .unwrap();
         let source = |id| &rows.iter().find(|row| row.input == id).unwrap().source;
+        // The path shown is the bytes read, as text.
         assert_eq!(
             source("native").path.as_deref(),
-            Some("/display/session.jsonl")
+            Some("/native/\u{fffd}.jsonl")
         );
         assert_eq!(
             source("native").path_bytes.as_deref(),
@@ -523,7 +524,10 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
             source("fallback").path.as_deref(),
             Some("/selected-without-bytes.json")
         );
-        assert_eq!(source("fallback").path_bytes.as_deref(), None);
+        assert_eq!(
+            source("fallback").path_bytes.as_deref(),
+            Some(b"/selected-without-bytes.json".as_slice())
+        );
         assert_eq!(source("fallback").format, "claude-export");
     }
 }

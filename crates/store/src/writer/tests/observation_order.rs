@@ -6,13 +6,13 @@ fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
         capture_read: None,
         input: b.input.id.clone(),
         origin: b.input.format.clone(),
+        chain: None,
         revision: None,
         extents: Vec::new(),
         observation: crate::archive::writer::captured::observation(
             tx,
             b,
-            "deleted",
-            None,
+            crate::input_rows::Seen::Deleted,
             seq,
             &std::collections::BTreeSet::new(),
         )
@@ -35,12 +35,13 @@ fn the_latest_observation_is_the_last_inserted_despite_earlier_times() {
         let observation = b.observation.as_mut().unwrap();
         observation.seen_at_ms = at;
         observation.path = format!("location-{at}");
+        observation.path_bytes = format!("location-{at}").into_bytes();
         observe(&tx, &b, seq);
     }
     tx.commit().unwrap();
     assert_eq!(
         db.query_row(
-            "SELECT path FROM observation ORDER BY rowid DESC LIMIT 1",
+            "SELECT CAST(path_bytes AS TEXT) FROM observation ORDER BY id DESC LIMIT 1",
             [],
             |r| r.get::<_, String>(0)
         )
@@ -72,12 +73,12 @@ fn independent_archives_cannot_assign_the_same_observation_identity() {
         );
         coordinates.push(
             db.query_row(
-                "SELECT commit_seq,rowid,input,path FROM observation",
+                "SELECT commit_seq,substr(id,1,33),input,CAST(path_bytes AS TEXT) FROM observation",
                 [],
                 |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                     ))

@@ -14,11 +14,11 @@ fn history(count: i64) -> (tempfile::TempDir, Fixture) {
     for number in 1..=count {
         let produced = if number == 1 { "first" } else { "appended" };
         tx.execute(
-            "INSERT INTO revision VALUES('source',?1,?2,1,?1,?1)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('source',?1,?2,1,?1,?1)",
             params![number, produced],
         )
         .unwrap();
-        tx.execute("INSERT INTO observation(id,input,machine,path,class,revision,length,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at) VALUES(?1,'source','synthetic','/source',?4,?2,?2,1,1,?2,?2,?2,'test',?3)", params![format!("observation-{number}"),number,count-number,produced]).unwrap();
+        tx.execute("INSERT INTO observation(id,input,machine,path_bytes,class,revision,length,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at,commit_seq) VALUES(?1,'source','synthetic', CAST('/source' AS BLOB),?4,?2,?2,1,1,?2,?2,?2,'test',?3,?2)", params![format!("{number:016x}-observation"),number,count-number,produced]).unwrap();
     }
     for (input, produced, length) in [
         ("imported", "imported", 9000),
@@ -26,15 +26,12 @@ fn history(count: i64) -> (tempfile::TempDir, Fixture) {
         ("other", "first", 7000),
     ] {
         tx.execute(
-            "INSERT INTO revision VALUES(?1,1,?2,1,?3,1)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES(?1,1,?2,1,?3,1)",
             params![input, produced, length],
         )
         .unwrap();
     }
-    tx.execute_batch("INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES ('import','imported','synthetic','/source','imported','test',1), ('gone','gone','synthetic','/gone','deleted','test',3), ('other','other','elsewhere','/source','first','test',4)").unwrap();
-    // Synthetic fixture paths have explicit UTF-8 path bytes.
-    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
-        .unwrap();
+    tx.execute_batch("INSERT INTO observation(id,input,machine,path_bytes,class,polylogue_version,seen_at,commit_seq) VALUES ('ffffffffffffff01-import','imported','synthetic', CAST('/source' AS BLOB),'imported','test',1,1), ('ffffffffffffff02-gone','gone','synthetic', CAST('/gone' AS BLOB),'deleted','test',3,1), ('ffffffffffffff03-other','other','elsewhere', CAST('/source' AS BLOB),'first','test',4,1)").unwrap();
     tx.commit().unwrap();
     (dir, fixture)
 }

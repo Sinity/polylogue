@@ -701,10 +701,7 @@ impl Engine {
         let known: Vec<KnownInput> = reader.known_watched_inputs(&self.config.machine)?;
         drop(reader);
         for mut k in known {
-            let Some(path_bytes) = k.path_bytes.take() else {
-                // Historical display text cannot identify a raw path.
-                continue;
-            };
+            let path_bytes = std::mem::take(&mut k.path_bytes);
             use std::os::unix::ffi::OsStringExt;
             let path = PathBuf::from(std::ffi::OsString::from_vec(path_bytes));
             self.adopt_watched_input(&path, k);

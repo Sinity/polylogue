@@ -23,7 +23,7 @@ pub(crate) fn source(
          WHERE o.input=?1 AND o.commit_seq>0 AND coalesce(o.chain,r.chain)=?2 AND coalesce(o.length,r.length)=0
            AND (?3 IS NULL OR o.id=?3)
            AND EXISTS(SELECT 1 FROM {prefix}revision v WHERE v.input=o.input AND v.chain=?2 AND v.length=0 AND v.commit_seq>0)
-         ORDER BY o.commit_seq DESC,o.rowid DESC"
+         ORDER BY o.id DESC"
     ))?;
     let mut rows = query.query(params![input, chain, observation])?;
     while let Some(row) = rows.next()? {

@@ -1,4 +1,6 @@
--- The write counter (key 'write_counter'), incremented once per transaction.
+-- The write counter (key 'write_counter'), incremented once per transaction,
+-- and the archive's identity (key 'archive_id': 32 hex digits, random, written
+-- once when the file is created), which every index of this archive records.
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 
 -- Machines by /etc/machine-id, with every host name seen with each.
@@ -12,8 +14,9 @@ CREATE TABLE machine (
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
--- The committed end of each append-only segment. Bytes after it are an
--- uncommitted tail, removed by the ordinary writer-open path.
+-- The committed end of each append-only segment, recorded by the put that
+-- appended up to it. Bytes after it are the tail of a put a crash stopped,
+-- cut when the segment opens (bytes/segments.rs).
 CREATE TABLE segment (
   name          TEXT PRIMARY KEY,
   committed_end INTEGER NOT NULL CHECK(committed_end >= 0)
@@ -31,7 +34,8 @@ CREATE TABLE blob (
 CREATE TABLE input (
   id            TEXT PRIMARY KEY,        -- named as its origin declares (InputIdentity): a location is the first
                                          -- 32 hex digits of BLAKE3(machine, 0x00, real path bytes); a Codex rollout
-                                         -- is 'codex:rollout:<session id>'; an imported file is its full hex BLAKE3
+                                         -- is 'codex:rollout:<session id>@<machine>'; an imported file is its full
+                                         -- hex BLAKE3
   format        TEXT NOT NULL            -- the origin's name: 'claude-code', 'codex', 'chatgpt', ...
                                          -- (when it was first seen is a query over its observations, so an input
                                          --  named by content is the same row on every machine)
@@ -44,14 +48,32 @@ CREATE TABLE input (
 CREATE TABLE revision (
   input         TEXT NOT NULL REFERENCES input(id),
   number        INTEGER NOT NULL,        -- 1, 2, ... in order observed
-  produced      TEXT NOT NULL,           -- first (a location's first revision) | imported | appended | rewritten
+  produced      TEXT NOT NULL CHECK (produced IN (@names(Produced))),
+                                         -- first (a location's first revision) | imported | appended | rewritten
   chain         INTEGER NOT NULL,        -- the revision that started this revision chain (itself for first,
                                          --   imported and rewritten revisions)
   length        INTEGER NOT NULL,        -- of the revision's full bytes
+  seen_at       INTEGER,                 -- Polylogue's clock when its bytes were read; NULL: unknown
+  mtime_ns      INTEGER, ctime_ns INTEGER, -- the file's times at that read; NULL for bytes no file holds
   commit_seq    INTEGER NOT NULL,        -- the write counter at the insert
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_commit_seq ON revision(commit_seq);
+
+-- One row for each chain, written with its first revision: the earlier chain
+-- of the same input whose bytes it begins like for longest (the newest of
+-- equals; NULL when it agrees with none) and through which byte, as compared
+-- when it was stored. Insert-only. How far any two chains of an input agree
+-- is at least the smallest agreement on the path between them.
+CREATE TABLE chain (
+  input         TEXT NOT NULL,
+  number        INTEGER NOT NULL,        -- the revision number that started it
+  begins_like   INTEGER,
+  agrees_to     INTEGER NOT NULL DEFAULT 0 CHECK (agrees_to >= 0),
+  commit_seq    INTEGER NOT NULL,
+  PRIMARY KEY (input, number),
+  FOREIGN KEY (input, number) REFERENCES revision(input, number)
+) STRICT, WITHOUT ROWID;
 
 -- Where bytes come from: ranges of blobs placed at offsets in a revision chain
 -- (appends share their chain's extents; a revision reads the extents covering
@@ -64,45 +86,40 @@ CREATE TABLE extent (
   blob          BLOB NOT NULL REFERENCES blob(hash),
   blob_offset   INTEGER NOT NULL,
   commit_seq    INTEGER NOT NULL,
-  capture_read   BLOB,                    -- receiver capture_read evidence
   PRIMARY KEY (input, chain, offset),
   FOREIGN KEY (input, chain) REFERENCES revision(input, number)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX extent_blob ON extent(blob);
 
--- Each observation that found something (any class but unchanged). Insert-only.
--- The record of which input a path belongs to;
--- locations, first_seen, source:gone and message.first_seen are queries over it.
--- An input's latest observation is the last one inserted locally (the largest
--- rowid), not the largest seen_at: two changes found in one round share a
--- seen_at. Like commit_seq, that order is local and never compared
--- across archives. Its location is the path of its latest observation at a
--- location path: a filesystem path, 'drive:<file id>' (a Drive file) or
--- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads).
--- The current chain of an input
--- is the chain of the revision its location's latest observation produced or
--- confirmed, for every kind of location.
+-- Each time an input was found at a location, as the location changed: its
+-- first revision there, an import, a rewrite, an append found at another
+-- location than the last, its return holding stored bytes, or its
+-- disappearance. An append at the location the input was last observed at
+-- writes no observation; its revision records it. Insert-only. An input's
+-- latest observation is the one with the largest id (ids begin with the write
+-- counter and an ordinal in fixed-width hex). Its location is the path bytes
+-- of its latest observation: a filesystem path, 'drive:<file id>' (a Drive
+-- file) or 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the
+-- collector reads). The current chain of an input is the chain of the revision
+-- its location's latest observation produced or confirmed.
 CREATE TABLE observation (
-  id            TEXT PRIMARY KEY,        -- opaque observation identity
+  id            TEXT PRIMARY KEY,        -- write counter, ordinal, UUID and input
   input         TEXT NOT NULL REFERENCES input(id),
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
-  path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
-                                         --   or 'capture:<id>'
-  class         TEXT NOT NULL,           -- first | appended | rewritten | deleted | back | imported
-  revision      INTEGER,                 -- exact revision endpoint produced or confirmed
-  chain         INTEGER,                 -- proven prefix only: revision NULL, length is observed bytes
-  length        INTEGER,                 -- actual observed byte length
+  class         TEXT NOT NULL CHECK (class IN (@names(ObservationClass))),
+  revision      INTEGER,                 -- the revision it stored or found again
+  chain         INTEGER,                 -- back holding a prefix: the chain, with no revision
+  length        INTEGER,                 -- the length of that revision or prefix when observed
   device        INTEGER, inode INTEGER, size INTEGER,
   mtime_ns      INTEGER, ctime_ns INTEGER,
   details_json  TEXT,                    -- imported: the import member it was read as, and its format
   polylogue_version TEXT NOT NULL,
   seen_at       INTEGER NOT NULL,        -- Polylogue's clock
   commit_seq    INTEGER NOT NULL DEFAULT 0,
-  path_bytes    BLOB                      -- exact acquired location; NULL is historical missing evidence
-) STRICT;
+  path_bytes    BLOB NOT NULL            -- the location as read
+) STRICT, WITHOUT ROWID;
 CREATE INDEX observation_input ON observation(input, seen_at);
 CREATE INDEX observation_commit_seq ON observation(commit_seq);
-CREATE INDEX observation_path ON observation(machine, path, seen_at);
 CREATE INDEX observation_path_bytes ON observation(machine,path_bytes,commit_seq);
 
 

@@ -351,7 +351,7 @@ fn unparseable_stored_input_refused_and_pass_continues() {
     let archive = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
     let moved = archive
         .execute(
-            "UPDATE observation SET path = ?1, path_bytes = CAST(?1 AS BLOB) WHERE path = ?2",
+            "UPDATE observation SET path_bytes = CAST(?1 AS BLOB) WHERE path_bytes = CAST(?2 AS BLOB)",
             [unreadable.to_str().unwrap(), odd.to_str().unwrap()],
         )
         .unwrap();
@@ -411,7 +411,7 @@ fn unparsed_watched_input_is_refused_and_finishes() {
     let archive = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
     let moved = archive
         .execute(
-            "UPDATE observation SET path = ?1, path_bytes = CAST(?1 AS BLOB) WHERE path = ?2",
+            "UPDATE observation SET path_bytes = CAST(?1 AS BLOB) WHERE path_bytes = CAST(?2 AS BLOB)",
             [unreadable.to_str().unwrap(), odd.to_str().unwrap()],
         )
         .unwrap();
@@ -461,4 +461,29 @@ fn a_stopped_engine_reports_cancelled_derivation() {
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
     engine.archive.stop().cancel();
     assert!(matches!(engine.derive(), Err(EngineError::Stopped)));
+}
+
+/// An append at an unchanged location writes no observation; the file's
+/// facts at that read are kept with its revision, so a restarted engine
+/// finds the grown file unchanged by a look and reads none of its bytes.
+#[test]
+fn a_restart_reads_no_bytes_of_files_appended_at_their_location() {
+    let home = ClaudeHome::new();
+    home.append("grown.jsonl", &claude_user("one", "grown", "first record"));
+    {
+        let (mut engine, _lock) = open_engine(&home);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        home.append("grown.jsonl", &claude_user("two", "grown", "second record"));
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        home.append(
+            "grown.jsonl",
+            &claude_user("three", "grown", "third record"),
+        );
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.observation"), 1);
+    let (mut engine, _lock) = open_engine(&home);
+    let again = engine.run_pass().unwrap();
+    assert!(again.errors.is_empty(), "{:?}", again.errors);
+    assert_eq!(again.bytes_read, 0);
 }

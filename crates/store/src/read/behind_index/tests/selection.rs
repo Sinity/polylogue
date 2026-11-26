@@ -65,18 +65,18 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     let mut archive = Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = archive.transaction().unwrap();
     tx.execute_batch("INSERT INTO input VALUES ('a','native'),('b','native'),('zero','native');
-        INSERT INTO revision VALUES ('b',1,'first',1,10,1),('zero',1,'first',1,0,1);
-        INSERT INTO observation(id,input,machine,path,class,details_json,polylogue_version,seen_at) VALUES
-        ('b','b','m','/home/op/b','first','{}','test',100),
-        ('a-first','a','m','/home/op/first','imported','{\"import_format\":\"old\"}','test',1),
-        ('a-format','a','m','/home/op/chosen','imported','{\"import_format\":\"native\"}','test',2),
-        ('a-export','a','m','/home/op/export','imported','{\"import_format\":\"export-file\"}','test',99);").unwrap();
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('b',1,'first',1,10,1),('zero',1,'first',1,0,1);
+        INSERT INTO observation(id,input,machine,path_bytes,class,details_json,polylogue_version,seen_at) VALUES
+        ('b','b','m', CAST('/home/op/b' AS BLOB),'first','{}','test',100),
+        ('a-first','a','m', CAST('/home/op/first' AS BLOB),'imported','{\"import_format\":\"old\"}','test',1),
+        ('a-format','a','m', CAST('/home/op/chosen' AS BLOB),'imported','{\"import_format\":\"native\"}','test',2),
+        ('a-export','a','m', CAST('/home/op/export' AS BLOB),'imported','{\"import_format\":\"export-file\"}','test',99);").unwrap();
     let mut number = 0;
     for append in 1..=appends {
         for chain in 1..=chains {
             number += 1;
             tx.execute(
-                "INSERT INTO revision VALUES ('a',?1,?2,?3,?4,?1)",
+                "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('a',?1,?2,?3,?4,?1)",
                 params![
                     number,
                     if chain == 1 { "imported" } else { "appended" },
@@ -89,12 +89,10 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     }
     number += 1;
     tx.execute(
-        "INSERT INTO revision VALUES ('a',?1,'appended',1,1,?1)",
+        "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('a',?1,'appended',1,1,?1)",
         [number],
     )
     .unwrap();
-    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
-        .unwrap();
     tx.commit().unwrap();
     let mut index = Connection::open(fixture.archive.index_db()).unwrap();
     let tx = index.transaction().unwrap();

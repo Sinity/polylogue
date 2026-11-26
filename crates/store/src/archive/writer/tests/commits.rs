@@ -236,3 +236,352 @@ fn a_user_write_commits_while_the_index_writer_holds_a_transaction() {
     held.join().unwrap();
     fault::clear();
 }
+
+#[test]
+fn followed_returns_once_the_index_holds_the_alternate_text() {
+    let archive = crate::fixture::writer::WriterArchive::new();
+    let committed = archive
+        .writer
+        .archive()
+        .commit(Group::RestoredRequest(super::alternate()))
+        .unwrap();
+    archive.writer.followed(committed.position, None).unwrap();
+    assert!(archive.writer.followed_position() >= committed.position);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let mut found = 0;
+    pool.reader()
+        .unwrap()
+        .visit_alternate_search("pierwszy", Some("pl"), |_| {
+            found += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(found, 1);
+}
+
+#[test]
+fn followed_ends_with_the_writer_and_at_a_past_deadline() {
+    let mut archive = crate::fixture::writer::WriterArchive::new();
+    let sender = archive.writer.sender();
+    let limit = crate::read::limit::ReadLimit::new(
+        std::time::Duration::ZERO,
+        crate::cancellation::Cancellation::default(),
+    );
+    assert!(matches!(
+        sender.followed(Position(u64::MAX), Some(&limit)),
+        Err(StoreError::ReadDeadlineExceeded)
+    ));
+    archive.writer.stop();
+    assert!(matches!(
+        sender.followed(Position(u64::MAX), None),
+        Err(StoreError::WriterGone)
+    ));
+}
+
+/// Stores `bytes` as the step `change` of input `input` found at `path`.
+fn step(
+    archive: &Archive,
+    writer: &Writer,
+    input: &str,
+    path: &str,
+    change: crate::Change,
+    bytes: &[u8],
+    length: u64,
+) -> StoredInput {
+    let (new_blob, file) = archive.prepare_blob(bytes).unwrap();
+    let batch = Batch {
+        input: InputKey {
+            id: input.into(),
+            format: "test-bytes".into(),
+            route: polylogue_model::Route::Live,
+        },
+        change,
+        observation: Some(Observation {
+            machine: "test-machine".into(),
+            host: "test-host".into(),
+            path: path.into(),
+            path_bytes: path.as_bytes().to_vec(),
+            facts: Some(crate::FileFacts {
+                device: 1,
+                inode: 2,
+                size: length,
+                mtime_ns: 3,
+                ctime_ns: 4,
+            }),
+            seen_at_ms: 1,
+            import: None,
+            container: None,
+            database: None,
+        }),
+        continues: false,
+        new_blob: Some(new_blob),
+        blobs: Vec::new(),
+        length,
+        parse: Vec::new(),
+        capture_read: None,
+        release: Default::default(),
+    };
+    writer
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch,
+            files: file.into_iter().collect(),
+        }])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .unwrap()
+}
+
+fn rows(archive: &Archive, sql: &str) -> i64 {
+    crate::archive::open_read(&archive.archive_db())
+        .unwrap()
+        .query_row(sql, [], |row| row.get(0))
+        .unwrap()
+}
+
+/// An append at the location the input was last observed at adds a
+/// revision and no observation; an append at another location and a
+/// rewrite each add one (docs/archive.md, stored inputs).
+#[test]
+fn appends_at_same_location_add_no_observation() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    let (archive, writer) = (&w.archive, &w.writer);
+    step(
+        archive,
+        writer,
+        "file",
+        "/home/op/a",
+        crate::Change::First,
+        b"one\n",
+        4,
+    );
+    step(
+        archive,
+        writer,
+        "file",
+        "/home/op/a",
+        crate::Change::Appended { from: 4 },
+        b"two\n",
+        8,
+    );
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT count(*) FROM revision WHERE input = 'file'"
+        ),
+        2
+    );
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT count(*) FROM observation WHERE input = 'file'"
+        ),
+        1
+    );
+    step(
+        archive,
+        writer,
+        "file",
+        "/home/op/b",
+        crate::Change::Appended { from: 8 },
+        b"three\n",
+        14,
+    );
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT count(*) FROM observation WHERE input = 'file' AND class = 'appended'"
+        ),
+        1
+    );
+    step(
+        archive,
+        writer,
+        "file",
+        "/home/op/b",
+        crate::Change::Rewritten,
+        b"other\n",
+        6,
+    );
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT count(*) FROM observation WHERE input = 'file'"
+        ),
+        3
+    );
+    // Each revision keeps when its bytes were read.
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT count(*) FROM revision WHERE input = 'file' AND seen_at = 1"
+        ),
+        4
+    );
+}
+
+/// The observation's length is the length of the revision when it was
+/// observed: a file stored in two steps of one read keeps the first step's.
+#[test]
+fn an_observation_keeps_the_length_its_step_stored() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    let (archive, writer) = (&w.archive, &w.writer);
+    step(
+        archive,
+        writer,
+        "file",
+        "/home/op/a",
+        crate::Change::First,
+        b"first half\n",
+        11,
+    );
+    let (new_blob, file) = archive.prepare_blob(b"second half\n").unwrap();
+    let batch = Batch {
+        input: InputKey {
+            id: "file".into(),
+            format: "test-bytes".into(),
+            route: polylogue_model::Route::Live,
+        },
+        change: crate::Change::Appended { from: 11 },
+        observation: None,
+        continues: true,
+        new_blob: Some(new_blob),
+        blobs: Vec::new(),
+        length: 23,
+        parse: Vec::new(),
+        capture_read: None,
+        release: Default::default(),
+    };
+    writer
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch,
+            files: file.into_iter().collect(),
+        }])
+        .unwrap()
+        .pop()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rows(archive, "SELECT length FROM revision WHERE input = 'file'"),
+        23
+    );
+    assert_eq!(
+        rows(
+            archive,
+            "SELECT length FROM observation WHERE input = 'file'"
+        ),
+        11
+    );
+}
+
+/// An imported file is one commit of one chain.
+#[test]
+fn an_imported_file_is_one_commit_of_one_chain() {
+    imported_on_two_archives();
+}
+
+/// An input named by its content has the same input, revision and extent
+/// rows on every archive that imports it (observations aside).
+#[test]
+fn a_content_named_input_on_two_archives_has_the_same_input_revision_and_extent_rows() {
+    let record = imported_on_two_archives();
+    assert_eq!(record[0], record[1]);
+}
+
+/// Imports one file into two new archives; each import is one commit of
+/// one chain. Returns each archive's input, revision and extent rows.
+fn imported_on_two_archives() -> Vec<Vec<String>> {
+    let bytes = b"synthetic exported conversation\n";
+    let mut record = Vec::new();
+    for _ in 0..2 {
+        let w = crate::fixture::writer::WriterArchive::new();
+        let before = write_counter(&w.archive);
+        w.writer
+            .store_group(vec![super::imported(&w.archive, bytes)])
+            .unwrap()
+            .pop()
+            .unwrap()
+            .unwrap();
+        assert_eq!(write_counter(&w.archive), before + 1);
+        assert_eq!(
+            rows(&w.archive, "SELECT count(DISTINCT chain) FROM revision"),
+            1
+        );
+        assert_eq!(
+            rows(
+                &w.archive,
+                "SELECT count(*) FROM chain WHERE begins_like IS NULL AND agrees_to = 0"
+            ),
+            1
+        );
+        let conn = crate::archive::open_read(&w.archive.archive_db()).unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT 'input', id, format, '', '' FROM input
+                 UNION ALL SELECT 'revision', input, number, chain, length FROM revision
+                 UNION ALL SELECT 'extent', input, chain, offset, hex(blob) FROM extent
+                 ORDER BY 1, 2, 3",
+            )
+            .unwrap();
+        let these: Vec<String> = statement
+            .query_map([], |row| {
+                Ok((0..5)
+                    .map(|n| format!("{:?}", row.get_ref(n).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join(" "))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        record.push(these);
+    }
+    record
+}
+
+/// "Latest" is ordered by the observation ID, so a VACUUM, which may
+/// renumber rows, changes no answer.
+#[test]
+fn after_vacuum_the_known_inputs_and_the_import_cursor_read_the_same() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    let (archive, writer) = (&w.archive, &w.writer);
+    for (input, path) in [
+        ("one", "/home/op/a"),
+        ("two", "/home/op/a"),
+        ("three", "/home/op/b"),
+    ] {
+        step(
+            archive,
+            writer,
+            input,
+            path,
+            crate::Change::First,
+            input.as_bytes(),
+            input.len() as u64,
+        );
+    }
+    writer
+        .store_group(vec![super::imported(archive, b"exported\n")])
+        .unwrap();
+    let read = || {
+        let pool = crate::ReadPool::open(archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let known: Vec<(String, Vec<u8>)> = reader
+            .known_inputs("test-machine")
+            .unwrap()
+            .into_iter()
+            .map(|known| (known.input_id, known.path_bytes))
+            .collect();
+        (
+            known,
+            format!("{:?}", reader.unindexed_import_members().unwrap()),
+        )
+    };
+    let before = read();
+    crate::archive::open_write(&archive.archive_db(), crate::archive::cache::SETUP)
+        .unwrap()
+        .execute_batch("VACUUM")
+        .unwrap();
+    assert_eq!(read(), before);
+    // Two locations and one import.
+    assert_eq!(before.0.len(), 3);
+}

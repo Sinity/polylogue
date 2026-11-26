@@ -21,6 +21,10 @@ pub struct InputRows {
     /// same read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<Revision>,
+    /// With the first revision of a chain: the earlier chain of the input
+    /// its bytes begin like, and through which byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::archive::writer::agreement::Agreement>,
     /// Where the step's new bytes sit in the revision chain, in order and
     /// contiguous: one extent, or one per content-defined chunk of bytes
     /// stored as chunks.
@@ -33,9 +37,16 @@ pub struct InputRows {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Revision {
     pub number: i64,
-    pub produced: String,
+    pub produced: Produced,
     pub chain: i64,
     pub length: i64,
+    /// When its bytes were read, by Polylogue's clock, and the file's
+    /// modification and change times then: what the next look at an
+    /// unchanged location compares with, since an append there writes no
+    /// observation.
+    pub seen_at: Option<i64>,
+    pub mtime_ns: Option<i64>,
+    pub ctime_ns: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -48,22 +59,15 @@ pub struct Extent {
     pub blob_offset: i64,
 }
 
-/// One look at a path that found something.
+/// One look at a location that found something.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ObservationRow {
     pub id: String,
     pub machine: String,
     pub host: String,
-    pub path: String,
-    /// Historical observations may not have retained the original path bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path_bytes: Option<Vec<u8>>,
-    pub class: String,
-    pub revision: Option<i64>,
-    /// A byte-proven chain prefix that is not a recorded revision endpoint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain: Option<i64>,
-    pub length: Option<i64>,
+    /// The location's bytes as read; shown as text where it is shown.
+    pub path_bytes: Vec<u8>,
+    pub seen: Seen,
     pub device: Option<i64>,
     pub inode: Option<i64>,
     pub size: Option<i64>,
@@ -75,6 +79,141 @@ pub struct ObservationRow {
     /// The exact container membership established by this observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::InContainer>,
+}
+
+polylogue_model::stored_names! {
+    /// What made a revision: a location's first bytes, an imported file,
+    /// bytes appended to its chain, or a rewrite that starts a chain.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum Produced {
+        First => "first",
+        Imported => "imported",
+        Appended => "appended",
+        Rewritten => "rewritten",
+    }
+}
+
+impl Produced {
+    /// Whether a revision of this kind starts its own chain.
+    pub fn starts_chain(self) -> bool {
+        !matches!(self, Self::Appended)
+    }
+}
+
+polylogue_model::stored_names! {
+    /// What an observation found at a location.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum ObservationClass {
+        First => "first",
+        Appended => "appended",
+        Rewritten => "rewritten",
+        Deleted => "deleted",
+        Back => "back",
+        Imported => "imported",
+    }
+}
+
+/// What one observation saw, with the revision, chain and length it names:
+/// the pairs a stored row can hold, and no others. `length` is the length of
+/// the revision or prefix it names, which for a file stored in several
+/// steps of one read is the revision's length after the step that made the
+/// observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Seen {
+    /// A revision this observation stored: a location's first, an import, a
+    /// rewrite, or an append found at another location than the last.
+    Stored {
+        produced: Produced,
+        revision: i64,
+        length: i64,
+    },
+    /// Seen again holding exactly a stored revision.
+    Back { revision: i64, length: i64 },
+    /// Seen holding a prefix of a stored chain: no byte the chain lacks,
+    /// `length` of its bytes.
+    Prefix { chain: i64, length: i64 },
+    /// Gone from its location.
+    Deleted,
+}
+
+impl Seen {
+    /// The stored columns: class, revision, chain, length. The one encoder.
+    pub fn columns(self) -> (ObservationClass, Option<i64>, Option<i64>, Option<i64>) {
+        match self {
+            Self::Stored {
+                produced,
+                revision,
+                length,
+            } => (
+                match produced {
+                    Produced::First => ObservationClass::First,
+                    Produced::Imported => ObservationClass::Imported,
+                    Produced::Appended => ObservationClass::Appended,
+                    Produced::Rewritten => ObservationClass::Rewritten,
+                },
+                Some(revision),
+                None,
+                Some(length),
+            ),
+            Self::Back { revision, length } => {
+                (ObservationClass::Back, Some(revision), None, Some(length))
+            }
+            Self::Prefix { chain, length } => {
+                (ObservationClass::Back, None, Some(chain), Some(length))
+            }
+            Self::Deleted => (ObservationClass::Deleted, None, None, None),
+        }
+    }
+
+    /// Reads stored columns back; a pair the writer cannot make is refused.
+    /// The one decoder.
+    pub fn from_columns(
+        class: &str,
+        revision: Option<i64>,
+        chain: Option<i64>,
+        length: Option<i64>,
+    ) -> crate::Result<Self> {
+        let refused = || {
+            crate::StoreError::stored_data(format!(
+                "observation {class} with revision {revision:?}, chain {chain:?}, length {length:?}"
+            ))
+        };
+        let class = ObservationClass::from_name(class).ok_or_else(refused)?;
+        Ok(match (class, revision, chain, length) {
+            (ObservationClass::Deleted, None, None, None) => Self::Deleted,
+            (ObservationClass::Back, Some(revision), None, Some(length)) => {
+                Self::Back { revision, length }
+            }
+            (ObservationClass::Back, None, Some(chain), Some(length)) => {
+                Self::Prefix { chain, length }
+            }
+            (class, Some(revision), None, Some(length)) => Self::Stored {
+                produced: match class {
+                    ObservationClass::First => Produced::First,
+                    ObservationClass::Imported => Produced::Imported,
+                    ObservationClass::Appended => Produced::Appended,
+                    ObservationClass::Rewritten => Produced::Rewritten,
+                    ObservationClass::Back | ObservationClass::Deleted => return Err(refused()),
+                },
+                revision,
+                length,
+            },
+            _ => return Err(refused()),
+        })
+    }
+}
+
+impl Seen {
+    /// The revision it names, if it names one.
+    pub fn revision(self) -> Option<i64> {
+        self.columns().1
+    }
+
+    /// The length of what it names.
+    pub fn length(self) -> Option<i64> {
+        self.columns().3
+    }
 }
 
 impl InputRows {
@@ -93,32 +232,64 @@ impl InputRows {
         .execute(params![self.input, self.origin])?;
         if let Some(r) = &self.revision {
             tx.prepare_cached(&source.sql(
-                "INSERT INTO @source.revision(input, number, produced, chain, length, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(input, number) DO UPDATE SET length = excluded.length",
+                "INSERT INTO @source.revision(input, number, produced, chain, length, seen_at,
+                     mtime_ns, ctime_ns, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(input, number) DO UPDATE SET length = excluded.length,
+                     mtime_ns = coalesce(excluded.mtime_ns, mtime_ns),
+                     ctime_ns = coalesce(excluded.ctime_ns, ctime_ns)",
             ))?
             .execute(params![
-                self.input, r.number, r.produced, r.chain, r.length, seq
+                self.input,
+                r.number,
+                r.produced.as_str(),
+                r.chain,
+                r.length,
+                r.seen_at,
+                r.mtime_ns,
+                r.ctime_ns,
+                seq
+            ])?;
+        }
+        if let (Some(r), Some(agreement)) = (&self.revision, &self.chain) {
+            if r.chain != r.number || !r.produced.starts_chain() {
+                return Err(crate::StoreError::internal(
+                    "a chain's agreement is written with its first revision",
+                ));
+            }
+            tx.prepare_cached(&source.sql(
+                "INSERT INTO @source.chain(input, number, begins_like, agrees_to, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(input, number) DO NOTHING",
+            ))?
+            .execute(params![
+                self.input,
+                r.number,
+                agreement.begins_like,
+                crate::to_i64(
+                    agreement.agrees_to,
+                    "agreement exceeds archive address space"
+                )?,
+                seq
             ])?;
         }
         // Only the extent already stored there matches; any other
         // changes no row, which is refused below.
         let replace = "ON CONFLICT(input,chain,offset) DO UPDATE SET
-             commit_seq=min(commit_seq,excluded.commit_seq),
-             capture_read=coalesce(capture_read,excluded.capture_read)
+             commit_seq=min(commit_seq,excluded.commit_seq)
          WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset";
         for e in &self.extents {
             let written = tx.prepare_cached(
-                &source.sql(&format!("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) {replace}")),
+                &source.sql(&format!("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) {replace}")),
             )?
             .execute(params![
                 self.input,
                 e.chain,
                 e.offset,
                 e.length,
-                &e.blob.0[..],e.blob_offset,seq,
-                self.capture_read.as_ref().map(crate::encoding::pack_json).transpose()?
+                &e.blob.0[..],
+                e.blob_offset,
+                seq
             ])?;
             if written == 0 {
                 return Err(crate::StoreError::Invalid(
@@ -128,43 +299,39 @@ impl InputRows {
         }
         if let Some(o) = &self.observation {
             let details = self.observation_details(o)?;
-            if let Some(chain) = o.chain {
-                let length = o
-                    .length
-                    .and_then(|length| u64::try_from(length).ok())
-                    .ok_or_else(|| {
-                        crate::StoreError::internal(
-                            "a prefix observation needs its observed byte length",
-                        )
-                    })?;
-                if o.revision.is_some()
-                    || chain < 1
+            if let Seen::Prefix { chain, length } = o.seen {
+                let length = u64::try_from(length).map_err(|_| {
+                    crate::StoreError::internal(
+                        "a prefix observation needs its observed byte length",
+                    )
+                })?;
+                if chain < 1
                     || crate::source::Source::committed_through(tx, &self.input, chain, length)?
                         .is_none()
                 {
                     return Err(crate::StoreError::internal(
-                        "a prefix observation needs a committed chain prefix and no revision number",
+                        "a prefix observation needs a committed chain prefix",
                     ));
                 }
             }
+            let (class, revision, chain, length) = o.seen.columns();
             tx.prepare_cached(&source.sql(
                 "INSERT OR IGNORE INTO @source.machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
             ))?
             .execute(params![o.machine, o.host, o.seen_at])?;
             tx.prepare_cached(
-                &source.sql("INSERT OR IGNORE INTO @source.observation(id, input, machine, path, class, revision, length,
+                &source.sql("INSERT OR IGNORE INTO @source.observation(id, input, machine, class, revision, length,
                      device, inode, size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq,
                      details_json, chain, path_bytes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"),
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"),
             )?
             .execute(params![
                 o.id,
                 self.input,
                 o.machine,
-                o.path,
-                o.class,
-                o.revision,
-                o.length,
+                class.as_str(),
+                revision,
+                length,
                 o.device,
                 o.inode,
                 o.size,
@@ -174,7 +341,7 @@ impl InputRows {
                 o.seen_at,
                 seq,
                 details,
-                o.chain,
+                chain,
                 o.path_bytes,
             ])?;
             if let Some(c) = &o.container {
@@ -212,7 +379,7 @@ impl InputRows {
         }
         if let Some(observation) = &self.observation
             && (observation.machine != source_read.source.machine
-                || observation.path_bytes.as_ref() != Some(&source_read.source.path_bytes))
+                || observation.path_bytes != source_read.source.path_bytes)
         {
             return Err(inconsistent());
         }

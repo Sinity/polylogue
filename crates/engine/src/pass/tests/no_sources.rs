@@ -182,8 +182,8 @@ fn replay_uses_recorded_raw_paths() {
             .unwrap()
             .expect("the fixed raw root was captured");
         assert_eq!(
-            known.path_bytes.as_deref(),
-            Some(path.as_os_str().as_encoded_bytes())
+            known.path_bytes.as_slice(),
+            path.as_os_str().as_encoded_bytes()
         );
         let plans = reader
             .chains_behind_index(

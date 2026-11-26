@@ -184,6 +184,7 @@ fn transport_fixture_keeps_source_rows() {
         capture_read: None,
         input: "kept-source".into(),
         origin: "synthetic".into(),
+        chain: None,
         revision: None,
         extents: Vec::new(),
         observation: None,

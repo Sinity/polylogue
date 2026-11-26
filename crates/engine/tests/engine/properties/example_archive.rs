@@ -155,7 +155,7 @@ fn a_corrupt_blob_fails_its_read() {
     let descriptors: Vec<Vec<u8>> = archive
         .prepare(
             "SELECT DISTINCT b.storage FROM extent e JOIN blob b ON b.hash=e.blob
-         JOIN observation o ON o.input=e.input WHERE o.path=?1
+         JOIN observation o ON o.input=e.input WHERE CAST(o.path_bytes AS TEXT)=?1
          AND e.chain=(SELECT chain FROM revision WHERE input=e.input ORDER BY number DESC LIMIT 1)
          ORDER BY e.offset LIMIT 1",
         )
