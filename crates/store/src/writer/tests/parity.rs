@@ -645,7 +645,7 @@ fn built_then_upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32], built: usiz
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: 48,
         failure_persistence: Some(Box::new(FileFailurePersistence::Off)),
         ..ProptestConfig::default()
     })]

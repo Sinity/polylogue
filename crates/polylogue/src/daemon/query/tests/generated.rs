@@ -842,10 +842,6 @@ proptest! {
         prop_assert_eq!(counted["rows"][0]["count"].as_u64(), Some(result_rows(&plain).len() as u64));
         prop_assert_eq!(&counted["outcome"], "rows");
     }
-}
-
-proptest! {
-    #![proptest_config(config(24))]
 
     /// The matches of `exists`, `seq(...)` and `| matches` never depend on
     /// the order the rows were written in: the same rows written with
