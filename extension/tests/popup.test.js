@@ -25,6 +25,7 @@ async function open(answer) {
     runtime: { id: "x", sendMessage: async (message) => { sent.push(message); return answer(message); } },
     tabs: { query: async () => [{ id: 7 }] },
   };
+  window.eval(source("capture_state.js"));
   window.eval(source("wording.js"));
   window.eval(source("popup.js"));
   await until(() => window.document.getElementById("version").textContent !== "", "the first answer");

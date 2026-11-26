@@ -5,8 +5,11 @@
 // its position and totals. A restarted extension claims its job again and
 // continues from the last reported position.
 
+import "../capture_state.js";
 import { ProviderDeferred } from "./provider.js";
 import { askPage, workTab } from "./tabs.js";
+
+const captureState = globalThis.polylogueCaptureState;
 
 // Pause between two conversations, to stay well inside what the providers
 // allow a person's browser.
@@ -85,16 +88,17 @@ export class ImportJob {
           return;
         }
         const listed = page.info.conversations.filter((c) => !since || !c.updated_at || Date.parse(c.updated_at) >= since);
-        const held = listed.length
-          ? (await this.host.conversations(job.provider, listed.map((c) => c.id))).conversations
-          : [];
+        const answer = listed.length
+          ? await this.host.conversations(job.provider, listed.map((c) => c.id))
+          : { conversations: [] };
+        const held = captureState.ofArchiveAnswer(job.provider, answer);
         // Reports name the position of the page's start, so the page's
         // outcomes join the totals only once the page is done; a resumed job
         // lists the page again and must not count it twice.
         const tally = { captured: 0, unchanged: 0, failed: 0 };
         let sinceReport = 0;
         for (const [i, conversation] of listed.entries()) {
-          if (current(held[i], conversation)) {
+          if (current(held[i], answer.conversations[i], conversation)) {
             tally.unchanged += 1;
             sinceReport += 1;
             if (sinceReport >= REPORT_EVERY) {
@@ -161,12 +165,14 @@ function signInRefused(status) {
 
 /**
  * Whether the archive holds this conversation as the provider has it: read
- * by the daemon from a capture taken after the provider's last change. A
- * spooled conversation has some capture in the spool, of no known version,
- * so it is fetched again; the capturer stores it only if its content changed.
+ * by the daemon, with its files, from a capture taken after the provider's
+ * last change. `held` is its capture state and `row` the host's row for it.
+ * A conversation that is only stored has some capture in the spool, of no
+ * known version, so it is fetched again; the capturer stores it only if its
+ * content changed.
  */
-function current(held, conversation) {
-  if (held?.state !== "archived" || held.downloading) return false;
-  if (!conversation.updated_at || !held.last_captured_at) return false;
-  return held.last_captured_at >= Date.parse(conversation.updated_at);
+function current(held, row, conversation) {
+  if (held !== captureState.IN_ARCHIVE) return false;
+  if (!conversation.updated_at || !row.last_captured_at) return false;
+  return row.last_captured_at >= Date.parse(conversation.updated_at);
 }

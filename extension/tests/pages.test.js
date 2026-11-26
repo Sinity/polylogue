@@ -277,7 +277,7 @@ describe("the in-page panel", () => {
   const html = "<body><div data-message-id='m1'><p id='a'>first part</p><p id='b'>second part</p></div><div data-message-id='m2'><p id='c'>other</p></div></body>";
 
   it("makes a note from a selection inside one message", () => {
-    const { window } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "wording.js", "content/panel.js"], { html });
+    const { window } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "capture_state.js", "wording.js", "content/panel.js"], { html });
     const { selectionNote } = window.polylogueTestHooks.panel;
     const select = (from, to) => {
       const range = window.document.createRange();

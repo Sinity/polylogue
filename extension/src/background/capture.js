@@ -7,10 +7,13 @@
 // whose bytes the archive already holds is named by its hash and not
 // downloaded again.
 
+import "../capture_state.js";
 import { encode } from "./base64.js";
+import { DownloadJob } from "./download_job.js";
 import { ProviderScheduler } from "./provider.js";
 import { askPage, PageError } from "./tabs.js";
 
+const captureState = globalThis.polylogueCaptureState;
 const KIND = "browser_llm_session";
 // Bytes per base64 part: a multiple of 3, so the parts join into one
 // valid base64 text.
@@ -138,8 +141,9 @@ export class Capturer {
     this.seen = seen;
     this.log = log;
     this.delivering = null;
-    // Conversations whose files are waiting or downloading, by
-    // `provider:conversation`. Downloads run one after another.
+    // The download job of each conversation whose files are waiting or
+    // downloading, by `provider:conversation`. Downloads run one after
+    // another.
     this.downloading = new Map();
     this.lastDownload = Promise.resolve();
     this.tabConversations = new Map();
@@ -155,16 +159,12 @@ export class Capturer {
    */
   async capture(tabId, provider, options = {}) {
     const key = options.id ? `${provider}:${options.id}` : this.tabConversations.get(tabId);
+    // A running download stores nothing until this capture has ended: it
+    // may store a newer capture of the conversation.
     const downloading = this.downloading.get(key);
-    let resolve;
-    if (downloading) {
-      downloading.latest = null;
-      const previous = downloading.observed || Promise.resolve();
-      const observed = new Promise((done) => { resolve = done; });
-      downloading.observed = Promise.all([previous, observed]);
-    }
+    downloading?.captureBegan();
     try { return await this.captureObserved(tabId, provider, options); }
-    finally { resolve?.(); }
+    finally { downloading?.captureEnded(); }
   }
 
   /**
@@ -196,8 +196,23 @@ export class Capturer {
     const key = `${provider}:${shown.conversation}`;
     const known = await this.seen.get({ [`shown ${key}`]: null });
     if (known[`shown ${key}`] !== shown.digest) return false;
-    const held = (await this.host.conversations(provider, [shown.conversation]).catch(() => null))?.conversations?.[0];
-    return ["archived", "spooled"].includes(held?.state) && (!held.downloading || this.downloading.has(key));
+    const held = await this.held(provider, shown.conversation).catch(() => null);
+    return held !== null && this.heldWhole(key, held);
+  }
+
+  /** The capture state of a conversation, as the host answers it. */
+  async held(provider, conversation) {
+    return captureState.ofArchiveAnswer(provider, await this.host.conversations(provider, [conversation]))[0];
+  }
+
+  /**
+   * Whether a capture of the conversation is held and none of its files
+   * is left for a later capture to download: they are all in, or their
+   * download is running.
+   */
+  heldWhole(key, held) {
+    return captureState.holdsCapture(held)
+      && (held !== captureState.IN_ARCHIVE_FILES_DOWNLOADING || this.downloading.has(key));
   }
 
   async fetchAndStore(tabId, provider, { id = null, reason = "changed", force = false, confirm = null, before = null } = {}) {
@@ -228,10 +243,10 @@ export class Capturer {
     const known = await this.seen.get({ [seenKey]: null });
     let unchanged = !force && known[seenKey] === contentFingerprint;
     if (unchanged) {
-      const held = (await this.host.conversations(provider, [conversation])).conversations[0];
-      if (!["archived", "spooled"].includes(held?.state)) {
+      const held = await this.held(provider, conversation);
+      if (!captureState.holdsCapture(held)) {
         unchanged = false;
-      } else if (!held.downloading || this.downloading.has(key)) {
+      } else if (this.heldWhole(key, held)) {
         return { outcome: "unchanged", provider, conversation };
       }
     }
@@ -239,8 +254,6 @@ export class Capturer {
     const version = this.chrome.runtime.getManifest().version;
     // Later file delivery must not make this conversation's text look newer.
     const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version, now: capturedAt };
-    const downloading = this.downloading.get(key);
-    if (downloading) downloading.latest = base;
     const files = [];
     const missing = [];
     if (raw) {
@@ -250,6 +263,9 @@ export class Capturer {
       } catch (error) {
         // The raw conversation must reach the outbox even when the host
         // cannot list its files. Try discovery again on the next capture.
+        // A running download was for an older capture and this one's files
+        // are unknown, so the downloaded bytes are not stored.
+        if (!unchanged) this.downloading.get(key)?.replace(null);
         const outcome = unchanged ? "unchanged" : (await this.keep(base, [])) ? "stored" : "waiting";
         this.log(`Files of ${key} could not be listed: ${error.code || error.message}`);
         return { outcome, provider, conversation, confirmedTurn };
@@ -285,56 +301,60 @@ export class Capturer {
   /**
    * Downloads the files a stored capture lacks, then stores the
    * conversation again with their bytes. A conversation already waiting
-   * for its files is not queued twice.
+   * for its files is not queued twice: the newer capture replaces the one
+   * its job was downloading for.
    */
   download(tabId, key, base, files, missing) {
-    const next = { tabId, base, files, missing };
+    const work = { tabId, base, files, missing };
     const running = this.downloading.get(key);
     if (running) {
-      running.latest = base;
-      running.next = next;
+      running.replace(work);
       return;
     }
-    const job = { latest: base, next, available: new Map() };
-    const work = this.lastDownload.then(async () => {
-      try {
-        while (job.next) {
-          const current = job.next;
-          job.next = null;
-          try {
-            const fetched = await this.fetchFiles(current.tabId, current.base.conversation,
-              current.missing.filter((file) => !job.available.has(file.id)), current.base.provider, current.base.reason === "import_job");
-            for (const file of fetched) if (file.body) job.available.set(file.id, file);
-            await job.observed;
-            // A newer conversation arrived during the download. Its files
-            // can use the bytes just fetched, but its text must stay newest.
-            if (job.latest !== current.base) continue;
-            const complete = current.files.map((file) => job.available.get(file.id)
-              || fetched.find((f) => f.id === file.id) || file);
-            if (current.missing.length) {
-              await this.keep({ ...current.base, reason: "files" }, complete,
-                () => job.latest === current.base);
-            }
-          } catch (error) {
-            // A newer capture already queued still runs if this one fails.
-            this.log(`Files of ${key} were not stored: ${error.code || error.message}`);
-          }
-        }
-      } finally {
-        this.downloading.delete(key);
-        job.available.clear();
-        job.latest = null;
-        job.next = null;
-      }
-    });
-    job.work = work;
+    const job = new DownloadJob(work);
+    job.finished = this.lastDownload.then(() => this.runDownloads(key, job));
     this.downloading.set(key, job);
-    this.lastDownload = work;
+    this.lastDownload = job.finished;
+  }
+
+  async runDownloads(key, job) {
+    try {
+      for (let work = job.startNext(); work; work = job.startNext()) {
+        try {
+          const fetched = await this.fetchFiles(work.tabId, work.base.conversation,
+            work.missing.filter((file) => !job.available.has(file.id)), work.base.provider, work.base.reason === "import_job");
+          for (const file of fetched) if (file.body) job.available.set(file.id, file);
+          const complete = work.files.map((file) => job.available.get(file.id)
+            || fetched.find((f) => f.id === file.id) || file);
+          for (;;) {
+            await job.capturesEnded();
+            // A newer capture was stored during the download. Its files can
+            // use the bytes just fetched, but its text must stay newest.
+            if (job.replaced || work.missing.length === 0) break;
+            job.startStoring();
+            let interrupted = false;
+            await this.keep({ ...work.base, reason: "files" }, complete, () => {
+              if (!job.mayStore()) interrupted = true;
+              return !interrupted;
+            });
+            // A capture that began before the bytes reached the outbox may
+            // end without storing anything; the bytes are then stored after it.
+            if (!interrupted) break;
+          }
+        } catch (error) {
+          // A newer capture already queued still runs if this one fails.
+          this.log(`Files of ${key} were not stored: ${error.code || error.message}`);
+        }
+      }
+    } finally {
+      job.end();
+      this.downloading.delete(key);
+    }
   }
 
   /** Resolves once every download running now has finished. */
   async downloads() {
-    await Promise.all([...this.downloading.values()].map((job) => job.work));
+    await Promise.all([...this.downloading.values()].map((job) => job.finished));
   }
 
   /** The bytes of each listed file, or the reason it has none. */

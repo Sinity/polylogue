@@ -269,6 +269,70 @@ describe("a capture", () => {
       .toEqual(["Synthetic", "Newest", "Newest"]);
   });
 
+  /** A stored capture whose one file is being downloaded, held until `release`. */
+  async function downloadInProgress(conversation = (request, page) => page.answer(request)) {
+    const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
+    const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
+    let release;
+    let downloading;
+    const started = new Promise((resolve) => { downloading = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const answer = async (request) => {
+      if (request.type === "file") { downloading(); await held; }
+      return request.type === "conversation" ? conversation(request, page) : page.answer(request);
+    };
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    await started;
+    return { host, chrome, extension, release, job: extension.capturer.downloading.get("chatgpt:c1") };
+  }
+
+  it("stores the downloaded files when a capture that overlaps the download finds the conversation unchanged", async () => {
+    const { host, extension, release, job } = await downloadInProgress();
+    const overlapping = extension.captureTab(1, "changed");
+    await until(() => job.capturesInFlight === 1, "the overlapping capture");
+    // The provider's lane is the download's until the file is in.
+    release();
+    expect((await overlapping).outcome).toBe("unchanged");
+    await extension.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+    expect(JSON.parse(host.stored[1]).provenance.reason).toBe("files");
+    expect(JSON.parse(host.stored[1]).session.attachments[0].content_base64).toBe("CQk=");
+  });
+
+  it("stores the downloaded files when a capture that overlaps the download fails", async () => {
+    let fail = false;
+    const { host, extension, release, job } = await downloadInProgress((request, page) => (
+      fail ? { status: 404, error: "conversation_gone" } : page.answer(request)));
+    fail = true;
+    const overlapping = extension.captureTab(1, "changed");
+    await until(() => job.capturesInFlight === 1, "the overlapping capture");
+    release();
+    expect(await overlapping).toBeNull();
+    await extension.capturer.downloads();
+    expect(host.stored).toHaveLength(2);
+    expect(JSON.parse(host.stored[1]).session.attachments[0].content_base64).toBe("CQk=");
+    const state = await extension.pageState(await extension.capturer.chrome.tabs.get(1));
+    expect(state.last).toMatchObject({ outcome: "failed", text: "conversation_gone" });
+  });
+
+  it("downloads, waits for the captures in flight, stores and ends, in that order", async () => {
+    const { host, extension, release, job } = await downloadInProgress();
+    const phases = [];
+    const enter = job.enter.bind(job);
+    job.enter = (phase) => { enter(phase); phases.push(phase); };
+    expect(job.phase).toBe("downloading");
+    const overlapping = extension.captureTab(1, "changed");
+    await until(() => job.capturesInFlight === 1, "the overlapping capture");
+    release();
+    await overlapping;
+    await extension.capturer.downloads();
+    expect(phases).toEqual(["waiting for captures", "storing", "ended"]);
+    expect(extension.capturer.downloading.size).toBe(0);
+    expect(host.stored).toHaveLength(2);
+  });
+
   it("records the provider refusal when none of its files can be downloaded", async () => {
     const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
     const page = chatgptPage();
@@ -402,6 +466,36 @@ describe("a capture", () => {
     expect(problems[0].text).toContain("host_missing");
   });
 
+  it("says that Polylogue did not answer when the installed host fails", async () => {
+    const host = storingHost();
+    host.routes["POST /v1/conversations"] = () => ({ status: 500, json: { error: "internal" } });
+    const chrome = fakeChrome({ routes: host.routes, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }], pages: { 1: chatgptPage().answer } });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    const state = await extension.pageState(await chrome.tabs.get(1));
+    expect(state.host).toBe("failed");
+    expect(globalThis.polylogueWording.conversation(state)).toMatchObject({
+      state: "host_did_not_answer", tone: "bad", label: "Polylogue did not answer",
+    });
+  });
+
+  it("is still shown as in the archive after a later capture of it fails", async () => {
+    const host = storingHost();
+    const page = chatgptPage();
+    let fail = false;
+    const answer = (request) => (fail && request.type === "conversation" ? { status: 404, error: "conversation_gone" } : page.answer(request));
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    fail = true;
+    expect(await extension.captureTab(1, "changed")).toBeNull();
+    const state = await extension.pageState(await chrome.tabs.get(1));
+    expect(state.last.outcome).toBe("failed");
+    expect(globalThis.polylogueWording.conversation(state)).toEqual({
+      state: "in_archive", tone: "warn", label: "In the archive: 1 message",
+      detail: "The last capture failed just now: conversation_gone",
+    });
+  });
+
   it("a gemini page is captured from the turns it shows", async () => {
     const host = storingHost();
     const session = { provider: "gemini", provider_session_id: "g1", title: "T", turns: [{ role: "user", text: "q", ordinal: 0 }] };
@@ -459,10 +553,10 @@ it.each([false, true])("starts another download after the loop exits (storage er
   };
   capturer.download(1, "one", base, [file], [file]);
   const first = capturer.downloading.get("one");
-  await first.work;
+  await first.finished;
   await capturer.downloads();
   expect(attempts).toEqual([base.raw, newer.raw]);
-  expect(first.latest).toBeNull();
+  expect(first.phase).toBe("ended");
   expect(first.next).toBeNull();
   expect(first.available.size).toBe(0);
   expect(capturer.downloading.size).toBe(0);

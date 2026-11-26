@@ -14,13 +14,13 @@ const sourceVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8"
 const members = [
   "manifest.json", "src/actions/chatgpt.js", "src/background.js",
   "src/background/import_job.js", "src/background/base64.js", "src/background/capture.js",
-  "src/background/chat_actions.js",
+  "src/background/chat_actions.js", "src/background/download_job.js",
   "src/background/host.js", "src/background/main.js", "src/background/notes.js",
   "src/background/outbox.js", "src/background/provider.js", "src/background/providers.js",
   "src/background/tabs.js",
   "src/content/chatgpt.js", "src/content/claude.js", "src/content/gemini.js",
   "src/content/grok.js", "src/content/page.js", "src/content/panel.js",
-  "src/popup.html", "src/popup.js", "src/wording.js",
+  "src/capture_state.js", "src/popup.html", "src/popup.js", "src/wording.js",
 ].sort();
 const hosts = ["https://chatgpt.com/*", "https://claude.ai/*", "https://grok.com/*", "https://gemini.google.com/*"];
 const tools = JSON.parse(execFileSync("python3", ["-c", "import json, shutil; print(json.dumps({name: shutil.which(name) for name in ['zip', 'python3']}))"], { encoding: "utf8" }));

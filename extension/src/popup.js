@@ -55,7 +55,7 @@
     $("page-detail").textContent = said.detail;
     // A failed request leaves Capture available, so the operator can retry.
     $("capture").disabled = !page?.conversation && !page?.error;
-    $("reader").disabled = page?.state !== "archived";
+    $("reader").disabled = !globalThis.polylogueCaptureState.inArchive(said.state);
   }
 
   function showApprovals(actions) {

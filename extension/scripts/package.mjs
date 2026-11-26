@@ -5,13 +5,13 @@ export const runtimeFiles = Object.freeze([
   "manifest.json",
   "src/actions/chatgpt.js", "src/background.js",
   "src/background/import_job.js", "src/background/base64.js", "src/background/capture.js",
-  "src/background/chat_actions.js",
+  "src/background/chat_actions.js", "src/background/download_job.js",
   "src/background/host.js", "src/background/main.js", "src/background/notes.js",
   "src/background/outbox.js", "src/background/provider.js", "src/background/providers.js",
   "src/background/tabs.js",
   "src/content/chatgpt.js", "src/content/claude.js", "src/content/gemini.js",
   "src/content/grok.js", "src/content/page.js", "src/content/panel.js",
-  "src/popup.html", "src/popup.js", "src/wording.js",
+  "src/capture_state.js", "src/popup.html", "src/popup.js", "src/wording.js",
 ]);
 
 export function browserVersion(raw) {
