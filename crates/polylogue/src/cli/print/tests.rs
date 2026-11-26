@@ -200,3 +200,48 @@ fn a_day_zone_this_machine_cannot_load_is_named_not_replaced() {
         "{note}"
     );
 }
+
+#[test]
+fn deadline_failure_prints_the_hint_next_line_and_notes() {
+    let request = command_surface::RunnableRequest::new(
+        "rows",
+        json!({
+            "selection":"session:claude-code:ID", "steps":[{"verb":"read"}]
+        }),
+        "test-request",
+    );
+    let mut answer = command_surface::Answer::error(
+        crate::protocol::store_failure(&polylogue_store::StoreError::ReadDeadlineExceeded)
+            .with_hint("rerun with `--deadline none`, or narrow to one session"),
+    )
+    .with_note("stopped during reading")
+    .with_next("complete without a deadline", request);
+    answer.envelope.next[0].request.deadline = command_surface::Deadline::None;
+    assert_eq!(
+        failure(&answer, false),
+        concat!(
+            "polylogue: deadline_exceeded: the read deadline was exceeded\n",
+            "polylogue: hint: rerun with `--deadline none`, or narrow to one session\n",
+            "polylogue: complete without a deadline: polylogue 'session:claude-code:ID' read --deadline none\n",
+            "polylogue: note: stopped during reading\n"
+        )
+    );
+}
+
+#[test]
+fn grammar_failure_prints_the_working_line() {
+    let error = crate::cli::line::parse(
+        &["read".into(), "claude-code:ID".into()],
+        &Default::default(),
+        false,
+    )
+    .unwrap_err();
+    let answer = command_surface::Answer::error(error.failure());
+    assert_eq!(
+        failure(&answer, false),
+        concat!(
+            "polylogue: not_a_verb: \"claude-code:ID\" is not a verb; read takes no words\n",
+            "polylogue: try: polylogue claude-code:ID read\n"
+        )
+    );
+}

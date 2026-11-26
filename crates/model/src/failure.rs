@@ -3,7 +3,6 @@
 stored_names! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub enum Code {
-        Empty => "empty",
         ModelCallsOff => "model_calls_off",
         Query => "query",
         Sql => "sql",
@@ -33,7 +32,6 @@ stored_names! {
         NotBuilt => "not_built",
         NotYetAvailable => "not_yet_available",
         IndexBuilding => "index_building",
-        Degraded => "degraded",
         PrimaryContextMissing => "primary_context_missing",
         PrimaryContextPending => "primary_context_pending",
         PrimaryContextStale => "primary_context_stale",

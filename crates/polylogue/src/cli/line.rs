@@ -101,6 +101,18 @@ pub(crate) struct Refusal {
     pub candidates: Vec<String>,
 }
 impl Refusal {
+    pub(crate) fn failure(self) -> command_surface::Failure {
+        let mut failure =
+            crate::protocol::failure(self.code, self.message).with_candidates(self.candidates);
+        failure.position = self
+            .position
+            .map(|offset| command_surface::InputSpan { offset, length: 1 });
+        if let Some(line) = self.try_line {
+            failure = failure.with_suggestion(command_surface::Suggestion::Query(line));
+        }
+        failure
+    }
+
     pub(crate) fn new(code: Code, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -376,7 +388,10 @@ pub(crate) fn parse(
                     n => format!("{n} words"),
                 };
                 message.push_str(&format!("; {} takes {count}", step.verb));
-                if matches!(step.verb, "note" | "send" | "edit" | "answer") {
+                if parsed.selection.is_none() && parsed.steps.len() == 1 && step.verb == "read" {
+                    corrected = args[index..].to_vec();
+                    corrected.extend_from_slice(&args[..index]);
+                } else if matches!(step.verb, "note" | "send" | "edit" | "answer") {
                     corrected = args[..step.words.start + 1].to_vec();
                     corrected.push(args[step.words.start + 1..].join(" "));
                 }

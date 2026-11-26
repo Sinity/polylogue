@@ -192,15 +192,7 @@ fn run() -> ExitCode {
             let parsed = match cli::line::parse(words, &catalog, cli::run_line::terminal()) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    let mut failure = protocol::failure(error.code, error.message);
-                    failure.hint = error.try_line.map(|line| format!("try: {line}"));
-                    if !error.candidates.is_empty() {
-                        failure
-                            .hint
-                            .get_or_insert_default()
-                            .push_str(&format!("\n{}", error.candidates.join("\n")));
-                    }
-                    return cli::fail_with(process.output, invocation.json, &failure, &[]);
+                    return cli::fail_with(process.output, invocation.json, &error.failure(), &[]);
                 }
             };
             crate::client::remember_this_process(&process.environment);

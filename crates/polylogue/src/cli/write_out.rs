@@ -28,18 +28,17 @@ impl From<&str> for OutputError {
 }
 
 fn output_failure(error: OutputError, client: &crate::config::Client, json: bool) -> u8 {
-    let failure = match error {
-        OutputError::Text(error) => {
-            crate::protocol::failure(polylogue_model::Code::ReadOutput, error)
-        }
-        OutputError::Answer(answer) => match answer.outcome {
-            command_surface::Outcome::Error(error) => error,
-            _ => return answer.exit_code(),
-        },
+    let answer = match error {
+        OutputError::Text(error) => command_surface::Answer::error(crate::protocol::failure(
+            polylogue_model::Code::ReadOutput,
+            error,
+        )),
+        OutputError::Answer(answer) => *answer,
     };
-    super::fail_with(client.output, json, &failure, &[]);
-    failure.kind.exit_code()
+    super::fail_answer(client.output, json, &answer);
+    answer.exit_code()
 }
+
 fn page_of(answer: &command_surface::Answer<serde_json::Value>) -> Result<ReadPage, OutputError> {
     let Some(value) = answer.value() else {
         return Err(OutputError::Answer(Box::new(answer.clone())));
@@ -708,6 +707,21 @@ fn write_read_stream(
             .map_err(Refusal::Io),
         Ok(Some(answer)) => Err(Refusal::Answer(Box::new(answer))),
         Ok(None) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            let mut lifted = super::run_line::request(parsed).map_err(|error| error.message)?;
+            lifted.deadline = command_surface::Deadline::None;
+            let answer = command_surface::Answer::error(
+                crate::protocol::store_failure(&polylogue_store::StoreError::ReadDeadlineExceeded)
+                    .with_hint("rerun with `--deadline none`, or narrow to one session"),
+            )
+            .with_next("complete without a deadline", lifted);
+            Err(Refusal::Answer(Box::new(answer)))
+        }
         Err(error) => Err(Refusal::Io(error)),
     };
     if let Err(error) = result {

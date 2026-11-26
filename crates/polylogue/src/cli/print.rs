@@ -346,6 +346,43 @@ fn import_jobs_text(jobs: &[crate::browser::import_job::JobSummary]) -> String {
     out
 }
 
+/// A failure with every correction, next line and note carried by its reply.
+pub(crate) fn failure(answer: &command_surface::Answer<Value>, color: bool) -> String {
+    let mut text = String::new();
+    if let Some(failure) = answer.failure() {
+        let code = failure.code.as_deref().unwrap_or(failure.kind.name());
+        text.push_str(&diagnostic(
+            code,
+            &failure.message,
+            crate::protocol::suggestion_text(failure).as_deref(),
+            color,
+        ));
+        if let Some(hint) = &failure.hint {
+            text.push_str(&diagnostic("hint", hint, None, color));
+        }
+        for candidate in failure.candidates() {
+            let _ = writeln!(text, "  {}", polylogue_render::terminal::escape(candidate));
+        }
+    }
+    for next in &answer.envelope.next {
+        let line = crate::commands::declarations()
+            .cli_command(&next.request)
+            .unwrap_or_else(|_| {
+                format!(
+                    "polylogue --request {}",
+                    polylogue_render::shell_quote(
+                        &serde_json::to_string(&next.request).expect("request serializes")
+                    )
+                )
+            });
+        text.push_str(&diagnostic(&next.label, &line, None, color));
+    }
+    for note in crate::protocol::notes(answer) {
+        text.push_str(&diagnostic("note", note, None, color));
+    }
+    text
+}
+
 /// One escaped diagnostic for local and remote CLI failures. JSON uses its own encoder.
 pub(crate) fn diagnostic(
     kind: &str,

@@ -542,13 +542,8 @@ pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
         );
         return ExitCode::from(outcome_code);
     }
-    if let command_surface::Answer {
-        outcome: command_surface::Outcome::Error(error),
-        envelope: command_surface::Envelope { notes, .. },
-        ..
-    } = &answer
-    {
-        return fail_with(policy, json, error, notes);
+    if answer.is_error() {
+        return fail_answer(policy, json, &answer);
     }
     // JSON passes the answer through as received; anything that reads the
     // value first checks it is the operation's declared type.
@@ -864,43 +859,33 @@ pub(crate) fn fail_with(
     failure: &command_surface::Failure,
     notes: &[String],
 ) -> ExitCode {
+    let answer = command_surface::Answer::<Value> {
+        outcome: command_surface::Outcome::Error(failure.clone()),
+        envelope: command_surface::Envelope {
+            notes: notes.to_vec(),
+            ..Default::default()
+        },
+    };
+    fail_answer(output, json, &answer)
+}
+
+pub(crate) fn fail_answer(
+    output: crate::config::OutputConfig,
+    json: bool,
+    answer: &command_surface::Answer<Value>,
+) -> ExitCode {
     if json {
-        let answer = command_surface::Answer::<Value> {
-            outcome: command_surface::Outcome::Error(failure.clone()),
-            envelope: command_surface::Envelope {
-                notes: notes.to_vec(),
-                ..Default::default()
-            },
-        };
         println!(
             "{}",
             polylogue_render::terminal::json(
-                &serde_json::to_value(answer).expect("failure serializes"),
+                &serde_json::to_value(answer).expect("answer serializes"),
                 false
             )
         );
     } else {
-        let code = failure.code.clone().unwrap_or_else(|| {
-            serde_json::to_value(failure.kind)
-                .ok()
-                .and_then(|kind| kind.as_str().map(str::to_owned))
-                .unwrap_or_default()
-        });
-        eprint!(
-            "{}",
-            print::diagnostic(
-                &code,
-                &failure.message,
-                crate::protocol::suggestion_text(failure).as_deref(),
-                output.stderr_color()
-            )
-        );
-        for candidate in failure.candidates() {
-            eprintln!("  {}", polylogue_render::terminal::escape(candidate));
-        }
-        self::notes(notes, output);
+        eprint!("{}", print::failure(answer, output.stderr_color()));
     }
-    ExitCode::from(failure.kind.exit_code())
+    ExitCode::from(answer.exit_code())
 }
 
 #[cfg(test)]

@@ -140,6 +140,9 @@ fn error_text(failure: &command_surface::Failure) -> String {
     if let Some(suggestion) = crate::protocol::suggestion_text(failure).as_deref() {
         text.push_str(&format!("\ntry: {suggestion}"));
     }
+    if let Some(hint) = &failure.hint {
+        text.push_str(&format!("\nhint: {hint}"));
+    }
     for candidate in failure.candidates() {
         text.push_str(&format!("\n  {candidate}"));
     }

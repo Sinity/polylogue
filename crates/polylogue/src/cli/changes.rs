@@ -21,6 +21,18 @@ pub fn run(
     let mut request = call.clone();
     // The feed's arguments: only the last applied position.
     request.arguments = values.request.arguments.clone();
+    if request
+        .arguments
+        .str("after")
+        .is_some_and(|position| ChangePosition::parse(position).is_none())
+    {
+        return fail(
+            client.output,
+            true,
+            polylogue_model::Code::BadValue,
+            "after takes a position GENERATION:INDEX:ARCHIVE",
+        );
+    }
     match send(&archive, &request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
         Err(e)
@@ -51,18 +63,8 @@ fn send(
     output: &mut impl Write,
     timeout: Option<std::time::Duration>,
 ) -> io::Result<u8> {
-    let previous = request
-        .arguments
-        .str("after")
-        .map(|s| {
-            ChangePosition::parse(s)
-                .map(|p| p.to_string())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "the change position is invalid")
-                })
-        })
-        .transpose()?;
-    consume(output, previous.as_deref(), |callback| {
+    let previous = request.arguments.str("after");
+    consume(output, previous, |callback| {
         crate::client::call_streaming(archive, request, timeout, callback)
     })
 }
