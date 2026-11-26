@@ -53,6 +53,12 @@ fn put_then_open_reads_the_same_bytes_after_restart() {
             ];
             let hashes: Vec<BlobHash> = files.iter().map(PreparedBlob::hash).collect();
             let put = home.put_all(files).unwrap();
+            // A put returns with its staged encodings removed.
+            assert_eq!(
+                std::fs::read_dir(archive.staging_dir()).unwrap().count(),
+                0,
+                "{name}"
+            );
             assert_eq!(
                 (put.added.len(), put.appended, put.deduplicated, put.syncs),
                 (2, 2, 0, 1),
