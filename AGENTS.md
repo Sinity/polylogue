@@ -136,10 +136,10 @@ its cause, never one to widen until it passes. A slow test has its slowness
 fixed rather than its wait extended.
 
 **Performance is a product goal.** The targets and the overlapped
-pipeline are in `docs/architecture.md`. Measure with paired `cargo xtask bench`
-runs (before and after, same host) and report hardware-independent figures
-(bytes written per input byte, syncs per group, stage utilisation) alongside
-the absolute rates. No test asserts elapsed time. Designs target the data and
+pipeline are in `docs/architecture.md`. Measure with `cargo xtask bench pair`
+(before and after, in turn, over one fixed sample under a memory limit) and
+report hardware-independent figures (CPU-seconds, bytes written per input
+byte, peak memory) before the absolute times. No test asserts elapsed time. Designs target the data and
 the guarantees, not one machine; host tuning belongs in deployment
 configuration.
 

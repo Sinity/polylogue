@@ -20,7 +20,8 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask prune-build` | remove from the target directory every artifact that both Clippy configurations, the test build and xtask's build no longer use |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask run [--root <dir>] [--watch \| --binary <path>]` | the checkout's daemon in a sandbox on a scratch root, until stopped ([below](#a-daemon-to-probe)) |
-| `cargo xtask bench ...` | corpus builds and interactive read measurements |
+| `cargo xtask bench sample`, `run`, `pair` | draw a fixed sample of the real inputs once; measure one build, or two in turn, over it under a memory limit ([testing.md#benchmarks](testing.md#benchmarks)) |
+| `cargo xtask bench tails`, `reads` | interactive read measurements |
 | `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
 | `cargo hakari generate` | rewrite the workspace-hack crate after a dependency or feature change |
@@ -201,7 +202,13 @@ the `normal` queue beside them, and full checks and Nix checks in `bulk`.
 benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
 waits until 10 GiB of memory is free rather than starting a run its memory
 limit would end, runs at low CPU and I/O priority, and never sees the paid
-embedding key. Coordinate runs that use the same disk before comparing
+embedding key. A benchmark started there runs each measured build in a unit
+of its own beside the job's, with the benchmark's `--memory-max`, and reads
+that unit's accounting. Iteration on a write-path change uses one drawn
+sample: `agentctl job start measure --project <checkout> -- cargo run
+--locked --release -p xtask -- bench --root <dir> sample --mb 1000` once,
+then `bench pair --a base=<path> --b change=<path>` against the same root for
+each comparison; full-archive rebuilds are kept for the final figures. Coordinate runs that use the same disk before comparing
 timings. For an explicit target experiment, pass
 `exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
 selection. Keep the experimental target exclusive to the same checkout.
