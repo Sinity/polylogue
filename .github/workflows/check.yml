@@ -48,6 +48,11 @@ jobs:
         run: |
           cargo xtask test --no-run
           git rev-parse HEAD > target/source-commit
+      # Cargo never removes an artifact it no longer uses, so each saved
+      # build would keep every earlier one's copies.
+      - name: Remove what master's build no longer uses
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        run: cargo xtask prune-build
       - if: ${{ !cancelled() && github.event_name == 'push' }}
         uses: actions/cache/save@v4
         with:

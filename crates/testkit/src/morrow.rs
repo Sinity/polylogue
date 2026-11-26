@@ -252,3 +252,6 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

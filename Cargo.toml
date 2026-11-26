@@ -73,9 +73,10 @@ todo = "warn"
 unimplemented = "deny"
 
 # Tests spend most of their CPU in SQLite and JSON, which are dependencies
-# and stay optimized. Workspace code is compiled unoptimized: the store's
-# unit-test binary took 301 s of CPU at level 1 and 57 s at level 0, and
-# compiling, not running, is where checks spend their time.
+# and stay optimized. Workspace code is compiled unoptimized because most
+# checks rebuild much of it: on the hosted runner, level 1 cut the four test
+# shards' running time from 548 s to 477 s but raised each shard's test build
+# from 129-163 s to 695-852 s.
 # Line tables keep backtraces readable. Full debug info made each worktree's
 # target directory 12-19 GB and every test link a heavy disk write.
 [profile.dev]
