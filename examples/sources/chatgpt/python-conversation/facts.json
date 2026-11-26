@@ -6,39 +6,39 @@
       "title": "Privacy-safe ChatGPT native fixture",
       "messages": [
         {
-          "id": "chatgpt:context",
+          "id": "chatgpt:context-message",
           "role": "system",
           "at": 1784164500.0,
           "parent": null,
           "text": "Privacy-safe fixture profile.\n\nPreserve structured provider evidence."
         },
         {
-          "id": "chatgpt:user",
+          "id": "chatgpt:user-message",
           "role": "user",
           "at": 1784164540.0,
-          "parent": "chatgpt:context",
+          "parent": "chatgpt:context-message",
           "text": "Analyze the attached fixture and create an artifact."
         },
         {
-          "id": "chatgpt:answer-inactive",
+          "id": "chatgpt:answer-inactive-message",
           "role": "assistant",
           "at": 1784164542.0,
-          "parent": "chatgpt:user",
+          "parent": "chatgpt:user-message",
           "text": "Superseded answer."
         },
         {
-          "id": "chatgpt:thought-active",
+          "id": "chatgpt:thought-active-message",
           "role": "assistant",
           "at": 1784164544.946,
-          "parent": "chatgpt:user",
+          "parent": "chatgpt:user-message",
           "text": "",
           "thinking": "Privacy-safe reasoning trace."
         },
         {
-          "id": "chatgpt:tool-call",
+          "id": "chatgpt:tool-call-message",
           "role": "assistant",
           "at": 1784164545.0,
-          "parent": "chatgpt:thought-active",
+          "parent": "chatgpt:thought-active-message",
           "text": "",
           "calls": [
             {
@@ -51,25 +51,25 @@
           ]
         },
         {
-          "id": "chatgpt:tool-result",
+          "id": "chatgpt:tool-result-message",
           "role": "user",
           "at": 1784164546.0,
-          "parent": "chatgpt:tool-call",
+          "parent": "chatgpt:tool-call-message",
           "text": ""
         },
         {
-          "id": "chatgpt:recap-active",
+          "id": "chatgpt:recap-active-message",
           "role": "assistant",
           "at": 1784169732.588194,
-          "parent": "chatgpt:tool-result",
+          "parent": "chatgpt:tool-result-message",
           "text": "",
           "thinking": "Privacy-safe reasoning summary."
         },
         {
-          "id": "chatgpt:answer-active",
+          "id": "chatgpt:answer-active-message",
           "role": "assistant",
           "at": 1784169733.0,
-          "parent": "chatgpt:recap-active",
+          "parent": "chatgpt:recap-active-message",
           "text": "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)"
         }
       ]

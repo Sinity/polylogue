@@ -7,7 +7,7 @@
 //! format is described in `docs/testing.md` (Goldens).
 
 use super::golden::{cases, parse_case};
-use polylogue_model::{Block, IdKind, Output, Session, StoredName, Timestamp};
+use polylogue_model::{Block, IdKind, Output, Session, Timestamp};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::fs;

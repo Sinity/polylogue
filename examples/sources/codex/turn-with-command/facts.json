@@ -45,7 +45,7 @@
               "command": "cargo build",
               "result": {
                 "outcome": "error",
-                "text": "error[E0425]: cannot find value `x`"
+                "text": "Chunk ID: 1a\nWall time: 3.25 seconds\nProcess exited with code 101\nOriginal token count: 9\nOutput:\nerror[E0425]: cannot find value `x`"
               }
             }
           ]
