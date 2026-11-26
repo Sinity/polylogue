@@ -310,11 +310,17 @@ fn prepared<T>(
 ) -> Result<T, Error> {
     services.compiled(reader, operation, &reading.target, |compile| {
         polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-        let selection = match &reading.references {
+        let mut selection = match &reading.references {
             Some(references) => {
                 reader.prepare_fixed_selection(&reading.target, references, &compile.options)?
             }
             None => reader.prepare_selection(&reading.target, &compile.options)?,
+        };
+        let similarity = selection.ranking(reader, Some(compile.near))?;
+        let near = |_: &str| {
+            similarity.clone().ok_or_else(|| {
+                polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+            })
         };
         let snapshot = ReadSnapshot {
             query: format!("query:{}", selection.question_id()),
@@ -384,7 +390,7 @@ fn prepared<T>(
             },
             snapshot,
             header,
-            Some(compile.near),
+            Some(&near),
         )
     })
 }

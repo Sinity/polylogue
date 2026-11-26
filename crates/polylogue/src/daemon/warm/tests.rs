@@ -278,15 +278,33 @@ fn cancelled_request_leaves_while_another_request_loads_vectors() {
 #[test]
 fn a_request_deadline_ends_its_vector_wait() {
     use crate::test_daemon::embeddings::{VectorLoad, vector_query};
-    let daemon = crate::test_daemon::start("parser text");
+    let daemon = crate::test_daemon::start_with_sources_and_workers(
+        "parser text",
+        &|home| {
+            let name = "7f3a2c10-0001-4000-8000-000000000001.jsonl";
+            std::fs::copy(
+                polylogue_testkit::morrow_dir()
+                    .join("claude-code/projects/-home-op-morrow")
+                    .join(name),
+                home.join(".claude/projects/-p").join(name),
+            )
+            .unwrap();
+        },
+        12,
+        2,
+    );
     let loading = VectorLoad::start(&daemon);
     let limit =
         polylogue_store::read::limit::ReadLimit::new(Duration::from_secs(1), Default::default());
     let answer = vector_query().within(&limit).answer(&daemon.daemon);
     crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
+    assert_eq!(answer.exit_code(), 7, "{answer:?}");
+    assert_eq!(limit.stage(), Some("vector wait"));
     match answer.outcome {
         command_surface::Outcome::Error(error) => {
-            assert_eq!(error.code.as_deref(), Some("deadline_exceeded"))
+            assert_eq!(error.code.as_deref(), Some("deadline_exceeded"));
+            assert_eq!(error.kind.name(), "timeout");
+            assert_eq!(error.message, "the read deadline was exceeded");
         }
         other => panic!("{other:?}"),
     }

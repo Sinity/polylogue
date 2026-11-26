@@ -37,8 +37,7 @@ pub struct Ask<'a> {
 }
 
 /// Texts' similarity to a text, for `similar:`.
-pub type NearFn<'a> =
-    dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
+pub use polylogue_store::selection::NearFn;
 
 /// Uses the configured provider and warm vectors for every query client.
 pub(crate) fn with_ranking<T>(
@@ -56,12 +55,50 @@ pub(crate) fn with_ranking<T>(
         });
     let identity =
         crate::embeddings::ranking_key(reader, provider.as_ref().ok().and_then(Option::as_ref));
-    let near = |text: &str| match &provider {
-        Ok(Some(provider)) => warm.similarity(reader, provider, text),
-        Ok(None) => Err("embeddings are off".into()),
-        Err(error) => Err(error.clone()),
+    let near = |text: &str| ranking_similarity(reader, warm, &provider, text);
+    run(true, identity, &near)
+}
+
+/// Classify unavailable semantic rankings without losing read control failures.
+pub(crate) fn ranking_similarity(
+    reader: &Reader<'_>,
+    warm: &super::warm::Warm,
+    provider: &Result<Option<crate::embeddings::Provider>, String>,
+    text: &str,
+) -> polylogue_store::Result<std::sync::Arc<polylogue_store::vectors::Similarity>> {
+    use polylogue_model::Reason;
+    reader.check()?;
+    let provider = match provider {
+        Ok(Some(provider)) => provider,
+        Ok(None) => return Err(Reason::EmbeddingsOff {}.into()),
+        Err(problem) => {
+            return Err(Reason::EmbeddingConfiguration {
+                problem: problem.clone(),
+            }
+            .into());
+        }
     };
-    run(identity.is_some(), identity, &near)
+    let vectors = warm.vectors(reader, provider);
+    reader.check()?;
+    match vectors {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(Reason::NoVectors {
+                model: provider.model.clone(),
+            }
+            .into());
+        }
+        Err(problem) => return Err(Reason::EmbeddingStore { problem }.into()),
+    }
+    let result = warm.similarity(reader, provider, text);
+    reader.check()?;
+    result.map_err(|problem| {
+        if problem == crate::embeddings::CALLS_OFF {
+            Reason::EmbeddingCallsOff {}.into()
+        } else {
+            Reason::EmbeddingProvider { problem }.into()
+        }
+    })
 }
 
 /// Asks the provider for the query vector the validated `query` ranks by,
@@ -84,7 +121,7 @@ pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
         )
         .ok()
         .flatten()?;
-        let ranking_identity = crate::embeddings::ranking_key(&reader, Some(&provider));
+        let ranking_identity = Some(crate::embeddings::ranking_key(&reader, Some(&provider))?);
         let ask = Ask {
             text: query,
             cursor: None,
@@ -768,26 +805,11 @@ pub fn prepare<'read, 'pool>(
     let mut program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    // A `similar:` ranking whose query vector cannot be had (the provider is
-    // down, model calls are off and no vector is stored) keeps every row,
-    // unranked, and says so, instead of failing the query.
-    let similarity = match (&program.near, ask.near) {
-        (Some(request), Some(near)) => Some(near(&request.text).unwrap_or_else(|message| {
-            program
-                .incomplete
-                .push(if message == crate::embeddings::CALLS_OFF {
-                    message
-                } else {
-                    format!("semantic ranking failed ({message}); rows are unranked")
-                });
-            std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())
-        })),
-        _ => None,
-    };
+    let similarity = program.ranking(reader, ask.near)?;
     let ready = |_: &str| {
-        similarity
-            .clone()
-            .ok_or_else(|| "semantic search unavailable".to_owned())
+        similarity.clone().ok_or_else(|| {
+            polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+        })
     };
     let after = cursor
         .as_ref()

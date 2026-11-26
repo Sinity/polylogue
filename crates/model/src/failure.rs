@@ -162,6 +162,21 @@ macro_rules! reasons {
 }
 
 reasons! {
+    UnknownMeasure "unknown_measure" => BadValue { value: String, known: Names }
+        "unknown measurement `{value}`; choose one of {known}";
+    EmbeddingsOff "embeddings_off" => EmbeddingsOff {}
+        "semantic search is off; enable it with `polylogue set embed.provider local`";
+    EmbeddingStore "embedding_store" => Embed { problem: String }
+        "the embeddings store cannot be read: {problem}";
+    EmbeddingConfiguration "embedding_configuration" => BadValue { problem: String }
+        "semantic search configuration is invalid: {problem}";
+    NoVectors "no_vectors" => Embed { model: String }
+        "no vectors are stored for model `{model}`; build them with `polylogue embed`";
+    EmbeddingProvider "embedding_provider" => Embed { problem: String }
+        "the embedding provider failed: {problem}";
+    EmbeddingCallsOff "embedding_calls_off" => ModelCallsOff {}
+        "semantic search for new text is off (model calls are off); enable it with `polylogue set embed.calls on`";
+
     /// A write of a single-valued kind over more than one row.
     SingleValuedBulk "single_valued_bulk" => BadRequest { kind: String, rows: usize }
         "`{kind}` holds one value per target and is not written over {rows} rows; label rows with a rubric field (annotation) instead";

@@ -553,7 +553,7 @@ fields! {
         "the number of distinct versions its sources hold",
     ),
     SessionsId = f(Sessions, "id", Prefix, "session ID or a unique prefix").reference(Sessions),
-    SessionsOrigin = f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …"),
+    SessionsOrigin = v(Sessions, "origin", &[], "the origins declared by the daemon"),
     SessionsPhysical = f(
         Sessions,
         "physical",

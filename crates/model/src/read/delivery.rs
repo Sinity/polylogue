@@ -25,8 +25,8 @@ pub struct ReadPage {
     pub document: ReadDocument,
 }
 
-/// The fixed reading identity for a budgeted page. Query text, notes and other
-/// unbounded metadata belong in budgeted items or the full stream header.
+/// The fixed reading identity and unavailable ranking for a budgeted page.
+/// Query text and other metadata belong in budgeted items or the full stream header.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPageSnapshot {
@@ -34,6 +34,8 @@ pub struct ReadPageSnapshot {
     pub ran_at: crate::Timestamp,
     pub read_at: crate::ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
+    /// A semantic ranking that could not run.
+    pub incomplete: Vec<String>,
 }
 impl From<&ReadSnapshot> for ReadPageSnapshot {
     fn from(snapshot: &ReadSnapshot) -> Self {
@@ -42,6 +44,7 @@ impl From<&ReadSnapshot> for ReadPageSnapshot {
             ran_at: snapshot.ran_at,
             read_at: snapshot.read_at.clone(),
             freshness: snapshot.freshness.clone(),
+            incomplete: snapshot.incomplete.clone(),
         }
     }
 }

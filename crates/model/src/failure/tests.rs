@@ -13,6 +13,52 @@ fn codes_round_trip_the_wire_names() {
 fn every_reason_has_one_code_and_one_text() {
     let table = [
         (
+            Reason::UnknownMeasure {
+                value: "nope".into(),
+                known: ["time"].into_iter().collect(),
+            },
+            Code::BadValue,
+            "unknown measurement `nope`; choose one of time",
+        ),
+        (
+            Reason::EmbeddingsOff {},
+            Code::EmbeddingsOff,
+            "semantic search is off; enable it with `polylogue set embed.provider local`",
+        ),
+        (
+            Reason::EmbeddingStore {
+                problem: "unreadable".into(),
+            },
+            Code::Embed,
+            "the embeddings store cannot be read: unreadable",
+        ),
+        (
+            Reason::EmbeddingConfiguration {
+                problem: "bad endpoint".into(),
+            },
+            Code::BadValue,
+            "semantic search configuration is invalid: bad endpoint",
+        ),
+        (
+            Reason::NoVectors {
+                model: "synthetic".into(),
+            },
+            Code::Embed,
+            "no vectors are stored for model `synthetic`; build them with `polylogue embed`",
+        ),
+        (
+            Reason::EmbeddingProvider {
+                problem: "unavailable".into(),
+            },
+            Code::Embed,
+            "the embedding provider failed: unavailable",
+        ),
+        (
+            Reason::EmbeddingCallsOff {},
+            Code::ModelCallsOff,
+            "semantic search for new text is off (model calls are off); enable it with `polylogue set embed.calls on`",
+        ),
+        (
             Reason::SingleValuedBulk {
                 kind: "kind-x".into(),
                 rows: 2,

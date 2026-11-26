@@ -778,7 +778,7 @@ proptest! {
 
     /// A ranking orders rows and never changes which match or how many:
     /// words ranked by relevance against the same rows sorted by time, and
-    /// `similar:` with vectors for every text, for some, and disabled. A
+    /// `similar:` with vectors for every text, for some, and for none. A
     /// count after `similar:` needs no ranking, so it computes no similarity.
     #[test]
     fn a_ranking_never_changes_which_rows_match(
@@ -801,9 +801,9 @@ proptest! {
             let similarity = match vectors {
                 "every text" => Some(vectors_for(&w, |_| true)),
                 "some texts" => Some(vectors_for(&w, |session| session.ends_with('0') || session.ends_with('2'))),
-                _ => None,
+                _ => Some(std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())),
             };
-            let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
+            let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
                 Ok(std::sync::Arc::clone(similarity.as_ref().unwrap()))
             };
             let mut request = ask(&ranked_text);
@@ -824,7 +824,7 @@ proptest! {
                 );
             }
         }
-        let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
+        let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
             panic!("a count computed a similarity")
         };
         let count_text = format!("{ranked_text} | agg count");

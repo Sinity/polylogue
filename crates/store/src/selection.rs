@@ -82,7 +82,7 @@ impl SelectionError {
 }
 
 /// Provider work is injected; preparing or visiting never selects a provider.
-pub type NearFn<'a> = dyn Fn(&str) -> Result<Arc<crate::vectors::Similarity>, String> + 'a;
+pub type NearFn<'a> = dyn Fn(&str) -> Result<Arc<crate::vectors::Similarity>, StoreError> + 'a;
 
 pub struct PreparedSelection<'read> {
     reader: usize,
@@ -114,6 +114,15 @@ impl PreparedSelection<'_> {
     pub fn bound_query(&self) -> &BoundQuery {
         self.plan.bound_query()
     }
+    /// Resolve the ranking before reading metadata and records.
+    pub fn ranking(
+        &mut self,
+        reader: &Reader<'_>,
+        near: Option<&NearFn<'_>>,
+    ) -> Result<Option<Arc<crate::vectors::Similarity>>, SelectionError> {
+        self.program.ranking(reader, near)
+    }
+
     pub fn program(&self) -> &Program {
         &self.program
     }

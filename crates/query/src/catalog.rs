@@ -120,6 +120,11 @@ fn build(origins: &[String]) -> Catalog {
                     declarations.push(field(f, format!("{}.{}", relation.prefix, f.name)));
                 }
             }
+            for field in &mut declarations {
+                if field.name.rsplit('.').next() == Some("origin") {
+                    field.values = origins.to_vec();
+                }
+            }
             query_language::catalog::Unit {
                 name: spec.name.into(),
                 sequence_unit: Some("tool_calls".into()),

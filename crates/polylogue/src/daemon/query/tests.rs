@@ -1013,7 +1013,7 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
         detail["message"]
             .as_str()
             .unwrap()
-            .starts_with("unknown field `reop` on `sessions`; fields: ")
+            .starts_with("unknown field `reop` on `sessions`")
     );
     // The known names nearest the unknown one travel as typed candidates.
     assert!(f.candidates().contains(&"repo".to_owned()), "{f:?}");
@@ -1117,10 +1117,12 @@ fn an_empty_result_explains_itself() {
         .expect("the logical-session default is named");
     assert_eq!(logical["matches"], 5);
     assert_eq!(logical["of"], 8);
-    // 33: semantic search is not enabled.
-    let v = q(&w, "similar:\"ambiguous date formats\"");
-    assert_eq!(v["outcome"], "incomplete");
-    assert_eq!(v["count"], 5);
+    let failure = run_q(&w, ask("similar:\"ambiguous date formats\"")).unwrap_err();
+    assert_eq!(failure.code(), "embeddings_off");
+    assert_eq!(
+        failure.message,
+        "semantic search is off; enable it with `polylogue set embed.provider local`"
+    );
 }
 
 /// Similarities for `similar:` computed from stored vectors: the texts of the
