@@ -321,6 +321,7 @@ fn a_long_step_names_what_each_busy_thread_is_doing() {
             sql: "CREATE INDEX messages_by_time ON messages(time)".into(),
             seconds: 30.0,
         }],
+        worker: None,
     };
     assert_eq!(slow_step(&step, start + Duration::from_secs(9), &[]), None);
     assert_eq!(

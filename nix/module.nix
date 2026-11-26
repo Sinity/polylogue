@@ -60,22 +60,21 @@ in
       ++ lib.optional (selected != null && builtins.hasAttr selected wrappers) (
         deployment.aliases { inherit cfg selected wrappers; }
       );
-    systemd.services =
-      lib.mapAttrs' (
-        _: archive:
-        lib.nameValuePair archive.command {
-          description = "Polylogue archive ${archive.command}";
-          wantedBy = lib.optional cfg.autoStart "multi-user.target";
-          after = [ "network.target" ];
-          restartTriggers = [ cfg.package ];
-          serviceConfig = deployment.serviceConfig cfg // {
-            User = cfg.user;
-            WorkingDirectory = builtins.toJSON (lib.replaceStrings [ "%" ] [ "%%" ] cfg.home);
-            RuntimeDirectory = archive.command;
-            RuntimeDirectoryMode = "0700";
-            ExecStart = "/run/current-system/sw/bin/${archive.command} daemon";
-          };
-        }
-      ) cfg.archives;
+    systemd.services = lib.mapAttrs' (
+      _: archive:
+      lib.nameValuePair archive.command {
+        description = "Polylogue archive ${archive.command}";
+        wantedBy = lib.optional cfg.autoStart "multi-user.target";
+        after = [ "network.target" ];
+        restartTriggers = [ cfg.package ];
+        serviceConfig = deployment.serviceConfig cfg // {
+          User = cfg.user;
+          WorkingDirectory = builtins.toJSON (lib.replaceStrings [ "%" ] [ "%%" ] cfg.home);
+          RuntimeDirectory = archive.command;
+          RuntimeDirectoryMode = "0700";
+          ExecStart = "/run/current-system/sw/bin/${archive.command} daemon";
+        };
+      }
+    ) cfg.archives;
   };
 }

@@ -112,14 +112,6 @@ enum Msg {
 pub struct Writer {
     sender: WriterSender,
     archive: Option<crate::archive::writer::ArchiveWriter>,
-    /// The archive's stop request ([`Archive::stop`]). It ends the writer's
-    /// long work early: a derive pass after the transaction in progress, a
-    /// first build's ending (its deferred indexes) at its next step, replay
-    /// of stored bytes and copies of identical-chain readings by rolling
-    /// back their unfinished index transaction. What committed stays; the
-    /// rest is done at the next start. Capture and authored writes are not
-    /// affected.
-    stop: crate::cancellation::Cancellation,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -330,7 +322,6 @@ impl Writer {
         Ok(Self {
             sender: WriterSender(queue),
             archive: Some(archive_writer),
-            stop,
             handle: Some(handle),
         })
     }
