@@ -293,8 +293,12 @@ fn run(
                 answers
             }
         };
-        for (request, answer) in waiting.into_iter().zip(answers) {
-            let _ = request.reply.send(answer);
+        // A put returns once its staged encodings are gone: the bytes are
+        // in the home and the archive knows them, so nothing of the put is
+        // left behind for its caller to see.
+        for (Request { blobs, reply }, answer) in waiting.into_iter().zip(answers) {
+            drop(blobs);
+            let _ = reply.send(answer);
         }
     }
 }
