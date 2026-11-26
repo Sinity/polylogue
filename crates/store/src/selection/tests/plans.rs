@@ -98,9 +98,15 @@ fn default_pages_read_in_index_order() {
             continue;
         }
         let steps = page_steps(&f, text);
+        let mut undated = false;
         for step in &steps {
+            undated |= step == "UNION ALL";
+            // Tool calls that share a time, the undated ones included, are
+            // ordered by their message ID and block position, which the
+            // time index cannot hold.
+            let shared_time = unit == polylogue_query::units::Unit::ToolCalls && undated;
             assert!(
-                !step.starts_with("USE TEMP B-TREE") || step.contains(" LAST "),
+                !step.starts_with("USE TEMP B-TREE") || step.contains(" LAST ") || shared_time,
                 "{text}: {steps:#?}"
             );
             for table in ["message", "event", "tool_call"] {
