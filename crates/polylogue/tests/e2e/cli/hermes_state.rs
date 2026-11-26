@@ -208,7 +208,9 @@ fn empty_active_path_differs_from_missing_flags() {
     let config = dir.path().join("config");
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
-    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
+    // Seven messages are stored; the total counts those on a session's
+    // active path or with an unknown one: 0 + 1 + 2.
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
     let listed = cli(&env, &["--json", "sessions where origin:hermes"]);
     assert!(listed.status.success(), "{listed:?}");
     let listed = listing(json(&listed));
@@ -325,7 +327,8 @@ fn empty_active_path_differs_from_missing_flags() {
     std::fs::remove_file(&state_db).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _rebuilt = start_daemon(&env);
-    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
+    // The last flag written left `empty` wholly inactive: 0 + 1 + 2 counted.
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
     for (sid, expected, active) in states {
         let query = format!("messages where session:{sid} active:*");
         let out = cli(&env, &["--json", &query]);
