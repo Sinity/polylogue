@@ -58,6 +58,7 @@ impl clap_complete::engine::ValueCompleter for Query {
                         position: Some(position as u64),
                         ..Default::default()
                     },
+                    Some(KEYSTROKE_WAIT),
                 )
             })
             .unwrap_or_else(|| crate::completion::grammar(&text, position));
@@ -76,15 +77,18 @@ impl clap_complete::engine::ValueCompleter for Query {
     }
 }
 
-/// How long one Tab waits for the daemon: the completion class's budget
-/// per keystroke (docs/latency.md).
-pub(crate) const BUDGET: Duration = Duration::from_millis(50);
+/// How long one Tab waits for the daemon before offering the grammar alone.
+/// The completion class's budget is 50 ms per keystroke at p95
+/// (docs/latency.md); the wait is longer so that a loaded daemon still
+/// answers with values, while a daemon that is down refuses at once.
+pub(crate) const KEYSTROKE_WAIT: Duration = Duration::from_millis(250);
 
 /// The daemon's candidates, or `None` when no daemon answered within the
 /// budget or it refused; the caller then offers what needs no archive.
 pub(crate) fn ask(
     archive: &std::path::Path,
     arguments: crate::protocol::complete::Arguments,
+    wait: Option<Duration>,
 ) -> Option<Vec<Completion>> {
     let request = crate::client::request(
         "internal complete",
@@ -92,7 +96,11 @@ pub(crate) fn ask(
         polylogue_store::user_writes::new_request_id(),
     );
     let socket = polylogue_store::Archive::at(archive).socket();
-    let answer = crate::client::call_with_budget(&socket, &request, BUDGET).ok()?;
+    let answer = match wait {
+        Some(wait) => crate::client::call_with_budget(&socket, &request, wait),
+        None => crate::client::call(&socket, &request),
+    }
+    .ok()?;
     let value = crate::protocol::into_value(answer).ok()?;
     serde_json::from_value(value).ok()
 }
@@ -106,7 +114,8 @@ pub(super) fn candidate(value: String, help: String) -> Option<CompletionCandida
 }
 
 /// Whether a saved query is named `word`: completing `query:WORD` offers
-/// the word itself. `false` when no daemon answers in time.
+/// the word itself. The answer decides how the line is read, so it waits
+/// for the daemon as any request does; `false` when no daemon runs.
 pub(crate) fn is_saved_name(archive: &std::path::Path, word: &str) -> bool {
     let text = format!("query:{word}");
     ask(
@@ -116,13 +125,9 @@ pub(crate) fn is_saved_name(archive: &std::path::Path, word: &str) -> bool {
             text,
             ..Default::default()
         },
+        None,
     )
-    .is_some_and(|candidates| {
-        candidates.iter().any(|candidate| {
-            candidate.kind == query_language::complete::CompletionKind::Value
-                && candidate.value == word
-        })
-    })
+    .is_some_and(|candidates| candidates.iter().any(|candidate| candidate.value == word))
 }
 
 /// Shell arguments are already decoded. Their query spelling is the same join
@@ -202,6 +207,7 @@ impl clap_complete::engine::ValueCompleter for Setting {
                         key: key.clone(),
                         ..Default::default()
                     },
+                    Some(KEYSTROKE_WAIT),
                 )
             })
             .unwrap_or_else(|| crate::completion::settings(key.as_deref(), prefix, &[], |_| None))

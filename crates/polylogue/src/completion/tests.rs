@@ -15,7 +15,7 @@ fn populated(root: &std::path::Path) -> Fixture {
             ..Default::default()
         })
         .unwrap();
-    for id in ["m1", "m2"] {
+    for id in ["codex:m1", "codex:m2"] {
         fixture
             .message(
                 session,

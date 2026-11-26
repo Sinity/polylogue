@@ -74,7 +74,7 @@ polylogue session:claude-code:example resume --in codex
 
 ### The first word
 
-The CLI decides what the first argument is from its own tables (local class); only a single plain word shaped like a saved name costs one question to the daemon, in the completion class, before the line runs. With the daemon down that word is a search, and the line fails as every line does then. The first matching rule wins:
+The CLI decides what the first argument is from its own tables (local class); only a single plain word shaped like a saved name costs one question to the daemon before the line runs, answered as completing `query:WORD`. With the daemon down that word is a search, and the line fails as every line does then. The first matching rule wins:
 
 1. **Nothing**: the orientation screen on a terminal, the `status` block otherwise ([terminal.md](terminal.md#the-orientation-screen)).
 2. **`-`**: references read from standard input, one per line.

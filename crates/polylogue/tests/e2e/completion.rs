@@ -33,7 +33,7 @@ fn seed(root: &Path, model: &str) {
         .message(
             session,
             MessageFacts {
-                id: "m1",
+                id: "codex:m1",
                 role: "assistant",
                 written_by: "model",
                 model: Some(model),

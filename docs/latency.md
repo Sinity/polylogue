@@ -9,7 +9,7 @@ Each table row declares a latency class, and the class applies on every surface 
 | Class | Members | Budget (p95) | Deadline sent |
 |---|---|---|---|
 | **local** | `help`, `--help`, `--version`, grammar refusals, `--explain` of a line's grammar, `install SHELL --dry-run` | ≤ 15 ms | none (no socket) |
-| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, process start and one socket round trip included | 50 ms; without an answer in time the shell gets the grammar alone; 30 ms for the count preview, omitted when late |
+| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, process start and one socket round trip included | the CLI waits 250 ms, then offers the grammar alone; 30 ms for the count preview, omitted when late |
 | **picker** | first candidates, a keystroke, the preview | 50 ms, 16 ms, 100 ms | the read class for candidates; 100 ms for the preview |
 | **status** | bare `polylogue`, `status`, `status --line` | ≤ 100 ms; `status --line` ≤ 30 ms, because it runs in status bars | 80 ms |
 | **read** | the first screen of a one-row read, the first page of an indexed listing (`origin:`, `repo:`, `since:`, `tag:`, a shipped saved query), a page turn, `resume` | ≤ 100 ms | 250 ms |
