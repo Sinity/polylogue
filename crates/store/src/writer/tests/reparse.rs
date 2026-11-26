@@ -276,7 +276,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_start+s.source_length AS source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",
@@ -922,8 +922,11 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert!(changed() > before);
 }
 
-/// The totals `status` reads, counted again from the rows.
+/// The totals `status` reads, counted again from the rows once the
+/// session summaries, which message and tool call totals are summed from,
+/// have caught up.
 fn assert_totals_equal_a_recount(w: &TestArchive) {
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let status = r.status(&crate::fixture::synthetic_contracts()).unwrap();
@@ -931,7 +934,7 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
     // Each chain shown by the rules of `docs/archive.md` (parse versions).
     let parse_states: std::collections::BTreeMap<String, u64> = r
         .query(
-            "SELECT CASE WHEN s.format <> 'claude-code' THEN 'no_parser'
+            "SELECT CASE WHEN s.origin <> 'claude-code' THEN 'no_parser'
                     WHEN p.input_pk IS NULL OR p.parser_version <> 'synthetic=1'
                       OR p.parsed_to + p.waiting <> c.length THEN 'parsing'
                     WHEN p.state = 'failed' AND p.failure_kind = 'refused' THEN 'refused'

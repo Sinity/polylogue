@@ -227,7 +227,7 @@ impl InputRows {
         self.validate_source_read()?;
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
-            &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
+            &source.sql("INSERT OR IGNORE INTO @source.input(id, origin) VALUES (?1, ?2)"),
         )?
         .execute(params![self.input, self.origin])?;
         if let Some(r) = &self.revision {
@@ -316,7 +316,7 @@ impl InputRows {
             }
             let (class, revision, chain, length) = o.seen.columns();
             tx.prepare_cached(&source.sql(
-                "INSERT OR IGNORE INTO @source.machine(id, host, first_seen) VALUES (?1, ?2, ?3)",
+                "INSERT OR IGNORE INTO @source.machine(id, host, first_seen_at) VALUES (?1, ?2, ?3)",
             ))?
             .execute(params![o.machine, o.host, o.seen_at])?;
             tx.prepare_cached(

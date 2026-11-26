@@ -16,8 +16,8 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 8);
-    assert_eq!(INDEX_VERSION, 21);
+    assert_eq!(ARCHIVE_VERSION, 9);
+    assert_eq!(INDEX_VERSION, 22);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -39,15 +39,15 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 22).unwrap();
+    set_version(&conn, 23).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 22,
+            found: 23,
             wanted: INDEX_VERSION
         })
     ));
-    assert_eq!(version(&conn).unwrap(), 22);
+    assert_eq!(version(&conn).unwrap(), 23);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))
@@ -364,10 +364,10 @@ fn schema_check_lists_come_from_names() {
         .map(|group| group.as_str())
         .collect();
     let record: &[(&str, &str, &[&str])] = &[
-        ("delivery_event", "what", DeliveryOutcome::NAMES),
+        ("delivery_event", "outcome", DeliveryOutcome::NAMES),
         ("chat_action", "execution", RunsHere::NAMES),
         ("import_job", "execution", RunsHere::NAMES),
-        ("query_edge", "how", QueryEdgeKind::NAMES),
+        ("query_edge", "kind", QueryEdgeKind::NAMES),
         ("revision", "produced", crate::input_rows::Produced::NAMES),
         (
             "observation",

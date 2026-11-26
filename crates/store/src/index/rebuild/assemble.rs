@@ -49,19 +49,6 @@ impl Rebuild {
             false,
         )?;
         let aliases = Arc::new(crate::writer::identity::Aliases::load(&self.conn)?);
-        // Assembly runs no trigger per row: each counted table is counted
-        // once when assembly ends.
-        let counting: Vec<(String, String)> = self
-            .conn
-            .prepare(
-                "SELECT name,sql FROM sqlite_schema
-                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
-            )?
-            .query_map([], |r| <(String, String)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (name, _) in &counting {
-            self.conn.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
-        }
         // The sessions a copy name involves are decided across sessions.
         fallback.extend(
             self.conn
@@ -77,7 +64,7 @@ impl Rebuild {
         // assembled from the build file, which their reader passes over.
         let stated: u64 = self.conn.scalar(
             "SELECT count(*) FROM (
-                 SELECT DISTINCT session_id FROM session_record
+                 SELECT DISTINCT session_id FROM session_parse
                  UNION SELECT DISTINCT session_id FROM message_parse
                  UNION SELECT DISTINCT session_id FROM event_parse WHERE session_id IS NOT NULL
                  UNION SELECT DISTINCT session_id FROM call_outcome)",
@@ -86,7 +73,7 @@ impl Rebuild {
         let mut passed_over = 0;
         for name in &fallback {
             if self.conn.exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                "SELECT EXISTS(SELECT 1 FROM session_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM event_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM call_outcome WHERE session_id=?1)",
@@ -166,23 +153,17 @@ impl Rebuild {
             self.events_from_index(&mut touched, deferred)?;
             self.compose_from_index(touched)?;
         }
-        // Each counted table is counted once, and its triggers made again.
+        // Every session's lineage is computed once the rebuild's sessions
+        // and links are all written.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let tables: Vec<String> = tx
-            .prepare("SELECT name FROM row_count")?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for table in tables {
-            tx.execute(
-                &format!("UPDATE row_count SET n=(SELECT count(*) FROM \"{table}\") WHERE name=?1"),
-                [&table],
-            )?;
-        }
-        for (_, sql) in counting {
-            tx.execute(&sql, [])?;
-        }
+        tx.execute(
+            "INSERT INTO summary_due(session_pk,from_order,lineage)
+             SELECT pk,X'FF',1 FROM session WHERE true
+             ON CONFLICT(session_pk) DO UPDATE SET lineage=1,marked=marked+1",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }

@@ -522,7 +522,7 @@ fn imported_on_two_archives() -> Vec<Vec<String>> {
         let conn = crate::archive::open_read(&w.archive.archive_db()).unwrap();
         let mut statement = conn
             .prepare(
-                "SELECT 'input', id, format, '', '' FROM input
+                "SELECT 'input', id, origin, '', '' FROM input
                  UNION ALL SELECT 'revision', input, number, chain, length FROM revision
                  UNION ALL SELECT 'extent', input, chain, offset, hex(blob) FROM extent
                  ORDER BY 1, 2, 3",

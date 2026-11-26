@@ -261,7 +261,10 @@ impl Fixture {
                 title_source.as_str(),
             ],
         )?;
-        Ok(self.index.last_insert_rowid())
+        let pk = self.index.last_insert_rowid();
+        // As the writer does: a new session's lineage is due.
+        crate::lineage::mark_due(&self.index, s.id)?;
+        Ok(pk)
     }
 
     /// Record source time accuracy rather than treating every fixture time as exact.
@@ -597,6 +600,7 @@ impl Fixture {
                     fixture_time(Some(started))?,
                 ])?;
                 let pk = tx.last_insert_rowid();
+                crate::lineage::mark_due(&tx, &format!("test:{native}"))?;
                 let answered = n + spec.answered >= spec.sessions;
                 for m in 0..spec.messages {
                     // The last message is always a model answer.
@@ -649,6 +653,10 @@ impl Fixture {
              VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
+        // As the writer does: a lineage link marks its child and below.
+        if crate::lineage::is_lineage(kind) {
+            crate::lineage::mark_due(&self.index, child)?;
+        }
         crate::summary::lines::write_fixture_lines(
             &self.index,
             &mut self.lines_written.borrow_mut(),
@@ -663,6 +671,9 @@ impl Fixture {
              VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
             params![parent, child, kind, self.input_pk],
         )?;
+        if crate::lineage::is_lineage(kind) {
+            crate::lineage::mark_due(&self.index, child)?;
+        }
         crate::summary::lines::write_fixture_lines(
             &self.index,
             &mut self.lines_written.borrow_mut(),
@@ -816,7 +827,7 @@ impl Fixture {
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
         crate::kept::validate_body(id, rows_json)?;
         self.archive_conn.execute(
-            "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
+            "INSERT INTO saved_rows(id, query, ran_at, read_position, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],
         )?;
         Ok(())
@@ -825,7 +836,7 @@ impl Fixture {
     /// Replace a stored kept body with deliberately damaged bytes for read tests.
     pub fn corrupt_kept_body(&mut self, id: &str, body: &str) -> Result<()> {
         self.archive_conn.execute(
-            "UPDATE kept_result SET rows_json=?1 WHERE id=?2",
+            "UPDATE saved_rows SET rows_json=?1 WHERE id=?2",
             params![body, id],
         )?;
         Ok(())

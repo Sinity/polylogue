@@ -19,12 +19,12 @@ CREATE INDEX alternate_source ON alternate(source,kind,to_lang);
 CREATE INDEX alternate_commit_seq ON alternate(commit_seq);
 CREATE TABLE alternate_part (
   alternate TEXT NOT NULL REFERENCES alternate(id),
-  n INTEGER NOT NULL CHECK(n>=0),
-  of TEXT NOT NULL,
-  of_hash BLOB NOT NULL CHECK(length(of_hash)=32),
+  position INTEGER NOT NULL CHECK(position>=0),
+  source TEXT NOT NULL,
+  source_hash BLOB NOT NULL CHECK(length(source_hash)=32),
   relation TEXT NOT NULL,
   body BLOB NOT NULL,
-  PRIMARY KEY(alternate,n)
+  PRIMARY KEY(alternate,position)
 ) STRICT, WITHOUT ROWID;
 
-CREATE INDEX alternate_part_source ON alternate_part(alternate,of,n);
+CREATE INDEX alternate_part_source ON alternate_part(alternate,source,position);

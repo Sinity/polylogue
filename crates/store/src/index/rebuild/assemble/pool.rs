@@ -26,8 +26,10 @@ const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
 /// ends.
 pub(super) const BATCH_MESSAGES: usize = 1_000;
 
-/// Tables composition writes that the build file's own triggers fill when
-/// a session row is appended: they are not taken from the composer.
+/// Tables composition writes that are not taken from the composer: the
+/// build file's own triggers fill `session_cwd_member` when a session row
+/// is appended, and the build marks every session's summaries due once
+/// its sessions are written.
 const MADE_BY_TRIGGERS: &[&str] = &["summary_due", "session_cwd_member", "session_lineage"];
 
 /// Whole sessions of the stream, in stream order, numbered from zero.
@@ -236,17 +238,6 @@ impl Composing {
         let conn = Connection::open_in_memory()?;
         crate::schema::ensure_build_index(&conn)?;
         conn.pragma_update(None, "foreign_keys", false)?;
-        // Counts are taken once composition ends, from the build file.
-        let counting: Vec<String> = conn
-            .prepare(
-                "SELECT name FROM sqlite_schema
-                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
-            )?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for name in counting {
-            conn.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
-        }
         crate::meta_set(&conn, "write_counter", shared.counter.to_string())?;
         for (table, rows) in &shared.links {
             let Some(first) = rows.first() else {
