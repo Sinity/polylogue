@@ -671,7 +671,7 @@ CREATE TABLE commit_link (
                                             --   trailer. Derived: a rewrite of the call removes it, and the
                                             --   derive step makes it again
   evidence          TEXT NOT NULL,          -- commit-output | trailer | codex-git
-  found_at          BLOB,                   -- commit-output: the row key of the message whose call first
+  row_key           BLOB,                   -- commit-output: the row key of the message whose call first
                                             --   reported it (summary/links.rs); NULL for another evidence
   PRIMARY KEY (session_pk, commit_hash)
 ) STRICT, WITHOUT ROWID;
@@ -684,7 +684,7 @@ CREATE TABLE pr_link (
   number            INTEGER NOT NULL,
   url               TEXT,
   evidence          TEXT NOT NULL,          -- pr-link-record | gh-output | codex
-  found_at          BLOB,                   -- gh-output: the row key of the message whose call first
+  row_key           BLOB,                   -- gh-output: the row key of the message whose call first
                                             --   reported it; NULL for another evidence
   PRIMARY KEY (session_pk, repo, number)
 ) STRICT, WITHOUT ROWID;

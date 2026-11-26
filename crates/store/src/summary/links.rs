@@ -6,7 +6,7 @@
 //! A fold over the session's finished calls in session order: a commit's
 //! evidence is the first call in that order to report it. The fold keeps no
 //! state: each run finds the links of the rows it reads, and its write
-//! replaces the links found after its start (`found_at`), so a link found
+//! replaces the links found after its start (`row_key`), so a link found
 //! before keeps its earlier evidence.
 
 use super::Output;
@@ -170,22 +170,22 @@ pub(super) fn apply(
 ) -> Result<()> {
     tx.prepare_cached(
         "DELETE FROM commit_link
-         WHERE session_pk = ?1 AND evidence = 'commit-output' AND found_at > ?2",
+         WHERE session_pk = ?1 AND evidence = 'commit-output' AND row_key > ?2",
     )?
     .execute(params![session_pk, after.0])?;
     tx.prepare_cached(
-        "DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND found_at > ?2",
+        "DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND row_key > ?2",
     )?
     .execute(params![session_pk, after.0])?;
     let mut commit = tx.prepare_cached(
-        "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence, found_at)
+        "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence, row_key)
          VALUES (?1, ?2, ?3, 'commit-output', ?4) ON CONFLICT(session_pk, commit_hash) DO NOTHING",
     )?;
     for (hash, (block, at)) in &found.commits {
         commit.execute(params![session_pk, hash, block, at.0])?;
     }
     let mut pull = tx.prepare_cached(
-        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence, found_at)
+        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence, row_key)
          VALUES (?1, ?2, ?3, ?4, 'gh-output', ?5)",
     )?;
     for ((repo, n, url), at) in &found.pulls {
