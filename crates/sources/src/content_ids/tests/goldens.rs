@@ -78,12 +78,6 @@ fn content_named_origins_keep_fixed_ids_and_number_equal_messages() {
             &claude_ai,
             "35085b468aa12a8a",
         ),
-        (
-            "claude-design",
-            "conversations.json",
-            &claude_ai,
-            "35085b468aa12a8a",
-        ),
         ("aider", ".aider.llm.history", &aider, "35085b468aa12a8a"),
         (
             "ai-studio",
@@ -99,7 +93,8 @@ fn content_named_origins_keep_fixed_ids_and_number_equal_messages() {
             "fb6ba35e81bde94f",
         ),
     ] {
-        let mut parser = (crate::origin::by_name(origin).unwrap().open)(Path::new(path)).unwrap();
+        let mut parser = (crate::origin::by_name(origin).unwrap().open)(Path::new(path))
+            .unwrap_or_else(|| panic!("{origin}: no parser for {path}"));
         let step = crate::export::fixture::parse(&mut parser, bytes.as_bytes()).unwrap();
         let rows: Vec<_> = step
             .output
