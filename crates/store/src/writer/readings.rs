@@ -47,6 +47,9 @@ pub(super) struct Chain<'a> {
     /// The transaction's change summary: relations named by copied-prefix
     /// facts are recorded before they change.
     pub changes: &'a crate::change_summary::ChangeSummary,
+    /// The chain gains or loses its parse with this step, which decides
+    /// which content-named messages of the input's older chains are held.
+    pub holds_changed: bool,
 }
 
 /// The coordinates of a link as its chain states them: its natural key.
@@ -343,9 +346,9 @@ pub(super) fn write(
         .apply(tx, chain.input_pk, chain.chain, step.parsed_upto, |_| {
             Ok(chain.committed)
         })?;
-    if step.progress.reached_end() {
-        // Once a newer chain is read to its end, an older chain's
-        // content-named messages that it no longer holds are gone.
+    if chain.holds_changed {
+        // Once a newer chain is parsed, an older chain's content-named
+        // messages that it no longer holds are gone (`held_message_parse`).
         for row in tx
             .prepare_cached(
                 "SELECT session_id,message_id FROM message_parse

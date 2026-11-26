@@ -84,7 +84,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         live_every: Duration::from_secs(2),
         reads_sources: true,
     };
-    let engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let engine = Engine::new(config, archive).unwrap();
     (engine, _lock)
 }
 
@@ -106,7 +106,6 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         .unwrap()
         .chains_behind_index(
             &[("claude-code".into(), "before".into())],
-            polylogue_store::StoppedChains::Finished,
             polylogue_store::RevisionChains::All,
             None,
         )
@@ -127,15 +126,13 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
                     format: "claude-code".into(),
                     route: polylogue_model::Route::Live,
                 },
-                Change::Reparse {
-                    chain: chain.progress.chain,
-                },
+                Change::Reparse { chain: chain.chain },
                 None,
-                chain.progress.length,
+                chain.stored,
                 0,
                 pool::Bytes::Unloaded {
-                    chain: chain.progress.chain,
-                    length: chain.progress.length,
+                    chain: chain.chain,
+                    length: chain.stored,
                     decoded: true,
                 },
                 64 << 20,
@@ -259,7 +256,6 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
         .unwrap()
         .chains_behind_index(
             &[("claude-code".into(), "before".into())],
-            polylogue_store::StoppedChains::Finished,
             polylogue_store::RevisionChains::All,
             None,
         )
@@ -284,15 +280,13 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
                     format: "claude-code".into(),
                     route: polylogue_model::Route::Live,
                 },
-                Change::Reparse {
-                    chain: chain.progress.chain,
-                },
+                Change::Reparse { chain: chain.chain },
                 *facts,
-                chain.progress.length,
+                chain.stored,
                 0,
                 pool::Bytes::Unloaded {
-                    chain: chain.progress.chain,
-                    length: chain.progress.length,
+                    chain: chain.chain,
+                    length: chain.stored,
                     decoded: true,
                 },
                 64 << 20,
@@ -387,7 +381,6 @@ fn live_append_commits_before_waiting_chain_replacements() {
         .unwrap()
         .chains_behind_index(
             &[("claude-code".into(), "before".into())],
-            polylogue_store::StoppedChains::Finished,
             polylogue_store::RevisionChains::All,
             None,
         )
@@ -413,15 +406,13 @@ fn live_append_commits_before_waiting_chain_replacements() {
                     format: "claude-code".into(),
                     route: polylogue_model::Route::Live,
                 },
-                Change::Reparse {
-                    chain: chain.progress.chain,
-                },
+                Change::Reparse { chain: chain.chain },
                 *facts,
-                chain.progress.length,
+                chain.stored,
                 0,
                 pool::Bytes::Unloaded {
-                    chain: chain.progress.chain,
-                    length: chain.progress.length,
+                    chain: chain.chain,
+                    length: chain.stored,
                     decoded: true,
                 },
                 64 << 20,
@@ -451,9 +442,9 @@ fn live_append_commits_before_waiting_chain_replacements() {
                     if reads
                         .reader()
                         .unwrap()
-                        .input_progress(&live_input)
+                        .latest_chain(&live_input)
                         .unwrap()
-                        .is_some_and(|progress| progress.parsed_upto == length)
+                        .is_some_and(|progress| progress.state.parsed_to() == length)
                     {
                         return Some(());
                     }
@@ -505,11 +496,11 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
         .reads
         .reader()
         .unwrap()
-        .input_progress(&input.id)
+        .latest_chain(&input.id)
         .unwrap()
         .unwrap();
     let budget = 1024;
-    assert!(progress.length > budget);
+    assert!(progress.stored > budget);
     let plan = Plan::stored(
         path,
         state.origin,
@@ -518,11 +509,11 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
             chain: progress.chain,
         },
         state.facts,
-        progress.length,
+        progress.stored,
         0,
         pool::Bytes::Unloaded {
             chain: progress.chain,
-            length: progress.length,
+            length: progress.stored,
             decoded: true,
         },
         1024,
@@ -537,7 +528,6 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
         engine.archive.clone(),
         done,
         pool::ChainSettings {
-            stopped_attempt: engine.stopped_attempt,
             read_memory: engine.config.reader_memory_bytes,
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
@@ -559,7 +549,7 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
     let id = live.input.id.clone();
     let length = live.size;
     assert!(engine.load_stored(&mut live).unwrap());
-    let job = live.next_job(&engine.stopped_attempt);
+    let job = live.next_job();
     assert!(job.end - job.start <= budget);
     let room = pool.has_room(job.end - job.start);
     let committed = if paused && room {
@@ -569,9 +559,9 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
                 .reads
                 .reader()
                 .unwrap()
-                .input_progress(&id)
+                .latest_chain(&id)
                 .unwrap()
-                .is_some_and(|progress| progress.parsed_upto == length)
+                .is_some_and(|progress| progress.state.parsed_to() == length)
             {
                 break true;
             }

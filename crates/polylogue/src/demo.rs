@@ -114,7 +114,6 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         config,
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
-        startup.stopped_attempt,
         &Default::default(),
     )
     .map_err(|e| e.to_string())?;

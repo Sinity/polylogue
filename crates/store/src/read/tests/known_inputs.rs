@@ -23,8 +23,8 @@ fn known_inputs_choose_the_latest_usable_observation() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('watched');
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
-         SELECT pk,1,'waiting',17,20 FROM input_ref WHERE id='watched';",
+         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+         SELECT pk,1,'parsed','v',17,3 FROM input_ref WHERE id='watched';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
@@ -39,8 +39,8 @@ fn known_inputs_choose_the_latest_usable_observation() {
     assert!(gone.facts.is_none());
     assert_eq!(gone.chain, Some(1));
     assert_eq!(gone.stored, 20);
-    assert_eq!(gone.parsed_upto, 17);
-    assert!(gone.parsed && gone.waiting);
+    assert_eq!(gone.state.parsed_to(), 17);
+    assert_eq!(gone.state.seen_to(), 20);
     let renamed = reader
         .known_watched_input_at("m", b"/home/op/renamed.jsonl")
         .unwrap()
@@ -48,7 +48,7 @@ fn known_inputs_choose_the_latest_usable_observation() {
     let facts = renamed.facts.unwrap();
     assert_eq!((facts.device, facts.inode, facts.size), (9, 10, 20));
     assert_eq!((facts.mtime_ns, facts.ctime_ns), (11, 12));
-    assert_eq!(renamed.parsed_upto, 17);
+    assert_eq!(renamed.state.parsed_to(), 17);
     let all = reader.known_inputs("m").unwrap();
     let imported = all
         .iter()
@@ -56,7 +56,7 @@ fn known_inputs_choose_the_latest_usable_observation() {
         .unwrap();
     assert_eq!(imported.input_id, "manual");
     assert_eq!(imported.stored, 7);
-    assert!(!imported.parsed);
+    assert_eq!(imported.state, polylogue_model::chain::ChainState::Unparsed);
     assert_eq!(
         reader.known_inputs("other-machine").unwrap()[0].input_id,
         "other"

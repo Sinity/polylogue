@@ -30,25 +30,27 @@ pub static ARCHIVE: LazyLock<String> = LazyLock::new(|| {
         include_str!("schema/signals.sql")
     ))
 });
-pub const INDEX: &str = concat!(
-    include_str!("schema/index.sql"),
-    "\n",
-    include_str!("schema/wire_shapes.sql"),
-    "\n",
-    include_str!("schema/injection_fields.sql"),
-    "\n",
-    include_str!("schema/attachment_bindings.sql"),
-    "\n",
-    include_str!("schema/text_fragments.sql"),
-    "\n",
-    include_str!("schema/session_cwd.sql"),
-    "\n",
-    include_str!("schema/transcript_lines.sql"),
-    "\n",
-    include_str!("schema/summary.sql"),
-    "\n",
-    include_str!("schema/lineage.sql")
-);
+pub static INDEX: LazyLock<String> = LazyLock::new(|| {
+    with_names(concat!(
+        include_str!("schema/index.sql"),
+        "\n",
+        include_str!("schema/wire_shapes.sql"),
+        "\n",
+        include_str!("schema/injection_fields.sql"),
+        "\n",
+        include_str!("schema/attachment_bindings.sql"),
+        "\n",
+        include_str!("schema/text_fragments.sql"),
+        "\n",
+        include_str!("schema/session_cwd.sql"),
+        "\n",
+        include_str!("schema/transcript_lines.sql"),
+        "\n",
+        include_str!("schema/summary.sql"),
+        "\n",
+        include_str!("schema/lineage.sql")
+    ))
+});
 #[cfg(test)]
 pub(crate) static QUERY_OBJECTS: LazyLock<String> = LazyLock::new(|| {
     with_names(concat!(
@@ -73,6 +75,7 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
         "QueryEdgeKind",
         polylogue_model::query_objects::QueryEdgeKind::NAMES,
     ),
+    ("ChainFailureKind", polylogue_model::ChainFailureKind::NAMES),
 ];
 
 /// Schema text with each `@names(Type)` replaced by that type's names.
@@ -145,13 +148,15 @@ pub(crate) const BUILT_AT_END: &[&str] = &[
     "removed_session_changed",
 ];
 #[cfg(test)]
-pub(crate) const INDEX_SCHEMA: &[&str] = &[
-    INDEX,
-    crate::coverage::SCHEMA,
-    crate::alternates::SCHEMA,
-    SEARCH_TRIGGERS,
-    OPEN_INDEXES,
-];
+pub(crate) static INDEX_SCHEMA: LazyLock<[&str; 5]> = LazyLock::new(|| {
+    [
+        INDEX.as_str(),
+        crate::coverage::SCHEMA,
+        crate::alternates::SCHEMA,
+        SEARCH_TRIGGERS,
+        OPEN_INDEXES,
+    ]
+});
 /// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
 /// the baseline created them.
 const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
@@ -170,7 +175,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 8;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 17;
+pub const INDEX_VERSION: u32 = 21;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an
@@ -266,7 +271,7 @@ fn base_index(conn: &Connection) -> Result<()> {
 }
 
 fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
-    execute_index_sql(conn, INDEX, deferring)?;
+    execute_index_sql(conn, &INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::alternates::SCHEMA)?;
     if !deferring {

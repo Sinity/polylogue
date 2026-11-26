@@ -3,10 +3,9 @@ use super::*;
 use crate::ConnExt as _;
 
 pub(crate) fn is_refusal(step: &ParseStep) -> bool {
-    matches!(
-        step.progress,
-        polylogue_model::batch::StepProgress::Refused { .. }
-    )
+    step.failure
+        .as_ref()
+        .is_some_and(|failure| failure.kind == polylogue_model::ChainFailureKind::Refused)
 }
 
 fn load_prefix(
@@ -40,10 +39,7 @@ pub(crate) fn admit_export(
 fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<bool> {
     // A failure carries no records and moves no cursor, so it switches
     // neither an export reading nor a byte-range reading.
-    if matches!(
-        step.progress,
-        polylogue_model::batch::StepProgress::Failed { .. }
-    ) {
+    if step.failure.is_some() && !is_refusal(step) {
         return Ok(true);
     }
     let Some(delivery) = step.delivery.as_ref() else {
@@ -64,17 +60,13 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
         ExportDeliverySource::Complete {
             length: scanned, ..
         } => {
-            if scanned != length
-                || step.start != 0
-                || step.parsed_upto != length
-                || !step.progress.reached_end()
-            {
+            if scanned != length || step.start != 0 || step.parsed_upto != length || !step.at_end {
                 return Err(StoreError::internal(
                     "export completion differs from its verified source length",
                 ));
             }
         }
-        _ if step.start != 0 || step.parsed_upto != 0 || step.progress.reached_end() => {
+        _ if step.start != 0 || step.parsed_upto != 0 || step.at_end => {
             return Err(StoreError::internal(
                 "an export callback cannot acknowledge a partial byte cursor",
             ));
@@ -82,7 +74,7 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
         _ => {}
     }
     let refused = is_refusal(step);
-    if refused && (step.output != polylogue_model::Output::default() || step.checkpoint.is_some()) {
+    if refused && (step.output != polylogue_model::Output::default() || step.resume.is_some()) {
         return Err(StoreError::internal(
             "an unreadable export header cannot carry facts or a completion checkpoint",
         ));
