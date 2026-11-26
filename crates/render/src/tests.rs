@@ -2227,37 +2227,38 @@ fn resumed_item_digest_rejects_late_layout_changes() {
 
 #[test]
 fn prose_encoders_label_json_fragments_as_encoded_transport() {
+    let original = r#"{"source":{"ref":"block:test:session:message#3","inherited":false},"kind":{"kind":"text","text":"λ"}}"#;
     let doc = document(vec![ReadItem {
-        source: Source::record("block:test:session:message#3"),
+        source: Source::record("run:018f0000-0000-7000-8000-000000000001"),
         kind: ItemKind::Fragment {
             text: r#""text":"λ""#.into(),
             position: ItemPlace {
                 selection: selection(),
                 item: 0,
-                character: 7,
-                item_hash: polylogue_model::BlobHash::of(b"synthetic item"),
+                character: 89,
+                item_hash: polylogue_model::BlobHash::of(original.as_bytes()),
             },
-            until: 17,
-            total: 30,
+            until: 99,
+            total: 101,
         },
     }]);
     for (format, expected) in [
         (
             Format::Terminal,
-            "session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n\"text\":\"λ\"\n… encoded characters 7..17 of 30 · block:test:session:message#3\n",
+            "session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n\"text\":\"λ\"\n… encoded characters 89..99 of 101 · run:018f0000-0000-7000-8000-000000000001\n",
         ),
         (
             Format::Markdown,
-            "# session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n```json-fragment\n\"text\":\"λ\"\n```\n\n… encoded characters 7..17 of 30 · block:test:session:message#3\n",
+            "# session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n```json-fragment\n\"text\":\"λ\"\n```\n\n… encoded characters 89..99 of 101 · run:018f0000-0000-7000-8000-000000000001\n",
         ),
         (
             Format::Html,
             concat!(
                 "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
                 "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
-                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#3\">",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"run:018f0000-0000-7000-8000-000000000001\">",
                 "<p>Encoded ReadItem JSON fragment</p><pre data-encoding=\"read_item_json\">&quot;text&quot;:&quot;λ&quot;</pre>",
-                "<p class=\"fragment-position\">… encoded characters 7..17 of 30</p></section></article>"
+                "<p class=\"fragment-position\">… encoded characters 89..99 of 101</p></section></article>"
             ),
         ),
     ] {
