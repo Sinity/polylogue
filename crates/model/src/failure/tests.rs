@@ -534,6 +534,13 @@ fn every_reason_has_one_code_and_one_text() {
             "the import is refused: problem-x",
         ),
         (
+            Reason::ImportRefused {
+                problem: "refused /home/op/export.json: no declared structure matched".into(),
+            },
+            Code::BadValue,
+            "no files were stored\nrefused /home/op/export.json: no declared structure matched",
+        ),
+        (
             Reason::NotAFile {
                 path: "path-x".into(),
             },

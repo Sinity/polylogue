@@ -4,6 +4,7 @@ use crate::brief::{self, Ask};
 use crate::daemon::Failure;
 use command_surface::{Answer, Outcome};
 use polylogue_model::user::{Delivery, UserWrite};
+use polylogue_model::{Cause, Code};
 use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::{StoreError, WriterSender, user_writes};
 use serde_json::Value;
@@ -86,16 +87,14 @@ pub(crate) fn import_answer(
         missing.extend(report.pass.errors.iter().map(ToString::to_string));
         if report.imported.is_empty() {
             let problem = missing.join("\n");
-            if let Some(failure) = report
-                .pass
-                .errors
-                .iter()
-                .find(|failure| failure.cause != polylogue_model::Cause::Content)
-            {
+            if let Some(failure) = report.pass.errors.iter().find(|failure| {
+                failure.code == Code::NotFound
+                    || !matches!(failure.cause, Cause::Content | Cause::Request)
+            }) {
                 return error(failure.code, problem);
             }
             if staging_failed {
-                return error(polylogue_model::Code::Io, problem);
+                return error(Code::Io, problem);
             }
             return Failure::refusal(polylogue_model::Reason::ImportRefused { problem }).answer();
         }
