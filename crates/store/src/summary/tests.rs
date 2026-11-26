@@ -954,3 +954,47 @@ fn a_call_lookup_reads_no_line_of_its_session() {
         );
     }
 }
+
+/// A run streams the session's rows and keeps states that do not grow with
+/// the session: folding from the first row across 100 Git commits keeps
+/// states of the same size near the end as near the start
+/// (the links found are written, not carried in the state).
+#[test]
+fn a_run_from_the_first_row_keeps_states_flat_in_the_rows() {
+    let mut w = WriterArchive::new();
+    let mut messages = Vec::new();
+    for n in 0..2_000u32 {
+        let at = 1_000 + i64::from(n) * 20;
+        if n % 20 == 0 {
+            messages.extend(bash(
+                "s",
+                n,
+                at,
+                &format!("git commit -m step{n}"),
+                true,
+                &format!("[main {:07x}] step", 0x1000000 + n),
+            ));
+        } else {
+            messages.extend(prose("s", n, at, "a question"));
+        }
+    }
+    w.write_underived("s", messages);
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    crate::sql_functions::register(&index).unwrap();
+    let pk: i64 = index
+        .query_row(
+            "SELECT pk FROM session WHERE id = 'claude-code:s'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let run = super::fold::Run { conn: &index }
+        .session(pk, &super::Key::start())
+        .unwrap();
+    assert!(run.read >= 2_000, "{}", run.read);
+    let sizes: Vec<usize> = run.kept.iter().map(|k| k.state.len()).collect();
+    let (early, late) = (sizes[0], sizes[sizes.len() - 2]);
+    // Counters gain digits; nothing is held per row or per commit.
+    assert!(late <= early + 64, "a state of {early} bytes became {late}");
+    assert_eq!(run.output.links.unwrap().commits().len(), 100);
+}

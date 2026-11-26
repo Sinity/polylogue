@@ -67,7 +67,7 @@ fn execute<T>(
         scope_fingerprint: None,
         versions: operation.cursor_versions(),
         presentation: ExecutionPresentation::Read {
-            options: options.clone(),
+            options: Box::new(options.clone()),
             delivery,
             format,
             page_budget: budget,
@@ -128,6 +128,8 @@ fn execute<T>(
                 },
                 figures: vec![],
                 zone: Some(operation.clock.day.zone_name().to_owned()),
+                snapshot: None,
+                options: None,
             };
             let facts = LayoutFacts {
                 authored: if matches!(&reference, Reference::Request(_)) {
@@ -236,13 +238,10 @@ pub(super) fn page(
     services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
-) -> Option<Result<ReadPage, Error>> {
-    let reference = match target(request)? {
-        Ok(reference) => reference,
-        Err(error) => return Some(Err(error)),
-    };
+    reference: Reference,
+) -> Result<ReadPage, Error> {
     let kind = record_kind(&reference);
-    Some(execute(
+    execute(
         reader,
         services,
         request,
@@ -269,7 +268,7 @@ pub(super) fn page(
             let next = page.document.footer.next.clone();
             Ok((page, next))
         },
-    ))
+    )
 }
 
 pub(super) fn stream(
@@ -277,14 +276,11 @@ pub(super) fn stream(
     services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
+    reference: Reference,
     output: &mut dyn Write,
-) -> Option<Result<ReadComplete, Error>> {
-    let reference = match target(request)? {
-        Ok(reference) => reference,
-        Err(error) => return Some(Err(error)),
-    };
+) -> Result<ReadFooter, Error> {
     let kind = record_kind(&reference);
-    Some(execute(
+    execute(
         reader,
         services,
         request,
@@ -292,7 +288,7 @@ pub(super) fn stream(
         reference,
         |record, snapshot, header, _, footer, facts, _| {
             let (reading, _) = reading(request)?;
-            let complete = rows_stream(
+            let footer = rows_stream(
                 reader,
                 services,
                 request,
@@ -305,8 +301,8 @@ pub(super) fn stream(
                 footer,
                 output,
             )?;
-            let next = complete.footer.next.clone();
-            Ok((complete, next))
+            let next = footer.next.clone();
+            Ok((footer, next))
         },
-    ))
+    )
 }

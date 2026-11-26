@@ -38,7 +38,7 @@ fn session() -> SessionId {
 
 #[test]
 fn terminal_printers_escape_archived_text() {
-    let context_answer = protocol::context::Answer {
+    let context_answer = crate::brief::BriefReply {
         delivery: None,
         prepared: crate::brief::Prepared {
             event: polylogue_model::DeliveryEvent::SessionBrief,
@@ -50,7 +50,7 @@ fn terminal_printers_escape_archived_text() {
             next: None,
         },
     };
-    assert_eq!(context(&context_answer, TextStyle::Plain), HOSTILE_ESCAPED);
+    assert_eq!(brief(&context_answer, TextStyle::Plain), HOSTILE_ESCAPED);
     let plan_answer = protocol::resume::Answer::Plan(Plan {
         session: session(),
         harness_command: Some(hostile_command()),
@@ -82,7 +82,6 @@ fn terminal_printers_escape_archived_text() {
     let page = json!({
         "format":"markdown",
         "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}},
-        "records":[],
         "document":{
             "header":{"target":"event:synthetic","view":"transcript","title":{"state":"value","value":HOSTILE},"kind":{"kind":"event","event_type":"synthetic"}},
             "items":[{"source":{"ref":"event:synthetic"},"kind":{"kind":"text","text":HOSTILE}}],

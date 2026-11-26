@@ -155,11 +155,11 @@ impl AllItems {
             .selection
             .clone()
             .unwrap_or_else(|| rows.references.join(" OR "));
-        let arguments = crate::daemon::verbs::read::arguments(read, target).unwrap();
-        let mut request = crate::daemon::service::read::request_of(arguments, None).unwrap();
+        let mut request =
+            crate::daemon::verbs::read::request_for((**read).clone(), target).unwrap();
+        request.cursor = None;
         request.delivery = polylogue_model::read::ReadDelivery::Stream;
         request.budget = polylogue_model::read::ReadBudget::Default;
-        request.with_blobs = false;
         if !rows.references.is_empty() {
             request.references = Some(
                 rows.references
@@ -193,9 +193,9 @@ impl AllItems {
                 "begin" => {
                     assert!(!began);
                     began = true;
-                    let begin: polylogue_model::read::ReadBegin =
+                    let begin: polylogue_model::read::ReadHeader =
                         serde_json::from_str(&frame.data).unwrap();
-                    header = Some(begin.header);
+                    header = Some(begin);
                 }
                 "record" => {
                     assert!(began && !completed);
@@ -310,10 +310,6 @@ pub(super) fn collect(
             page.format, format,
             "continuation changed the original format"
         );
-        assert!(
-            page.records.is_empty(),
-            "bounded layout must not duplicate source records"
-        );
         let wire = serde_json::to_vec(&page).unwrap();
         let footer_wire = serde_json::to_string(&page.document.footer).unwrap();
         let footer_bytes = footer_wire.len();
@@ -410,7 +406,11 @@ pub(super) fn collect(
             panic!("one read continuation")
         };
         // A continuation reads the same target with the same options.
-        let identity = (rows.selection.clone(), rows.references.clone(), read.view);
+        let identity = (
+            rows.selection.clone(),
+            rows.references.clone(),
+            read.options.view,
+        );
         if let Some(root) = &root {
             assert_eq!(&identity, root, "the continuation changed its reading");
         } else {

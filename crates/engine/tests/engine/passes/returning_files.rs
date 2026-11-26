@@ -206,7 +206,7 @@ fn capture_log_with_mixed_captures_is_read_to_its_end() {
         .reads()
         .reader()
         .unwrap()
-        .query("SELECT status, parsed_upto FROM parse_state", &[])
+        .query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status, parsed_to AS parsed_upto FROM parse_state", &[])
         .unwrap();
     assert_eq!(
         state,

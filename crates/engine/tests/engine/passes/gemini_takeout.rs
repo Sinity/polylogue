@@ -64,7 +64,10 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
         // event and the cell without a body yields nothing.
         let mut covered = std::collections::BTreeSet::new();
         for row in r
-            .query("SELECT source_start,source_end FROM message_parse", &[])
+            .query(
+                "SELECT source_start,source_start+source_length AS source_end FROM message_parse",
+                &[],
+            )
             .unwrap()
         {
             let a = row["source_start"].as_u64().unwrap() as usize;
@@ -76,7 +79,10 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
             covered.insert(index);
         }
         assert_eq!(covered, [0, 1, 3, 4].into_iter().collect());
-        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 6);
+        assert_eq!(
+            w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+            6
+        );
         let alpha = w.export("gemini-app:alpha");
         let activity = alpha
             .iter()
@@ -104,7 +110,10 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
         [w.export("gemini-app:alpha"), w.export("gemini-app:bravo")],
         expected
     );
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 6);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        6
+    );
     assert_eq!(e.run_pass().unwrap().bytes_read, 0);
 }
 

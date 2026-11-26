@@ -89,3 +89,9 @@ codegen-units = 256
 codegen-units = 16
 opt-level = 2
 debug = false
+
+# The packaged binary keeps no symbol table (115.3 MB to 87.5 MB, measured on
+# the package build); fat LTO with one code unit would give 73.2 MB at 2.6 times
+# the build time, see docs/development.md.
+[profile.release]
+strip = "symbols"

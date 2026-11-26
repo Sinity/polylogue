@@ -320,10 +320,10 @@ impl Reader<'_> {
         let fields = "k.id,k.name,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.columns')='array' THEN json_extract(k.rows_json,'$.columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.match_columns')='array' THEN json_extract(k.rows_json,'$.match_columns') END END,CASE WHEN json_valid(k.rows_json) THEN CASE WHEN json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END END,CASE WHEN json_valid(k.rows_json) THEN json_extract(k.rows_json,'$.shape') END,CASE WHEN json_valid(k.rows_json) THEN json_type(k.rows_json,'$.identities')='array' ELSE 0 END,CASE WHEN json_valid(k.rows_json) THEN json_extract(k.rows_json,'$.output_metadata') END";
         let sql = if after.is_some() {
             format!(
-                "SELECT {fields} FROM source_kept_result k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
+                "SELECT {fields} FROM source_saved_rows k JOIN source_client_request r ON r.id=k.id WHERE r.commit_seq>?1 ORDER BY r.commit_seq,k.id"
             )
         } else {
-            format!("SELECT {fields} FROM source_kept_result k ORDER BY k.id")
+            format!("SELECT {fields} FROM source_saved_rows k ORDER BY k.id")
         };
         let mut statement = conn.prepare(&sql)?;
         let mut rows = if let Some(after) = after {

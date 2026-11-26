@@ -41,11 +41,11 @@ fn read(
                 ..Default::default()
             },
             delivery: polylogue_model::read::ReadDelivery::Page,
-            format: format.into(),
+            format: polylogue_model::read::Format::parse(format).unwrap(),
             budget: budget.map_or(polylogue_model::read::ReadBudget::Default, |tokens| {
                 polylogue_model::read::ReadBudget::Tokens(tokens as u64)
             }),
-            with_blobs: false,
+            alternates: Vec::new(),
             cursor: None,
         })
     };
@@ -129,13 +129,21 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         let call = page.document.footer.next.as_ref().expect("another page");
         call.request.clone()
     };
+    // The continuation is the step it came from; its cursor carries the
+    // alternates the first page resolved (docs/reading.md, Alternates).
     let alternates = |call: &command_surface::RunnableRequest| -> Vec<String> {
-        let rows: crate::protocol::line::Rows =
-            serde_json::from_value(call.arguments.clone()).unwrap();
-        let crate::protocol::line::Step::Read(step) = &rows.steps[0] else {
-            panic!("expected a read")
+        use polylogue_model::read::{CursorSeal, PageCursor};
+        let reader = w.daemon.reads.reader().unwrap();
+        let seal = CursorSeal {
+            key: reader.cursor_key().unwrap(),
+            generation: reader.change_position().unwrap().generation,
         };
-        step.alternate.iter().cloned().collect()
+        PageCursor::open(
+            call.arguments["steps"][0]["cursor"].as_str().unwrap(),
+            &seal,
+        )
+        .unwrap()
+        .alternates
     };
     set(r#"["translation:pl"]"#);
     let first = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
@@ -159,13 +167,13 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         references: None,
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
-            alternates: vec!["none".into()],
+            alternate: Some("none".into()),
             ..Default::default()
         },
         delivery: polylogue_model::read::ReadDelivery::Page,
-        format: "json".into(),
+        format: polylogue_model::read::Format::Json,
         budget: polylogue_model::read::ReadBudget::Tokens(1),
-        with_blobs: false,
+        alternates: Vec::new(),
         cursor: None,
     })
     .answer(&w.daemon);
@@ -667,6 +675,7 @@ mod advisory;
 
 mod read_annotations;
 mod read_attachments;
+mod read_composition;
 mod read_links;
 mod read_objects;
 mod read_runs;

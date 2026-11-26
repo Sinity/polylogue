@@ -1,9 +1,7 @@
 //! Readings through the real request path: logical sessions, fork and
 //! spawn cards, context differences, the links tree and following.
 use super::*;
-use polylogue_model::read::{
-    Card, HeaderKind, ItemKind, ReadOptions, ReadPage, SpawnDisplay, View,
-};
+use polylogue_model::read::{Card, HeaderKind, ItemKind, ReadOptions, ReadPage, View};
 use serde_json::json;
 
 fn line(value: serde_json::Value) -> String {
@@ -162,9 +160,9 @@ fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> Read
         target: target.into(),
         options,
         delivery: polylogue_model::read::ReadDelivery::Page,
-        format: "json".into(),
+        format: polylogue_model::read::Format::Json,
         budget: polylogue_model::read::ReadBudget::Tokens(100_000),
-        with_blobs: false,
+        alternates: Vec::new(),
         cursor: None,
     }))
     .answer(&d.daemon);
@@ -230,7 +228,7 @@ fn forks_and_spawns_are_cards_at_their_branch_point_and_call() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnDisplay::Hidden,
+            hide: vec!["spawns".into()],
             ..ReadOptions::default()
         },
     );
@@ -340,14 +338,8 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
 fn the_last_page_follows_what_the_session_appends() {
     let d = test_daemon::start("placeholder");
     family(&d);
-    let last = read(
-        &d,
-        "session:claude-code:cont",
-        ReadOptions {
-            latest: true,
-            ..ReadOptions::default()
-        },
-    );
+    // One page holds the whole session, so it is the last.
+    let last = read(&d, "session:claude-code:cont", ReadOptions::default());
     let follow = last.document.footer.follow.clone().expect("a follow call");
     let before = crate::test_daemon::Call::new("status", serde_json::json!({}))
         .answer(&d.daemon)
@@ -443,7 +435,7 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnDisplay::Inline { depth: Some(1) },
+            show: vec!["spawns:1".into()],
             ..ReadOptions::default()
         },
     );
@@ -515,7 +507,7 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnDisplay::Inline { depth: None },
+            show: vec!["spawns:full".into()],
             ..ReadOptions::default()
         },
     ));
@@ -570,7 +562,7 @@ fn a_spawn_cut_keeps_its_header() {
     let spawner = polylogue_model::SessionId::parse("claude-code:spawner").unwrap();
     let inline = || ReadOptions {
         view: View::Dialogue,
-        spawns: SpawnDisplay::Inline { depth: Some(1) },
+        show: vec!["spawns:1".into()],
         ..ReadOptions::default()
     };
     d.wait_for(|status| {
@@ -619,7 +611,7 @@ fn a_microcompaction_removes_its_results_from_the_context_view() {
             "session:claude-code:micro",
             ReadOptions {
                 view,
-                tools: Some(polylogue_model::read::Expansion::Full),
+                show: vec!["tools:100".into()],
                 ..ReadOptions::default()
             },
         );
@@ -689,7 +681,7 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
         &d,
         "session:claude-code:meter",
         ReadOptions {
-            context_meter: true,
+            show: vec!["context".into()],
             ..ReadOptions::default()
         },
     );
@@ -799,38 +791,6 @@ fn selected_message_context_keeps_its_prefix_and_existing_parent_branch_cut() {
             "message:claude-code:r3"
         ]
     );
-    let legacy = read(
-        &d,
-        "session:claude-code:root",
-        ReadOptions {
-            view: View::Context,
-            around: Some(1),
-            at: Some(polylogue_model::read::ReadAt::try_from("claude-code:r2".to_owned()).unwrap()),
-            ..ReadOptions::default()
-        },
-    );
-    assert_eq!(
-        headers(&legacy),
-        ["message:claude-code:r1", "message:claude-code:r2"]
-    );
-    let legacy_window = read(
-        &d,
-        "message:claude-code:r2",
-        ReadOptions {
-            view: View::Context,
-            around: Some(1),
-            at: Some(polylogue_model::read::ReadAt::try_from("claude-code:r3".to_owned()).unwrap()),
-            ..ReadOptions::default()
-        },
-    );
-    assert_eq!(
-        headers(&legacy_window),
-        [
-            "message:claude-code:r1",
-            "message:claude-code:r2",
-            "message:claude-code:r3"
-        ]
-    );
     // Transcript message ranges keep their original one-message meaning.
     let transcript = read(&d, "message:claude-code:r2", ReadOptions::default());
     assert_eq!(headers(&transcript), ["message:claude-code:r2"]);
@@ -856,7 +816,7 @@ fn finite_context_streams_use_the_same_lineage_compaction_and_tool_projection_as
     ] {
         let options = ReadOptions {
             view: View::Context,
-            tools: Some(polylogue_model::read::Expansion::Full),
+            show: vec!["tools:100".into()],
             diff: diff.map(str::to_owned),
             around,
             ..Default::default()
@@ -962,9 +922,15 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
         1,
     );
     for tools in [Expansion::Full, Expansion::Collapsed, Expansion::None] {
+        let (show, hide) = match tools {
+            Expansion::Full => (vec!["tools:100".into()], vec![]),
+            Expansion::Collapsed => (vec!["tools:line".into()], vec![]),
+            Expansion::None => (vec![], vec!["tools".into()]),
+        };
         let options = ReadOptions {
             view: View::Context,
-            tools: Some(tools),
+            show,
+            hide,
             ..Default::default()
         };
         let target = "session:claude-code:capture";
@@ -997,9 +963,9 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
                 target: target.into(),
                 options,
                 delivery: polylogue_model::read::ReadDelivery::Page,
-                format: "json".into(),
+                format: polylogue_model::read::Format::Json,
                 budget: polylogue_model::read::ReadBudget::Tokens(64),
-                with_blobs: false,
+                alternates: Vec::new(),
                 cursor: None,
             };
             let mut page = crate::test_answers::read(

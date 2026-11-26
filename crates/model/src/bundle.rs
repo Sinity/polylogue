@@ -11,11 +11,11 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSnapshot {
     pub query: String,
@@ -75,6 +75,11 @@ pub struct Counts {
     pub alternate_parts: u64,
     pub text_fragments: u64,
     pub blobs: u64,
+}
+impl Counts {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

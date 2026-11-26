@@ -80,6 +80,8 @@ fn header() -> ReadHeader {
         },
         figures: vec![],
         zone: None,
+        snapshot: None,
+        options: None,
     }
 }
 fn document(items: Vec<ReadItem>) -> ReadDocument {
@@ -235,7 +237,7 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
         },
     );
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let items = layout(message(vec![result]), &options, &facts);
@@ -252,7 +254,7 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
 #[test]
 fn unknown_call_and_empty_output_are_distinct() {
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let result = Block::ToolResult {
@@ -309,7 +311,7 @@ fn alternates_change_layout_only_and_stale_is_opt_in() {
     let items = layout_record(
         &projected,
         &ReadOptions {
-            alternates: vec!["en".into()],
+            alternate: Some("en".into()),
             ..options
         },
         &facts,
@@ -863,7 +865,7 @@ fn expanded_tool_output_has_omission_counts_and_zero_means_all() {
         .map(|n| format!("line {n} λ\n"))
         .collect::<String>();
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let (record, call) = result_output(original.clone(), options.clone());
@@ -895,7 +897,7 @@ fn expanded_tool_output_has_omission_counts_and_zero_means_all() {
     let (_, call) = result_output(
         original.clone(),
         ReadOptions {
-            output_lines: 0,
+            show: vec!["tools:full".into()],
             ..options
         },
     );
@@ -908,7 +910,7 @@ fn a_single_long_output_line_is_shortened_at_unicode_boundaries() {
     let (_, call) = result_output(
         original.clone(),
         ReadOptions {
-            tools: Some(Expansion::Full),
+            show: vec!["tools:100".into()],
             ..Default::default()
         },
     );
@@ -1182,7 +1184,7 @@ fn each_kept_long_tool_line_has_its_own_omission() {
     let (_, call) = result_output(
         original,
         ReadOptions {
-            tools: Some(Expansion::Full),
+            show: vec!["tools:100".into()],
             ..Default::default()
         },
     );
@@ -1687,8 +1689,7 @@ fn alternates_replace_thinking_and_remote_tool_output_at_their_sources() {
         },
     );
     let options = ReadOptions {
-        thinking: Some(Expansion::Full),
-        tools: Some(Expansion::Full),
+        show: vec!["thinking:full".into(), "tools:100".into()],
         ..Default::default()
     };
     assert_eq!(
@@ -1889,7 +1890,7 @@ fn paired_result_header_marks_only_the_pair_emitted_here() {
         },
     );
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let hidden = layout(message(vec![result.clone()]), &options, &facts);
@@ -2343,10 +2344,7 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
     };
     let record = Record::Authored(Box::new(row.clone()));
     record.validate().unwrap();
-    let options = ReadOptions {
-        annotations: true,
-        ..Default::default()
-    };
+    let options = ReadOptions::default();
     let selected = AuthoredSelection {
         selected: polylogue_model::Reference::Delivery("selected".into()),
         coverage: AuthoredCoverage::WholeRequest,
@@ -2549,11 +2547,9 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
             ),
             Err(ReadError::UnsupportedTarget { .. })
         ));
-        let mut full = ReadOptions::default();
-        if option == "thinking" {
-            full.thinking = Some(Expansion::Full)
-        } else {
-            full.tools = Some(Expansion::Full)
+        let full = ReadOptions {
+            show: vec![format!("{option}:full")],
+            ..ReadOptions::default()
         };
         assert_eq!(
             project_record(record.clone(), &full, &facts).unwrap(),
@@ -2591,7 +2587,7 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
         project_record(
             record.clone(),
             &ReadOptions {
-                harness: Some(Expansion::Full),
+                show: vec!["harness:full".into()],
                 ..Default::default()
             },
             &harness
@@ -2837,8 +2833,9 @@ fn before_footer_trim_evicts_earliest_output_and_moves_lower_bound() {
     }
     assert_eq!(page.first_position().unwrap().item, 0);
     assert_eq!(page.upper_position(), Some(&upper));
+    // A backward page numbers its rows from its end: an earlier row is one more.
     let earlier_row = SelectionLocator {
-        row: selection().row - 1,
+        row: selection().row + 1,
         ..selection()
     };
     assert_eq!(
@@ -2939,7 +2936,7 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
 }
 
 #[test]
-fn before_input_must_descend_across_rows_families_and_record_ordinals() {
+fn before_input_must_go_back_across_rows_families_and_record_ordinals() {
     let start_item = text("anchor");
     let start_selection = SelectionLocator {
         row: 2,
@@ -2954,10 +2951,12 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
         character: 0,
         item_hash: item_hash(&start_item),
     };
+    // Rows of a backward page count up from its end, so row 1 is after the
+    // starting row 2 and row 3 before it.
     for (selection, ordinal) in [
         (
             SelectionLocator {
-                row: 3,
+                row: 1,
                 ..start_selection
             },
             0,
@@ -3014,7 +3013,7 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             },
         },
         SelectionLocator {
-            row: 1,
+            row: 3,
             record: ReadRecordLocator {
                 kind: ReadRecordKind::Link,
                 ordinal: 100,
@@ -3026,9 +3025,9 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             pager::Push::Accepted
         );
     }
-    assert_eq!(page.first_position().unwrap().selection.row, 1);
+    assert_eq!(page.first_position().unwrap().selection.row, 3);
     let later_family = SelectionLocator {
-        row: 1,
+        row: 3,
         record: ReadRecordLocator {
             kind: ReadRecordKind::Document,
             ordinal: 0,
@@ -3302,7 +3301,7 @@ fn every_kind_document() -> ReadDocument {
         });
     }
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     for (n, outcome) in [
@@ -3717,8 +3716,8 @@ fn alternate_indicator_names_partial_omission_and_stale_state() {
             )
             .unwrap();
         let options = ReadOptions {
-            thinking: Some(Expansion::Full),
-            alternates: vec!["en".into()],
+            show: vec!["thinking:full".into()],
+            alternate: Some("en".into()),
             ..Default::default()
         };
         let record = message(vec![Block::Thinking {

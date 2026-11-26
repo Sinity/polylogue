@@ -356,7 +356,7 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
         .unwrap();
     let reader = engine.reads.reader().unwrap();
     assert_ne!(
-        reader.input_progress(&asset.input).unwrap().unwrap().chain,
+        reader.latest_chain(&asset.input).unwrap().unwrap().chain,
         asset.chain
     );
     assert!(matches!(

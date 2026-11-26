@@ -1,7 +1,5 @@
 use super::*;
-use polylogue_model::read::{
-    Expansion, ItemKind, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
-};
+use polylogue_model::read::{ItemKind, ReadDelivery, ReadItem, ReadOptions, ReadPage, View};
 use serde_json::json;
 
 #[derive(Default)]
@@ -114,13 +112,13 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
         target: "session:claude-code:s1".into(),
         options: ReadOptions {
             view: View::Transcript,
-            harness: Some(Expansion::Full),
+            show: vec!["harness:full".into()],
             ..Default::default()
         },
         delivery: ReadDelivery::Page,
-        format: "json".into(),
+        format: polylogue_model::read::Format::Json,
         budget: polylogue_model::read::ReadBudget::Default,
-        with_blobs: false,
+        alternates: Vec::new(),
         cursor: None,
     }))
     .answer(&daemon.daemon);

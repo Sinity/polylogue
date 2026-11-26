@@ -144,11 +144,9 @@ pub(crate) fn visit_rows(
             polylogue_store::read::VisitFrom::Before(&row_position),
             rendering.near,
             |row| {
-                ordinal = ordinal.checked_sub(1).ok_or_else(|| {
-                    Error::Internal(
-                        "a backward page counted more than 2^32 rows before its start".into(),
-                    )
-                })?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
                 keys.keys.insert(ordinal, row.position.clone());
                 Ok(if walk.visit_row(ordinal, row, None, start.direction)? {
                     ControlFlow::Continue(())
@@ -159,9 +157,9 @@ pub(crate) fn visit_rows(
             },
         )?;
         if !full && let Some(history) = history {
-            let row = ordinal.checked_sub(1).ok_or_else(|| {
-                Error::internal("saved history lies before the row coordinate range")
-            })?;
+            let row = ordinal
+                .checked_add(1)
+                .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
             visit_history(reader, history, rendering, None, row, true, emit)?;
         }
     } else {
@@ -376,7 +374,7 @@ impl Walk<'_, '_, '_, '_> {
                     selection.cursor_context().clock.day.zone(),
                 )?);
             }
-            if options.annotations
+            if options.annotations()
                 && let records::SelectedRecord::Original(original) = &record
             {
                 layout_facts::annotate(
@@ -427,7 +425,7 @@ impl Walk<'_, '_, '_, '_> {
             let keep = records::reference(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 start.as_ref(),
                 &mut render,
             )?;
@@ -438,7 +436,7 @@ impl Walk<'_, '_, '_, '_> {
         }
         let mut current = match start {
             Some(start) => Some(start),
-            None => records::step(reader, &target, options.inherited, None, direction)?,
+            None => records::step(reader, &target, options.inherited(), None, direction)?,
         };
         while let Some(position) = current {
             let mut observed = false;
@@ -446,7 +444,7 @@ impl Walk<'_, '_, '_, '_> {
             records::reference(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 Some(&position),
                 &mut |record, facts, actual| {
                     if observed || actual != position {
@@ -468,7 +466,7 @@ impl Walk<'_, '_, '_, '_> {
             current = records::step(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 Some(&position),
                 direction,
             )?;

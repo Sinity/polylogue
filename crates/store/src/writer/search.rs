@@ -110,6 +110,7 @@ fn search_thread(
 /// Computes and sends batches until the queue reads empty.
 fn drain(conn: &Connection, queue: &WriterQueue) -> Result<()> {
     loop {
+        crate::fault::check("search.read_queue", "")?;
         let entries = crate::text_rows::pending_entries(conn, crate::text_rows::SEARCH_BYTES)?;
         if entries.is_empty() {
             return Ok(());

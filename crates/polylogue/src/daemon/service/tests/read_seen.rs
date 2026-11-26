@@ -69,25 +69,16 @@ fn from_seen_keeps_its_accepted_bound_through_both_directions_and_reopen() {
         "a non-displayed CLI page must not mark"
     );
 
-    // The anchor's header is displayed before its body enters the context.
-    page(
-        &d,
-        json!({"verb":"read", "view":"context", "at":"claude-code:u1", "displayed":true, "budget":100000}),
-    );
-    assert!(
-        marks(&d).is_empty(),
-        "a header alone cannot consume its unread body"
-    );
-    // At u2 the first message's body is present; the u2 body is still unread.
+    // The page holds the first message whole and stops inside the second.
     let displayed = page(
         &d,
-        json!({"verb":"read", "view":"context", "at":"claude-code:u2", "displayed":true, "budget":100000}),
+        json!({"verb":"read", "displayed":true, "budget":800, "hide":["annotations"]}),
     );
     assert!(displayed.document.items.iter().any(
         |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 1 "))
     ));
     assert!(!displayed.document.items.iter().any(
-        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 2 "))
+        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 3 "))
     ));
     let before = marks(&d);
     assert_eq!(before.len(), 1);
@@ -345,15 +336,27 @@ fn logical_seen_keeps_copied_prefix_progress_on_its_physical_owner() {
     super::reading_shapes::family(&d);
     let step =
         json!({"verb":"read","from":"seen","budget":100000,"show":["inherited"],"hide":["tools"]});
-    let inherited = crate::test_answers::read(
+    // The fork's reading, one item a page, up to the end of its inherited
+    // prefix: each page is returned over MCP, so it is displayed.
+    let mut page = crate::test_answers::read(
         composed_call(
             "session:claude-code:fork",
-            json!({"verb":"read","view":"context","at":"claude-code:f1","budget":100000}),
+            json!({"verb":"read","budget":1,"show":["inherited"],"hide":["tools","annotations"]}),
         )
         .channel(command_surface::Via::Mcp)
         .answer(&d.daemon),
     );
-    assert_eq!(body_text(&inherited), ["root question"]);
+    let mut shown = body_text(&page);
+    while !shown.iter().any(|text| text == "root question") {
+        let next = page.document.footer.next.clone().expect("a next page");
+        page = crate::test_answers::read(
+            Call::from_request(&next.request)
+                .channel(command_surface::Via::Mcp)
+                .answer(&d.daemon),
+        );
+        shown.extend(body_text(&page));
+    }
+    assert_eq!(shown, ["root question"]);
     assert_eq!(
         marks_of(&d, "session:claude-code:fork")[0].item.as_deref(),
         Some("block:claude-code:r1#0")

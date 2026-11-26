@@ -3,7 +3,7 @@
 //! comes from the counts stored per entry class, so a page in the
 //! middle of a long session reads its own entries and the unit it starts
 //! in, not the entries before it.
-use super::{Composed, Runs};
+use super::compose::{Composed, Runs, SessionIndex};
 use crate::Error;
 use polylogue_model::read::{IndexEntry, ItemCounts, ShowProfile};
 use polylogue_store::Reader;
@@ -277,23 +277,18 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         Ok(out)
     }
 
-    /// Where the reading starts and where it ends.
+    /// Where the reading starts.
     pub(super) fn start(&self) -> (usize, usize) {
         self.spans
             .first()
             .map_or((0, 0), |span| (span.part, span.start))
-    }
-    pub(super) fn end(&self) -> (usize, usize) {
-        self.spans
-            .last()
-            .map_or((0, 0), |span| (span.part, span.end))
     }
 }
 
 /// The counts of a part's session before `seq`.
 pub(super) fn counts_before(
     reader: &Reader<'_>,
-    index: &super::SessionIndex,
+    index: &SessionIndex,
     seq: usize,
 ) -> Result<ItemCounts, Error> {
     Ok(if seq == 0 {

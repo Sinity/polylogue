@@ -19,12 +19,6 @@ row! {
 }
 
 impl Reader<'_> {
-    /// Multiple chains of `input`, staged on disk for comparison by chain.
-    /// A single chain has no other reading to take its rows from.
-    pub fn chain_layouts(&self, input: &str) -> Result<Option<crate::ChainLayouts>> {
-        crate::ChainLayouts::load(self.conn()?, input)
-    }
-
     /// Visits known points at exactly this length, at most once per byte chain.
     /// Returning true stops the stream once the caller confirms a byte-for-byte copy.
     pub fn visit_revisions_at_length(

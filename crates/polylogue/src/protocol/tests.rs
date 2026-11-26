@@ -366,15 +366,9 @@ fn every_store_error_variant_has_a_code_and_kind() {
             true,
         ),
         (
-            E::ReadIndexReplaced,
-            Code::Conflict,
-            FailureKind::Conflict,
-            true,
-        ),
-        (
             E::IndexBuilding(Box::new(
                 polylogue_store::archive::index_build::IndexBuild {
-                    serving_previous: false,
+                    reason: polylogue_store::index::file::RebuildReason::NoIndex,
                     chains: 2,
                     chains_read: 1,
                     bytes: 10,

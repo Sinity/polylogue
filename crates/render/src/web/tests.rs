@@ -49,7 +49,6 @@ fn page() -> ReadPage {
                 sinex: IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(true), None),
             },
         },
-        records: vec![],
         document: ReadDocument {
             header: ReadHeader {
                 target: "session:test:session".into(),
@@ -60,6 +59,8 @@ fn page() -> ReadPage {
                 },
                 figures: vec![],
                 zone: None,
+                snapshot: None,
+                options: None,
             },
             items: vec![ReadItem {
                 source: Source::record("block:test:session:message#0"),
@@ -250,18 +251,15 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
         cursor: Some("request-old-cursor".into()),
         ..RunnableRequest::new(
             "read",
-            json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),
+            json!({"target":"session:test:session","view":"transcript","show":["tools:line","harness:line","thinking:full","inherited","branches"],"cursor":"sealed-old"}),
             "synthetic",
         )
     };
     let fields = url_parameters(&view_url(&read_table(), &request, View::Dialogue).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert_eq!(args["view"], "dialogue");
-    assert_eq!(args["inherited"], true);
-    assert_eq!(args["branches"], true);
-    for key in ["tools", "thinking", "harness", "cursor"] {
-        assert!(args.get(key).is_none());
-    }
+    assert_eq!(args["show"], json!(["inherited", "branches"]));
+    assert!(args.get("cursor").is_none());
     assert_eq!(fields["request_id"], "synthetic");
     assert!(!fields.contains_key("cursor"));
     assert_eq!(fields["operation"], "read");
@@ -269,8 +267,7 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     assert_eq!(deadline, json!(1234));
     let fields = url_parameters(&view_url(&read_table(), &request, View::Overview).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
-    assert!(args.get("inherited").is_none());
-    assert!(args.get("branches").is_none());
+    assert_eq!(args["show"], json!([]));
     assert_eq!(args["target"], "session:test:session");
 }
 
