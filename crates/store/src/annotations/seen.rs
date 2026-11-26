@@ -169,7 +169,7 @@ pub(crate) fn advancing(
     proposed: &[SeenMark],
 ) -> Result<Vec<SeenMark>> {
     let generation: String = index.query_row(
-        "SELECT value FROM main.meta WHERE key='generation'",
+        "SELECT value FROM main.meta WHERE key='index_instance'",
         [],
         |row| row.get(0),
     )?;

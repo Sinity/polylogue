@@ -279,9 +279,11 @@ fn opening_adds_a_missing_read_index_without_rebuilding_rows() {
         .execute("INSERT INTO meta VALUES ('example', 'kept')", [])
         .unwrap();
     let generation: String = index
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT value FROM meta WHERE key='index_instance'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     drop(index);
     drop(lock);
@@ -289,7 +291,7 @@ fn opening_adds_a_missing_read_index_without_rebuilding_rows() {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
         assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
-        for (key, expected) in [("example", "kept"), ("generation", generation.as_str())] {
+        for (key, expected) in [("example", "kept"), ("index_instance", generation.as_str())] {
             assert_eq!(
                 index
                     .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r

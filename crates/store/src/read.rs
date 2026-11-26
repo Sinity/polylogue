@@ -136,7 +136,7 @@ row! {
         archive: i64,
     }
     statements {
-        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS generation,
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='index_instance') AS generation,
             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
     }

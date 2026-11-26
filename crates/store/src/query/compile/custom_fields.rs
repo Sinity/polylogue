@@ -955,7 +955,7 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, Quer
     );
     let unchanged = match x.unit {
         Unit::Sessions => format!(
-            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='generation') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.summary_changed,0)<={index}",
+            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='index_instance') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.summary_changed,0)<={index}",
             s = x.s()
         ),
         Unit::Annotations => format!("{}.commit_seq<={archive}", x.row()),

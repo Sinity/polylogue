@@ -204,7 +204,7 @@ pub struct Report {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 struct Reading {
     input: String,
-    parsed_upto: u64,
+    parsed_to: u64,
     length: u64,
     /// The last step read through the end of the bytes it was given.
     reached_end: bool,
@@ -269,7 +269,7 @@ impl Reading {
             CoverageStatus::Unreadable
         } else if self.refused {
             CoverageStatus::Refused
-        } else if self.reached_end && !self.prefix_missing && self.parsed_upto >= self.length {
+        } else if self.reached_end && !self.prefix_missing && self.parsed_to >= self.length {
             CoverageStatus::Complete
         } else {
             CoverageStatus::Partial
@@ -378,13 +378,13 @@ fn apply_inner(
     let restarts = step.reset
         && previous
             .as_ref()
-            .is_some_and(|old| step.parsed_upto < old.parsed_upto);
+            .is_some_and(|old| step.parsed_upto < old.parsed_to);
     let duplicate = !replacement
         && !export_delivery
         && !restarts
         && previous.as_ref().is_some_and(|old| {
-            step.parsed_upto <= old.parsed_upto
-                && (step.parsed_upto < old.parsed_upto
+            step.parsed_upto <= old.parsed_to
+                && (step.parsed_upto < old.parsed_to
                     || step.start != old.last_start
                     || hash == old.last_hash)
         });
@@ -406,7 +406,7 @@ fn apply_inner(
             old.prefix_missing = prefix_missing;
             let reaches_end = step.at_end && step.parsed_upto >= source.length;
             if coverage_changed
-                || (step.parsed_upto == old.parsed_upto && reaches_end && !old.reached_end)
+                || (step.parsed_upto == old.parsed_to && reaches_end && !old.reached_end)
             {
                 if reaches_end && !old.refused {
                     old.reached_end = true;
@@ -424,7 +424,7 @@ fn apply_inner(
     let export_refusal = export_delivery && export::is_refusal(step);
     let mut reading = Reading {
         input: source.input.to_owned(),
-        parsed_upto: step.parsed_upto,
+        parsed_to: step.parsed_upto,
         length: source.length,
         reached_end: step.at_end && step.failure.is_none(),
         refused: step.failure.is_some(),
@@ -432,7 +432,7 @@ fn apply_inner(
             false
         } else {
             previous.as_ref().is_none_or(|old| {
-                old.prefix_missing || (!export_delivery && step.start != old.parsed_upto)
+                old.prefix_missing || (!export_delivery && step.start != old.parsed_to)
             })
         },
         unreadable: step

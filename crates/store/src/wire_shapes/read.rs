@@ -14,7 +14,7 @@ WITH readings AS (
    AND (?3 OR r.active=1)
  UNION ALL
  SELECT p.input_pk,p.chain,p.parser_version,i.origin,1,
-   json_object('input',i.id,'parsed_upto',p.parsed_to,'length',NULL,'first',NULL,'last',NULL),
+   json_object('input',i.id,'parsed_to',p.parsed_to,'length',NULL,'first',NULL,'last',NULL),
    CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused'
      WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'unknown' END
  FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
@@ -50,7 +50,7 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
     let mut report = Report::default();
     let mut coverage_keys = BTreeMap::new();
     let sql = format!(
-        "{READINGS} SELECT origin,parser_version,COUNT(*),COUNT(DISTINCT input_pk),SUM(active),pl_wire_sum(state,'parsed_upto'),pl_wire_sum(state,'length'),SUM(json_extract(state,'$.length') IS NULL),pl_wire_first(state,'first'),pl_wire_last(state,'last') FROM readings GROUP BY origin,parser_version ORDER BY origin,parser_version"
+        "{READINGS} SELECT origin,parser_version,COUNT(*),COUNT(DISTINCT input_pk),SUM(active),pl_wire_sum(state,'parsed_to'),pl_wire_sum(state,'length'),SUM(json_extract(state,'$.length') IS NULL),pl_wire_first(state,'first'),pl_wire_last(state,'last') FROM readings GROUP BY origin,parser_version ORDER BY origin,parser_version"
     );
     for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;

@@ -133,7 +133,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let position = frames.last().unwrap()["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
-            "UPDATE meta SET value=?1 WHERE key='generation'",
+            "UPDATE meta SET value=?1 WHERE key='index_instance'",
             [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
