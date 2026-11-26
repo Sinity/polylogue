@@ -70,6 +70,8 @@ impl TestArchive {
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
         assert!(imported.status.success(), "{imported:?}");
         assert_eq!(json(&imported)["pass"]["errors"], json!([]));
+        // The import answers once its bytes are stored; reads need the parse.
+        wait_status(&env, |status| status["store"]["messages"] == 1);
         if zip {
             std::fs::remove_file(source).unwrap();
         } else {
