@@ -1,5 +1,5 @@
 use super::*;
-use crate::protocol::status::{Notice, PendingWrites, Warm};
+use crate::protocol::status::{AnswersFrom, NotReadSince, Notice, PendingWrites, Warm};
 use polylogue_model::Timestamp;
 use polylogue_model::freshness::{CompletenessReason, ReadCompleteness, ReadFreshness};
 use polylogue_model::live::{LiveState, WaitingOn};
@@ -34,10 +34,14 @@ fn answer() -> Answer {
         store: None,
         index_build: None,
         build_progress: None,
-        warming: false,
+        answers_from: AnswersFrom::Snapshot {
+            read_at: at(NOW - MINUTE),
+        },
         changes: 0,
         caught_up: true,
         totals_error: None,
+        quota: Vec::new(),
+        quota_error: None,
         vectors: None,
         vectors_error: None,
         verification: None,
@@ -48,15 +52,16 @@ fn answer() -> Answer {
         },
         loop_status: polylogue_engine::LoopStatus::default(),
         signals: None,
-        notices: Notices::Measured {
+        notices: Some(Notices::Measured {
             last_day: 0,
             latest: Vec::new(),
-        },
-        running: Running::Measured {
+        }),
+        running: Some(Running::Measured {
             waiting: 0,
             sessions: Vec::new(),
-        },
+        }),
         warm: Warm {
+            scope_index_loaded: true,
             vectors: None,
             vector_loads: 0,
             query_vectors_reused: 0,
@@ -126,6 +131,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
             ("claude-code:message.usage.cache".into(), 11_200_000),
             ("codex:payload.extra".into(), 5),
         ],
+        unused_fields: 41,
         search_pending: 0,
         capture_coverage: vec![Coverage {
             version: 1,
@@ -138,7 +144,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
                     entries: vec![
                         Entry {
                             class: Classification::Collected,
-                            pattern: "projects/**/*.jsonl".into(),
+                            pattern: "projects/*/*.jsonl".into(),
                             reason: None,
                             files: 100,
                             bytes: 1 << 20,
@@ -187,11 +193,11 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
     waiting.open_tool = Some("Bash".into());
     let mut working = session("codex:b2", LiveState::Working, NOW - 2 * MINUTE);
     working.edited_files = 2;
-    status.running = Running::Measured {
+    status.running = Some(Running::Measured {
         waiting: 1,
         sessions: vec![waiting, working],
-    };
-    status.notices = Notices::Measured {
+    });
+    status.notices = Some(Notices::Measured {
         last_day: 2,
         latest: vec![Notice {
             id: "notice-1".into(),
@@ -199,7 +205,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
             text: "synthetic notice".into(),
             events: Vec::new(),
         }],
-    };
+    });
     status.recent_log = vec![
         record(today(14, 1, 10), Priority::Warning, "scope index: busy"),
         record(today(14, 2, 11), Priority::Info, "search thread: caught up"),
@@ -211,7 +217,7 @@ polylogue  ⚠ parsing is behind the stored bytes
            standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
 ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
-           132,286 inputs · 98.6 GiB stored · 134,089 revisions
+           132,286 inputs (98.6 GiB decoded) · 134,089 revisions
 
 READING    #############################.  99.9%   109,793 of 109,887 files read
            48 parsing · 31 failed · 15 without a parser
@@ -226,9 +232,12 @@ RUNNING    2 running · 1 waiting 7m
 
 NOTICES    2 in the last day · 14:02:00 synthetic notice
 
-CAPTURE    host: 2 roots walked 13:00:00 · 1 absent · 43 files ignored, most as cache
+SOURCES    walked 13:00:00
+           claude-code /home/op/.claude · present · 100 collected · 43 ignored
+             ignored: 40 cache, 3 lock files
+           /home/op/.codex · absent
 
-UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 1 more in --json
+UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 40 more, 1 of them in --json
 
 RECENT     14:01:10  ⚠ scope index: busy
            14:02:11  search thread: caught up
@@ -297,14 +306,11 @@ fn building(build: IndexBuild, progress: BuildProgress) -> Answer {
         polylogue_model::Code::Conflict,
         "the file changed after it was listed",
     )];
-    let unread = build.to_string();
+    status.answers_from = AnswersFrom::Build;
     status.index_build = Some(build);
     status.build_progress = Some(progress);
-    status.totals_error = Some(unread.clone());
-    status.running = Running::Unavailable {
-        error: unread.clone(),
-    };
-    status.notices = Notices::Unavailable { error: unread };
+    status.running = None;
+    status.notices = None;
     status
 }
 
@@ -652,7 +658,6 @@ fn archived_text_is_escaped_in_the_view() {
 #[test]
 fn a_rule_shows_when_it_last_fired() {
     let mut status = answer();
-    status.warming = true;
     status.signals = Some(crate::protocol::status::Signals::Observed {
         rules: vec![crate::protocol::status::SignalRule {
             id: "authored:one".into(),
@@ -667,10 +672,6 @@ fn a_rule_shows_when_it_last_fired() {
     let text = plain(&status, &[]);
     assert!(
         text.contains("RULES      stalled daemon · by operator · last fired 5m ago\n"),
-        "{text}"
-    );
-    assert!(
-        text.starts_with("polylogue  ◐ warming up after the index was installed\n"),
         "{text}"
     );
 }
@@ -909,5 +910,306 @@ fn threads_show_their_work_progress_and_long_statements() {
             "           writer  building the index › indexing sessions  1h2m · stalled, no progress for 58m",
             "             running 58m on the writer connection: UPDATE transcript_line SET class = 1",
         ]
+    );
+}
+
+fn coverage(
+    roots: Vec<polylogue_model::capture::RootCoverage>,
+) -> polylogue_model::capture::Coverage {
+    polylogue_model::capture::Coverage {
+        version: 1,
+        machine: "host".into(),
+        observed_at: at(today(14, 4, 0)),
+        roots,
+    }
+}
+
+fn root(
+    path: &str,
+    status: polylogue_model::capture::Accessibility,
+    entries: Vec<polylogue_model::capture::Entry>,
+) -> polylogue_model::capture::RootCoverage {
+    polylogue_model::capture::RootCoverage {
+        path_bytes: path.as_bytes().to_vec(),
+        status,
+        entries,
+        unavailable_paths: Vec::new(),
+    }
+}
+
+fn entry(
+    class: polylogue_model::capture::Classification,
+    pattern: &str,
+    reason: Option<&str>,
+    files: u64,
+) -> polylogue_model::capture::Entry {
+    polylogue_model::capture::Entry {
+        class,
+        pattern: pattern.into(),
+        reason: reason.map(str::to_owned),
+        files,
+        bytes: files * 1024,
+        newest_mtime_ms: None,
+    }
+}
+
+/// A new archive answers from its first snapshot: up to date, zero counts,
+/// its sources watched though none is present yet (docs/operations.md,
+/// Status, edge cases).
+#[test]
+fn a_new_archive_is_up_to_date_with_its_sources_watched() {
+    use polylogue_model::capture::Accessibility;
+    let mut status = answer();
+    status.store = Some(polylogue_store::Status {
+        capture_coverage: vec![coverage(vec![
+            root("/home/op/.claude", Accessibility::Absent, Vec::new()),
+            root("/home/op/.codex", Accessibility::Absent, Vec::new()),
+        ])],
+        ..polylogue_store::Status::default()
+    });
+    assert_eq!(
+        plain(&status, &[]),
+        "\
+polylogue  ✓ up to date
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
+
+ARCHIVE    0 sessions   0 messages   0 tool calls   0 documents
+           0 inputs (0 B decoded) · 0 revisions
+
+READING    parsing current · session figures current · search current
+
+SOURCES    walked 14:04:00
+           /home/op/.claude · absent
+           /home/op/.codex · absent
+"
+    );
+    assert_eq!(line(&status, &[], NOW), "up to date");
+}
+
+/// Before any snapshot the reply has no figures; the headline, the note and
+/// `--line` say since when in the same words, and nothing is printed as an
+/// error (docs/operations.md#status).
+#[test]
+fn a_reply_without_figures_says_since_when() {
+    for (since, words) in [
+        (
+            NotReadSince::Start,
+            "figures not read yet since the daemon started",
+        ),
+        (
+            NotReadSince::Install,
+            "figures not read yet since the new index was installed",
+        ),
+    ] {
+        let mut status = answer();
+        status.answers_from = AnswersFrom::NotReadYet { since };
+        status.notices = None;
+        status.running = None;
+        assert_eq!(
+            plain(&status, &[words]),
+            format!(
+                "\
+polylogue  ◐ {words}
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
+
+NOTES      ⚠ {words}
+"
+            )
+        );
+        assert_eq!(line(&status, &[words.to_owned()], NOW), words);
+    }
+}
+
+/// An index rebuilt beside a readable one: the reply answers from the
+/// snapshot, the build shown beside it, and the archive's figures are
+/// labelled as the installed index's (docs/operations.md#status).
+#[test]
+fn a_rebuild_beside_a_readable_index_labels_the_installed_figures() {
+    let mut reading = current(
+        "reading stored files",
+        3,
+        Some(StepCount {
+            done: 1 << 30,
+            total: Some(4 << 30),
+            unit: CountUnit::Bytes,
+        }),
+    );
+    reading.rate_seconds = Some(30.);
+    let mut status = answer();
+    status.store = Some(polylogue_store::Status {
+        sessions: 12,
+        messages: 340,
+        tool_calls: 56,
+        inputs: 14,
+        revisions: 15,
+        stored_bytes: 5 << 30,
+        ..polylogue_store::Status::default()
+    });
+    status.index_build = Some(IndexBuild {
+        serving_previous: true,
+        chains: 14,
+        chains_read: 3,
+        bytes: 4 << 30,
+        bytes_read: 1 << 30,
+    });
+    status.build_progress = Some(progress(reading, Vec::new(), &["installing"]));
+    assert_eq!(
+        plain(&status, &[]),
+        "\
+polylogue  ◐ building the index, step 1 of 2
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
+
+ARCHIVE    12 sessions   340 messages   56 tool calls   0 documents
+           14 inputs (5.0 GiB decoded) · 15 revisions
+           from the installed index, until the build replaces it
+
+INDEX      building the index from 4.0 GiB of stored files: the archive had no index
+           reads and searches use the previous index until the new one is installed
+           #######.......................  25% of reading stored files
+
+           ▸ reading stored files     3m  1.0 GiB of 4.0 GiB · 3 of 14 files
+                                          estimate after a minute of progress
+           · installing
+
+           whole build: time left known once the last step runs (1 step to come)
+"
+    );
+    assert_eq!(line(&status, &[], NOW), "building the index, step 1 of 2");
+}
+
+fn window(
+    tool: &str,
+    limit: &str,
+    minutes: i64,
+    state: polylogue_store::measure::quota::CurrentUse,
+) -> polylogue_store::measure::quota::CurrentWindow {
+    polylogue_store::measure::quota::CurrentWindow {
+        tool: tool.into(),
+        limit: limit.into(),
+        window_minutes: minutes,
+        state,
+    }
+}
+
+/// `--line`: the headline's words, the counts, then each measured window
+/// grouped by tool; a window not measured is left out of the line and is
+/// `not_measured` with its reason in `--json` (docs/operations.md#status).
+#[test]
+fn the_line_carries_measured_quota_windows_after_the_counts() {
+    use polylogue_store::measure::quota::{CurrentUse, NotMeasured};
+    let measured = |used_percent| CurrentUse::Measured {
+        used_percent,
+        measured_at: at(NOW - 2 * MINUTE),
+        resets_at: Some(at(NOW + 90 * MINUTE)),
+        status: None,
+    };
+    let mut status = answer();
+    status.running = Some(Running::Measured {
+        waiting: 1,
+        sessions: vec![
+            session("claude-code:a1", LiveState::Waiting, NOW - 7 * MINUTE),
+            session("codex:b2", LiveState::Working, NOW - 2 * MINUTE),
+        ],
+    });
+    status.quota = vec![
+        window("claude-code", "five_hour", 300, measured(61.4)),
+        window("claude-code", "seven_day", 10_080, measured(20.0)),
+        window(
+            "codex",
+            "codex",
+            300,
+            CurrentUse::NotMeasured {
+                reason: NotMeasured::NoReading,
+            },
+        ),
+    ];
+    assert_eq!(
+        line(&status, &[], NOW),
+        "up to date · 2 running · 1 waiting 7m · claude-code 5h 61% 7d 20%"
+    );
+    assert_eq!(
+        serde_json::to_value(&status.quota[2]).unwrap(),
+        serde_json::json!({
+            "tool": "codex",
+            "limit": "codex",
+            "window_minutes": 300,
+            "state": "not_measured",
+            "reason": "no_reading",
+        })
+    );
+    status.quota.clear();
+    status
+        .quota
+        .push(window("codex", "codex", 300, measured(12.0)));
+    assert_eq!(
+        line(
+            &status,
+            &[
+                "parsing is behind the stored bytes".into(),
+                "synthetic note".into()
+            ],
+            NOW
+        ),
+        "parsing is behind the stored bytes (+1 more) · 2 running · 1 waiting 7m · codex 5h 12%"
+    );
+}
+
+/// SOURCES: a root that is absent, and one whose walk found files no
+/// declared pattern names, counted and marked (docs/operations.md#status).
+#[test]
+fn sources_show_an_absent_root_and_unrecognized_files() {
+    use polylogue_model::capture::{Accessibility, Classification};
+    let mut status = answer();
+    let mut incomplete = root(
+        "/home/op/.gemini",
+        Accessibility::Incomplete,
+        vec![entry(
+            Classification::Ignored,
+            "**",
+            Some("symbolic link is not followed"),
+            1,
+        )],
+    );
+    incomplete.unavailable_paths = vec![b"/home/op/.gemini/tmp".to_vec()];
+    status.store = Some(polylogue_store::Status {
+        capture_coverage: vec![coverage(vec![
+            root(
+                "/home/op/.codex",
+                Accessibility::Accessible,
+                vec![
+                    entry(
+                        Classification::Collected,
+                        "sessions/**/rollout-*.jsonl",
+                        None,
+                        20,
+                    ),
+                    entry(Classification::Collected, "history.jsonl", None, 1),
+                    entry(
+                        Classification::Unrecognized,
+                        "**",
+                        Some("no declared collection or ignore pattern matched"),
+                        3,
+                    ),
+                ],
+            ),
+            root("/home/op/.claude", Accessibility::Absent, Vec::new()),
+            incomplete,
+        ])],
+        ..polylogue_store::Status::default()
+    });
+    let text = plain(&status, &[]);
+    let sources = text
+        .split("\n\n")
+        .find(|section| section.starts_with("SOURCES"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert_eq!(
+        sources,
+        "\
+SOURCES    walked 14:04:00
+           codex /home/op/.codex · present · 21 collected · 3 unrecognized
+           /home/op/.claude · absent
+           /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
+             ignored: 1 symbolic link is not followed
+"
     );
 }

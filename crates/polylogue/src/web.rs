@@ -172,6 +172,7 @@ impl axum::serve::Listener for OwnerListener {
 pub fn router(web: Arc<Web>) -> Router {
     Router::new()
         .route("/", get(home))
+        .fallback(unknown_page)
         .route("/search", get(search))
         .route("/cost", get(cost))
         .route("/day/{date}", get(day))
@@ -228,7 +229,18 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     let path = req.uri().path().to_owned();
     if !open_route(&path) && !has_token(&web, headers) {
         return if req.method() == Method::GET && !path.starts_with("/api/") {
-            Redirect::to("/auth").into_response()
+            let next = polylogue_render::html::encode_path_segment(
+                req.uri().path_and_query().map_or("/", |uri| uri.as_str()),
+            );
+            let mut response = Redirect::to("/auth").into_response();
+            let cookie = format!(
+                "{}_page={next}; Path=/auth; HttpOnly; SameSite=Strict",
+                access::cookie_name(&web.key)
+            );
+            if let Ok(cookie) = HeaderValue::from_str(&cookie) {
+                response.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            response
         } else {
             (
                 StatusCode::UNAUTHORIZED,
@@ -329,7 +341,7 @@ pub(crate) async fn view<O>(
     lifetime: &Lifetime,
     arguments: O::Arguments,
     cursor: Option<String>,
-) -> Result<Value, command_surface::Failure>
+) -> Answer<Value>
 where
     O: crate::daemon::handler::Operation,
     O::Arguments: Send,
@@ -347,52 +359,61 @@ where
     });
     cancel.disarm();
     let answer = answer.map(|reply| serde_json::to_value(reply).unwrap_or_default());
-    crate::protocol::into_value(browser_response(answer, &web.daemon.archive.root))
+    browser_response(answer, &web.daemon.archive.root)
 }
 
 /// Archive paths never reach a browser, in values, failures or notes.
-fn browser_response(answer: Answer<Value>, root: &std::path::Path) -> Answer<Value> {
-    let mut answer = answer.map(|mut value| {
-        access::scrub_value(&mut value, root);
-        if let Some(value) = value.as_object_mut() {
-            value.remove("archive");
-        }
-        value
-    });
-    let notes = match &mut answer {
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Error(error),
-            envelope: command_surface::Envelope { notes, .. },
-            ..
-        } => {
-            error.message = access::scrub(&error.message, root);
-            error.hint = error.hint.as_deref().map(|hint| access::scrub(hint, root));
-            notes
-        }
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Ok(_),
-            envelope: command_surface::Envelope { notes, .. },
-            ..
-        }
-        | command_surface::Answer {
-            outcome: command_surface::Outcome::Empty(_),
-            envelope: command_surface::Envelope { notes, .. },
-            ..
-        }
-        | command_surface::Answer {
-            outcome:
-                command_surface::Outcome::Degraded {
-                    value: _,
-                    missing: notes,
-                    ..
-                },
-            ..
-        } => notes,
-    };
-    for note in notes {
-        *note = access::scrub(note, root);
+fn browser_response<T: serde::Serialize + serde::de::DeserializeOwned>(
+    answer: Answer<T>,
+    root: &std::path::Path,
+) -> Answer<T> {
+    let mut value = serde_json::to_value(answer).expect("answer serializes");
+    access::scrub_value(&mut value, root);
+    if let Some(object) = value.get_mut("value").and_then(Value::as_object_mut) {
+        object.remove("archive");
     }
-    answer
+    serde_json::from_value(value).expect("scrubbed answer deserializes")
+}
+
+/// All answer details appear together before the view's content.
+fn answer_page<T>(answers: &[(&Answer<T>, &str)], render: impl FnOnce() -> String) -> HttpResponse {
+    let failure = answers
+        .iter()
+        .find_map(|(answer, cli)| match &answer.outcome {
+            command_surface::Outcome::Error(failure) => Some((failure, *cli)),
+            _ => None,
+        });
+    let status = failure
+        .and_then(|(failure, _)| failure.kind.http_status())
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(if failure.is_some() {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::OK
+        });
+    let content = pages::answer_content(answers);
+    let html = if let Some((_, cli)) = failure {
+        pages::layout("Read failed", "", cli, &content)
+    } else {
+        // Both product templates and typed read pages use the shared frame.
+        render().replacen(
+            "<main id=\"main\" tabindex=\"-1\">",
+            &format!("<main id=\"main\" tabindex=\"-1\">{content}"),
+            1,
+        )
+    };
+    (status, Html(html)).into_response()
+}
+
+async fn unknown_page(request: HttpRequest) -> HttpResponse {
+    failed(
+        StatusCode::NOT_FOUND,
+        "Page not found",
+        &format!(
+            "{} is not a page. Use Home, Search or Cost and usage in the navigation.",
+            request.uri().path()
+        ),
+    )
 }
 
 fn page(html: String) -> HttpResponse {
@@ -419,29 +440,23 @@ async fn home(
     State(web): State<Arc<Web>>,
     Extension(lifetime): Extension<Lifetime>,
 ) -> HttpResponse {
-    let status = match view::<crate::daemon::service::handlers::Status>(
-        &web,
-        &lifetime,
-        Default::default(),
-        None,
-    )
-    .await
-    {
-        Ok(status) => status,
-        Err(failure) => return failed_with(&failure),
-    };
-    let sessions = match view::<Line>(
+    let status =
+        view::<crate::daemon::service::handlers::Status>(&web, &lifetime, Default::default(), None)
+            .await;
+    let sessions = view::<Line>(
         &web,
         &lifetime,
         line("sessions".into(), Some(30), false),
         None,
     )
-    .await
-    {
-        Ok(sessions) => sessions["reply"].clone(),
-        Err(failure) => return failed_with(&failure),
-    };
-    page(pages::home(&status, &sessions))
+    .await;
+    answer_page(
+        &[
+            (&status, "polylogue status"),
+            (&sessions, "polylogue --page-size 30 -- sessions"),
+        ],
+        || pages::home(status.value().unwrap(), &sessions.value().unwrap()["reply"]),
+    )
 }
 
 #[derive(Deserialize)]
@@ -466,27 +481,24 @@ async fn search(
     if p.q.trim().is_empty() {
         return Redirect::to("/").into_response();
     }
-    match view::<Line>(
+    let answer = view::<Line>(
         &web,
         &lifetime,
         line(p.q.clone(), None, true),
         p.cursor.clone(),
     )
-    .await
-    {
-        Ok(data) => page(pages::search(
-            &p.q,
-            Some(&data["reply"]),
-            None,
-            p.cursor.as_deref(),
-        )),
-        Err(failure) => page(pages::search(
-            &p.q,
-            None,
-            Some(&failure),
-            p.cursor.as_deref(),
-        )),
+    .await;
+    let mut cli = String::from("polylogue --why");
+    if let Some(cursor) = &p.cursor {
+        cli.push_str(&format!(
+            " --cursor {}",
+            polylogue_render::shell_quote(cursor)
+        ));
     }
+    cli.push_str(&format!(" -- {}", polylogue_render::shell_quote(&p.q)));
+    answer_page(&[(&answer, &cli)], || {
+        pages::search(&p.q, &answer.value().unwrap()["reply"], p.cursor.as_deref())
+    })
 }
 
 /// Cost uses the cost measure and its session selection, as the CLI does.
@@ -501,10 +513,11 @@ async fn cost(
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    match view::<Line>(&web, &lifetime, line(text, None, false), None).await {
-        Ok(data) => page(pages::cost(scope, &data["reply"]["data"])),
-        Err(failure) => failed_with(&failure),
-    }
+    let cli = format!("polylogue -- {}", polylogue_render::shell_quote(&text));
+    let answer = view::<Line>(&web, &lifetime, line(text, None, false), None).await;
+    answer_page(&[(&answer, &cli)], || {
+        pages::cost(scope, &answer.value().unwrap()["reply"]["data"])
+    })
 }
 
 /// One logical day as queries: its sessions, their usage during the day,
@@ -521,14 +534,20 @@ async fn day(
             "a day is written YYYY-MM-DD",
         );
     };
-    let mut replies: [Value; 4] = Default::default();
-    for (reply, query) in replies.iter_mut().zip(pages::day_queries(date)) {
-        match view::<Line>(&web, &lifetime, line(query, None, false), None).await {
-            Ok(mut data) => *reply = data["reply"].take(),
-            Err(failure) => return failed_with(&failure),
-        }
+    let mut answers = Vec::new();
+    for query in pages::day_queries(date) {
+        let cli = format!("polylogue -- {}", polylogue_render::shell_quote(&query));
+        let answer = view::<Line>(&web, &lifetime, line(query, None, false), None).await;
+        answers.push((answer, cli));
     }
-    page(pages::day(date, &replies))
+    let details = answers
+        .iter()
+        .map(|(answer, cli)| (answer, cli.as_str()))
+        .collect::<Vec<_>>();
+    answer_page(&details, || {
+        let replies = std::array::from_fn(|i| answers[i].0.value().unwrap()["reply"].clone());
+        pages::day(date, &replies)
+    })
 }
 
 async fn auth_page() -> HttpResponse {
@@ -572,6 +591,21 @@ async fn auth_exchange(
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         r.headers_mut().insert(header::SET_COOKIE, v);
     }
+    let page_cookie = format!("{}_page", access::cookie_name(&web.key));
+    if let Some(page) = access::cookie_token(
+        headers
+            .get(header::COOKIE)
+            .and_then(|value| value.to_str().ok()),
+        &page_cookie,
+    ) && let Ok(page) = HeaderValue::from_str(page)
+    {
+        r.headers_mut().insert("x-polylogue-return-to", page);
+    }
+    if let Ok(cookie) = HeaderValue::from_str(&format!(
+        "{page_cookie}=; Path=/auth; HttpOnly; SameSite=Strict; Max-Age=0"
+    )) {
+        r.headers_mut().append(header::SET_COOKIE, cookie);
+    }
     r
 }
 
@@ -606,16 +640,8 @@ async fn live_js() -> HttpResponse {
 /// An HTML failure page with the failure's shared HTTP status. The message
 /// was already scrubbed of archive paths by `view`.
 fn failed_with(failure: &command_surface::Failure) -> HttpResponse {
-    let status = failure
-        .kind
-        .http_status()
-        .and_then(|status| StatusCode::from_u16(status).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    failed(
-        status,
-        failure.code.as_deref().unwrap_or_default(),
-        &failure.message,
-    )
+    let answer = Answer::<Value>::error(failure.clone());
+    answer_page(&[(&answer, "")], String::new)
 }
 
 /// The data as the socket gives it, or a typed error with its HTTP status.

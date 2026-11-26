@@ -8,6 +8,8 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
+parser_modules! {}
+
 use crate::Records;
 use crate::lines::{self, Record};
 use polylogue_model::Json;

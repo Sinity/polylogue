@@ -255,6 +255,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **fusion**: ranking rows by their places in several ordered lists.
 - **warm state**: derived state the daemon keeps between requests, each item
   keyed by what it depends on (`docs/latency.md`).
+- **status snapshot**: what `status` reads from the index, read after each
+  commit; a status reply **answers from** the snapshot, an index build, or
+  nothing read yet (`docs/operations.md`).
 
 ## Reading
 

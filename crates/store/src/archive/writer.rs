@@ -115,6 +115,14 @@ impl From<UserRequest> for UserSubmission {
     }
 }
 
+/// A delivery accepted by the writer and not yet committed.
+#[derive(Clone, Debug)]
+pub struct PendingDelivery {
+    pub request: UserRequest,
+    /// The archive read counter of the snapshot used to prepare the brief.
+    pub prepared_at: Option<i64>,
+}
+
 type Written = Result<Committed<crate::user_writes::WriteResult>>;
 
 enum UserMsg {
@@ -179,7 +187,7 @@ struct Shared {
     users: Arc<user_queue::UserQueue>,
     location: Archive,
     /// Delivery records accepted and not yet committed, by request ID.
-    pending: Mutex<Vec<UserRequest>>,
+    pending: Mutex<Vec<PendingDelivery>>,
     report: Arc<Mutex<WriteReport>>,
     followed: Arc<Mutex<Handover>>,
     commits: crate::completion::CommitEvents,
@@ -382,6 +390,7 @@ impl ArchiveSender {
     pub fn accept_delivery(
         &self,
         submission: impl Into<UserSubmission>,
+        prepared_at: Option<i64>,
     ) -> Result<Receiver<Written>> {
         let submission = submission.into();
         if !is_delivery(&submission.request.write) {
@@ -396,7 +405,10 @@ impl ArchiveSender {
             .users
             .push_unbounded(UserMsg::Request(Box::new(submission), reply))
             .map_err(|_| StoreError::WriterGone)?;
-        pending.push(request);
+        pending.push(PendingDelivery {
+            request,
+            prepared_at,
+        });
         drop(pending);
         self.wake();
         Ok(wait)
@@ -404,7 +416,7 @@ impl ArchiveSender {
 
     /// The delivery records accepted and not yet committed, in the order
     /// they were accepted.
-    pub fn pending_deliveries(&self) -> Vec<UserRequest> {
+    pub fn pending_deliveries(&self) -> Vec<PendingDelivery> {
         self.0.pending.locked().clone()
     }
 
@@ -674,7 +686,10 @@ impl Inner {
                         });
                     if is_delivery(&request.write) {
                         let mut pending = self.shared.pending.locked();
-                        if let Some(at) = pending.iter().position(|known| known.id == request.id) {
+                        if let Some(at) = pending
+                            .iter()
+                            .position(|known| known.request.id == request.id)
+                        {
                             pending.remove(at);
                         }
                     }

@@ -1,4 +1,9 @@
 //! A Hermes tool-result string as a tool outcome and its result block.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use polylogue_model::JsonExt;
 use polylogue_model::{Block, ErrorReason, Json, ToolOutcome, UnknownReason};
 

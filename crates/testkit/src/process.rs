@@ -1,28 +1,12 @@
-//! Direct daemon children in tests. Callers keep their kill-and-wait guard.
+//! Child daemons of tests and of `cargo xtask run`: they die with their parent.
 
 use std::io;
-use std::path::Path;
 use std::process::{Child, Command};
 
-/// Gives `command` a cleared environment over the synthetic home `home`:
-/// `PATH`, `LANG`, and `HOME`, Polylogue's XDG directories and every root
-/// variable the sources declare, each pointing under `home`. Nothing from
-/// the calling environment reaches the child, so a run over synthetic data
-/// discovers no file outside `home`. Callers set narrower directories after.
-pub fn synthetic_environment<'a>(command: &'a mut Command, home: &Path) -> &'a mut Command {
-    command
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("LANG", "C.UTF-8")
-        .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("XDG_DATA_HOME", home.join(".local/share"))
-        .env("XDG_CACHE_HOME", home.join(".cache"))
-        .envs(polylogue_sources::origin::synthetic_home_environment(home))
-}
-
-/// Spawns a test daemon. On Linux, a forced parent exit also kills the child;
-/// normal shutdown still belongs to the caller's kill-and-wait guard.
-pub fn spawn_daemon(command: &mut Command) -> io::Result<Child> {
+/// Makes `command`'s process die with the calling thread: on Linux, a forced
+/// exit of the parent, which runs no cleanup, also kills the child. Normal
+/// shutdown still belongs to the caller.
+pub fn die_with_parent(command: &mut Command) -> &mut Command {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
@@ -43,7 +27,13 @@ pub fn spawn_daemon(command: &mut Command) -> io::Result<Child> {
             });
         }
     }
-    command.spawn()
+    command
+}
+
+/// Spawns a test daemon that dies with the test ([`die_with_parent`]);
+/// normal shutdown still belongs to the caller's kill-and-wait guard.
+pub fn spawn_daemon(command: &mut Command) -> io::Result<Child> {
+    die_with_parent(command).spawn()
 }
 
 /// A process-exit watch opened while the process identity is known to be live.
@@ -95,6 +85,3 @@ impl ProcessExit {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

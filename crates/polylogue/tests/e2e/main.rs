@@ -3,7 +3,8 @@
 //!
 //! - `cli`: the binary as a daemon, driven through the CLI;
 //! - `browser_host`: the binary as Chrome's native messaging host;
-//! - `completion`: shell callbacks over an offline synthetic catalog.
+//! - `completion`: shell callbacks over an offline synthetic catalog;
+//! - `sandbox`: daemons in the testkit's sandbox, and `cargo xtask run`.
 
 mod browser_host;
 mod cli;
@@ -11,6 +12,7 @@ mod completion;
 mod hook;
 mod onboarding;
 mod readme;
+mod sandbox;
 
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
 

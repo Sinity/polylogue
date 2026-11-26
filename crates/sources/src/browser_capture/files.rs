@@ -1,6 +1,11 @@
 //! What a capture holds, read with the same parser the loop uses: its
 //! conversation and the files its messages name. The extension asks before
 //! storing a capture, then fetches the bytes of the files it can.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use crate::parse::run_document;
 use serde_json::json;

@@ -1,3 +1,8 @@
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use polylogue_model::JsonExt;
 
