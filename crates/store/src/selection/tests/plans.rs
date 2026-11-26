@@ -95,13 +95,17 @@ fn default_pages_read_in_index_order() {
         // (`files`), is computed whole before its page. Annotations are
         // rows of the archive that people and agents write by hand, few
         // enough that sorting them at read is cheap, and the archive format
-        // owns their indexes.
+        // owns their indexes. Links between sessions are ordered by their
+        // parent's latest activity, which no link row holds; there are few
+        // per session, and the archive's are sorted at read.
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
         ) || matches!(
             unit,
-            polylogue_query::units::Unit::Files | polylogue_query::units::Unit::Annotations
+            polylogue_query::units::Unit::Files
+                | polylogue_query::units::Unit::Annotations
+                | polylogue_query::units::Unit::SessionLinks
         ) {
             continue;
         }
