@@ -50,7 +50,7 @@ These properties are required for every input; named tests identify existing cov
 
 Crash tests stop the writer after each of append, sync and commit, and check that the next open resumes each state a crash can leave, losing only the uncommitted group ([architecture.md#durability](architecture.md#durability) owns the states).
 
-The store and engine have a `faults` feature that adds a fault registry. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
+The store and engine have a `faults` feature that adds a fault registry. Only a test's own call to arm a named point activates it, in that process. The names checked by product code are declared in `crates/store/src/fault.rs`; arming or checking an undeclared name is an error. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
 
 ## Scenarios
 
