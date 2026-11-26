@@ -30,15 +30,4 @@ fn command(root: &std::path::Path) -> std::process::Command {
 
 mod deadlines;
 
-fn test_process(root: &std::path::Path) -> std::process::Command {
-    let fixture = Fixture::new(
-        &root.join("archive"),
-        &root.join("home"),
-        &root.join("config"),
-    );
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    fixture.environment(&mut command);
-    command
-}
-
 mod install_instructions;
