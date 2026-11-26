@@ -205,13 +205,14 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
     ("session", "changed"),
     ("session", "derived_changed"),
     ("session_first_prompt", "changed"),
-    ("session_item_state", "indexed_changed"),
 ];
 /// Values that follow the order of writes rather than what was written: a
-/// block's row key, assigned as blocks are inserted, and the counter that
-/// moves each time a session's indexed entries are rewritten, which readers
-/// compare only with its own earlier value (docs/reading.md, the session
-/// item index). A copy is written after the newer chain's parse, where a
+/// block's row key, assigned as blocks are inserted, and the state of a
+/// session's transcript lines, whose rewrite counter moves each time its
+/// lines are rewritten and which readers compare only with its own earlier
+/// value (docs/transcripts.md); the lines themselves are compared. A line's
+/// row key is its row's place in the session, which names the row's input
+/// by its ID, as `message.session_order` does. A copy is written after the newer chain's parse, where a
 /// parse of the older chain would have come before it.
 const WRITE_ORDER: &[(&str, &str)] = &[
     ("block", "pk"),
@@ -223,7 +224,8 @@ const WRITE_ORDER: &[(&str, &str)] = &[
     ("document", "pk"),
     ("text", "id"),
     ("input_ref", "pk"),
-    ("session_item_state", "rewrite_version"),
+    ("summary_state", "state"),
+    ("transcript_line", "row_key"),
 ];
 
 /// The natural key a column holding a local row key names.
@@ -374,12 +376,12 @@ fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
     assert_eq!(chains, 4);
 }
 
-/// A session item names its message or event by content, not by the row key
-/// the order of writes gave it (docs/transcripts.md, the session item index:
+/// A transcript line names its message or event by content, not by the row
+/// key the order of writes gave it (docs/transcripts.md, transcript lines:
 /// an entry is a function of its message or event alone), so two archives
-/// that read the same inputs in opposite orders hold the same items.
+/// that read the same inputs in opposite orders hold the same lines.
 #[test]
-fn session_items_are_the_same_whatever_order_inputs_arrive_in() {
+fn transcript_lines_are_the_same_whatever_order_inputs_arrive_in() {
     fault::clear();
     let transcript = user("u1", "same", "first prompt") + &assistant("a1", "same", "an answer");
     let captured = capture_log(&[&["a question", "another answer"]]);
@@ -409,7 +411,7 @@ fn session_items_are_the_same_whatever_order_inputs_arrive_in() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        (messages, dump(&w).remove("session_item").unwrap())
+        (messages, dump(&w).remove("transcript_line").unwrap())
     };
     let (transcript_keys, transcript_first) = read(true);
     let (log_keys, log_first) = read(false);

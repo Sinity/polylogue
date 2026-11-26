@@ -10,19 +10,10 @@ fn duplicate_write(
     duplicate: Option<&str>,
 ) -> Write {
     let token = Token::read(conn, session).unwrap().unwrap().0;
-    let items = if duplicate.is_none() {
-        vec![(
-            message,
-            crate::items::prepare_stored_message(conn, message).unwrap(),
-        )]
-    } else {
-        Vec::new()
-    };
     Write {
         sessions: vec![SessionWrite {
             pk: session,
             token,
-            items,
             computed: Vec::new(),
             output: Output {
                 duplicates: vec![(message, duplicate.map(str::to_owned))],
@@ -50,33 +41,16 @@ fn hidden() -> (WriterArchive, Connection, i64, i64) {
     crate::summary::mark(&conn, session, &crate::summary::Key::start()).unwrap();
     let hide = duplicate_write(&conn, session, message, Some("synthetic-repeat"));
     assert_eq!(crate::summary::apply(&conn, &hide).unwrap(), vec![true]);
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM session_item", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
     (world, conn, session, message)
 }
 
+/// A message the first wave reveals is written into the lines of the same
+/// round from its blocks: the summary worker reads it, not the writer.
 #[test]
-fn revealed_message_items_are_prepared_before_the_derive_commit() {
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-    let (_world, conn, session, message) = hidden();
-    let reveal = duplicate_write(&conn, session, message, None);
-    conn.flush_prepared_statement_cache();
-    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
-        AuthAction::Read {
-            table_name: "content_group",
-            column_name: "body",
-        } => Authorization::Deny,
-        _ => Authorization::Allow,
-    }))
-    .unwrap();
-    assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![true]);
-    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-        .unwrap();
-    let expected = crate::items::computed_entries(&conn, session).unwrap();
+fn a_revealed_message_gets_its_lines_from_its_blocks() {
+    let (world, conn, session, _) = hidden();
+    assert!(world.writer.derive().unwrap() > 0);
+    let expected = crate::summary::lines::computed_entries(&conn, session).unwrap();
     let actual = crate::items::stored_entries(&conn, session, 0).unwrap();
     assert_eq!(actual, expected);
     assert_eq!(actual[1].body_bytes, 25);
@@ -125,7 +99,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
             );
         }
         let before: Vec<Vec<u8>> = conn
-            .prepare("SELECT entry FROM session_item ORDER BY seq")
+            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -133,7 +107,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
             .unwrap();
         assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![false]);
         let after: Vec<Vec<u8>> = conn
-            .prepare("SELECT entry FROM session_item ORDER BY seq")
+            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -151,7 +125,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
                 0
             );
         } else {
-            let selected = crate::items::computed_entries(&conn, session).unwrap();
+            let selected = crate::summary::lines::computed_entries(&conn, session).unwrap();
             assert_eq!(selected[1].body_bytes, 22);
             let hidden: bool = conn
                 .query_row(
