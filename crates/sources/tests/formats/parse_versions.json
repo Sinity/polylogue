@@ -32,7 +32,7 @@
     "15182f36ad3905e77a58aad4d2ce00830a736ecfcced7aef8f8a4008b878d4c9"
   ],
   "claude-code": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=13,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=12,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
     "492b1843b05f06e9b2d85f3a61480d27dadae41124bfcf75471b000e9710b445"
   ],
   "claude-code-history": [
