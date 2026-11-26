@@ -56,8 +56,9 @@ read -r owner name default_branch < <(gh repo view --json owner,name,defaultBran
 # check-runs sent-back required failing title, tab-separated, "-" for an empty field. `required`
 # lists the required check runs on the head as name|status|conclusion|details
 # URL, separated by semicolons; `failing` names the failed jobs, the
-# required ones only when nothing else failed. A queued run, or a job waiting
-# for other jobs, reports nothing yet. Each tested base the required runs
+# required ones only when nothing else failed. Each check counts by its latest
+# run on the head; a cancelled run, a queued run, or a job waiting for other
+# jobs reports nothing yet. Each tested base the required runs
 # recorded is printed after its pull request's line as "base <number> <sha>".
 # `sent-back` is the head named in the queue's latest send-back comment.
 pr_rows() {
@@ -70,7 +71,7 @@ pr_rows() {
     reviewThreads(first: 100) { nodes { isResolved } }
     comments(last: 30) { nodes { body } }
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 50) { nodes {
-      ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $n)
+      ... on CheckRun { name status conclusion startedAt detailsUrl isRequired(pullRequestNumber: $n)
         annotations(first: 10) { nodes { title message } } }
     } } } } } }
   }"
@@ -79,9 +80,10 @@ pr_rows() {
     gh api graphql -F owner="$owner" -F name="$name" -f query="$q" --jq '
       def dash: if . == "" then "-" else . end;
       [.data.repository[]] | sort_by(.createdAt)[] |
-      ([.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.name != null)]) as $runs |
-      ($runs | map(select(.isRequired))) as $required |
-      ($runs | map(select(.conclusion as $c | ["FAILURE", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"] | index($c)))) as $failed |
+      ([.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.name != null)]
+        | group_by(.name) | map(max_by(.startedAt // ""))) as $runs |
+      ($runs | map(select(.isRequired and .conclusion != "CANCELLED"))) as $required |
+      ($runs | map(select(.conclusion as $c | ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"] | index($c)))) as $failed |
       ([$required[] | "\(.name)|\(.status)|\(.conclusion)|\(.detailsUrl)"] | join(";") | dash) as $req |
       (($failed | map(select(.isRequired | not))) as $jobs | (if $jobs == [] then $failed else $jobs end) | map(.name) | join(", ") | dash) as $fail |
       ([.labels.nodes[].name] | join(",") | dash) as $labels |
@@ -444,8 +446,8 @@ land_batch() {
         note "batch $(printf '#%s ' "${included[@]}")as staging ${staging:0:10} on $default_branch ${base:0:10}"
         $dry_run && { note "would push $staging_branch and dispatch $workflow on ${staging:0:10}"; return 0; }
         test_staging
-        if [ "$conclusion" = missing ]; then
-            note "the dispatched run did not appear; the batch waits for the next cycle"
+        if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
+            note "the staging run was ${conclusion/missing/not found}; the batch waits for the next cycle"
             return 0
         fi
         if [ "$conclusion" != success ] && [ ${#included[@]} -eq 1 ]; then
