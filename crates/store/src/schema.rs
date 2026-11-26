@@ -331,15 +331,35 @@ pub fn ensure_build_index(conn: &Connection) -> Result<()> {
 pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, true, false)
 }
-fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
-    // ALTER TABLE validates views that read packed bodies through these functions.
-    crate::sql_functions::register(conn)?;
+/// The version of an index this build can open (0 for an empty file), or
+/// the refusal of one from another format or version.
+fn index_version_of(conn: &Connection, primary: bool) -> Result<u32> {
     check_format(conn, "index")?;
     let found = version(conn)?;
     let wanted = index_version(primary);
     if found != 0 && found != wanted {
         return Err(StoreError::IndexVersion { found, wanted });
     }
+    Ok(found)
+}
+
+/// What [`ensure_index`] refuses in a standalone index, checked without
+/// changing the file: for an index a build set aside, why it was.
+pub(crate) fn check_standalone_index(conn: &Connection) -> Result<()> {
+    let found = index_version_of(conn, false)?;
+    if found != 0 && !same_index_schema_in(conn, false)? {
+        return Err(StoreError::OtherFormat {
+            database: "index",
+            found,
+        });
+    }
+    Ok(())
+}
+
+fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
+    // ALTER TABLE validates views that read packed bodies through these functions.
+    crate::sql_functions::register(conn)?;
+    let found = index_version_of(conn, primary)?;
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     if found == 0 {
         create_index_in(&tx, primary, deferring)?;

@@ -410,6 +410,26 @@ impl Engine {
         let Some(through) = through else {
             return Ok(());
         };
+        // The whole build's chains and bytes are counted before the first
+        // page is planned, so its progress has its total from the start.
+        let counting = std::time::Instant::now();
+        let (chains, bytes) = self
+            .reads
+            .reader()?
+            .count_chains_behind_index(&versions, &through)?;
+        prepare.chains.store(chains, Ordering::Relaxed);
+        prepare.bytes.store(bytes, Ordering::Relaxed);
+        prepare.progress();
+        polylogue_store::log!(
+            info,
+            "index: {chains} chains and {:.0} MB to read, counted in {} ms",
+            bytes as f64 / 1e6,
+            counting.elapsed().as_millis()
+        );
+        // What planning finds is the exact total: the count includes chains
+        // whose recorded refusal planning leaves out, and a file stored
+        // meanwhile can have grown.
+        let (mut planned_chains, mut planned_bytes) = (0, 0);
         let mut after = None::<String>;
         loop {
             self.archive.stop().check()?;
@@ -420,6 +440,9 @@ impl Engine {
                 .filter(|input| *input <= through)
                 .collect();
             let Some(last) = ids.last().cloned() else {
+                prepare.chains.store(planned_chains, Ordering::Relaxed);
+                prepare.bytes.store(planned_bytes, Ordering::Relaxed);
+                prepare.progress();
                 return Ok(());
             };
             let behind = reader.chains_behind_index(
@@ -431,7 +454,29 @@ impl Engine {
             drop(reader);
             let mut page = Vec::new();
             for c in behind {
-                let Some(plan) = self.build_plan(c)? else {
+                // The count holds the chains of formats with a reading; one
+                // the build plans is read whatever its format says.
+                let expected = versions
+                    .iter()
+                    .any(|(origin, _)| *origin == c.source.format);
+                let length = c.progress.length;
+                let plan = self.build_plan(c)?;
+                if expected || plan.is_some() {
+                    planned_chains += 1;
+                    planned_bytes += length;
+                    prepare.chains.fetch_max(planned_chains, Ordering::Relaxed);
+                    prepare.bytes.fetch_max(planned_bytes, Ordering::Relaxed);
+                }
+                // A counted chain no parser reads, or one that cannot be
+                // read, is done once planning finds it.
+                let done = || {
+                    prepare.chains_read.fetch_add(1, Ordering::Relaxed);
+                    prepare.bytes_read.fetch_add(length, Ordering::Relaxed);
+                };
+                let Some(plan) = plan else {
+                    if expected {
+                        done();
+                    }
                     continue;
                 };
                 // What upkeep does before it reads a stored chain: a bundle's
@@ -447,10 +492,9 @@ impl Engine {
                         .lock()
                         .map_err(|_| EngineError::Stopped)?
                         .push((plan, error));
+                    done();
                     continue;
                 }
-                prepare.chains.fetch_add(1, Ordering::Relaxed);
-                prepare.bytes.fetch_add(plan.size, Ordering::Relaxed);
                 page.push(plan);
             }
             prepare.progress();

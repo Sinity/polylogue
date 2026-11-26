@@ -48,6 +48,63 @@ fn build_progress_counts_chains_read_whole() {
     assert_eq!(home.texts("progress"), ["first chunk", "second chunk"]);
 }
 
+/// Reading stored files has the whole build's chains and bytes as its total
+/// before it plans the first page of inputs (docs/operations.md, build
+/// progress), so the share and estimate status shows are of the whole build.
+#[test]
+fn build_progress_has_the_whole_total_before_planning_starts() {
+    let home = ClaudeHome::new();
+    let first = claude_user("first", "one", "first file");
+    let second = claude_user("second", "two", "second file");
+    home.append("one.jsonl", &first);
+    home.append("two.jsonl", &second);
+    {
+        let (mut engine, _lock) = home.engine(1 << 20);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    polylogue_testkit::delete_index(&home.root);
+    let (mut engine, lock) = home.engine(1 << 20);
+    engine.config.workers = 1;
+    let archive = engine.archive.clone();
+    // The build's first planning page waits.
+    fault::arm("read.chains_behind_index", "All:[", Action::Hold, 0, 1);
+    let running = std::thread::spawn(move || {
+        let result = engine.run_pass();
+        drop(engine);
+        drop(lock);
+        result
+    });
+    let held = fault::wait_held_within(Duration::from_secs(30));
+    let progress = archive.index_build();
+    let count = archive.build_progress().and_then(|build| build.current);
+    fault::release();
+    let pass = running.join().unwrap().unwrap();
+    fault::clear();
+    assert!(held, "the first planning page waits");
+    let progress = progress.expect("the index stays private while the build plans");
+    let bytes = (first.len() + second.len()) as u64;
+    assert_eq!(
+        (
+            progress.chains,
+            progress.chains_read,
+            progress.bytes,
+            progress.bytes_read
+        ),
+        (2, 0, bytes, 0),
+        "{progress:?}"
+    );
+    let count = count
+        .expect("reading stored files is the current step")
+        .count;
+    assert_eq!(
+        count.map(|count| (count.done, count.total)),
+        Some((0, Some(bytes)))
+    );
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(home.texts("one"), ["first file"]);
+    assert_eq!(home.texts("two"), ["second file"]);
+}
+
 /// A new archive's first pass is a build (docs/installing.md, replacing an
 /// index): the files found are stored first and then read by the build's
 /// workers, which find them as stored chains due a reading, and the index

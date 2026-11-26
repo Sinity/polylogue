@@ -59,7 +59,7 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format),
+                COALESCE(f.format, i.format) AS format,
                 COALESCE(f.path, o.path),
                 COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
                 CASE WHEN f.path IS NOT NULL THEN f.path_bytes ELSE o.path_bytes END
@@ -82,6 +82,14 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
             "#;
 
 fn planning_sql(selected: bool, chains: RevisionChains) -> String {
+    format!(
+        "{} ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
+        behind_sql(selected, chains)
+    )
+}
+
+/// The chains behind the index, in no order.
+fn behind_sql(selected: bool, chains: RevisionChains) -> String {
     // Restrict histories before aggregating them. All-input planning
     // keeps its existing source-view access.
     let (revisions, observations) = if selected {
@@ -118,8 +126,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
              SELECT input,max(number) AS number,max(produced='imported') AS imported
              FROM revisions GROUP BY input
          ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}
-         AND NOT {database}
-         ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC"
+         AND NOT {database}"
     )
 }
 
@@ -183,6 +190,36 @@ impl Reader<'_> {
         )?;
         token.check()?;
         Ok(progress)
+    }
+
+    /// How many chains of the inputs up to `through` with a reading in
+    /// `versions` [`Self::chains_behind_index`] yields over all chains, and their stored
+    /// bytes, counted in one query. It counts chains whose refusal or failure
+    /// is recorded at their length for this attempt, which planning then
+    /// leaves out.
+    pub fn count_chains_behind_index(
+        &self,
+        versions: &[(String, String)],
+        through: &str,
+    ) -> Result<(u64, u64)> {
+        let token = self.scope_token();
+        let counted = self.conn()?.query_row(
+            &format!(
+                "SELECT count(*),coalesce(sum(length),0) FROM ({}) behind
+                 WHERE input<=?4 AND EXISTS(SELECT 1 FROM json_each(?1) expected
+                     WHERE json_extract(expected.value,'$[0]')=behind.format)",
+                behind_sql(false, RevisionChains::All)
+            ),
+            params![
+                serde_json::to_string(versions)?,
+                true,
+                None::<String>,
+                through
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        token.check()?;
+        Ok(counted)
     }
 
     /// Every chain whose index is behind its stored bytes. Waiting at the

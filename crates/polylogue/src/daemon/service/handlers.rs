@@ -253,7 +253,9 @@ pub(crate) struct Status;
 impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
+    /// Status reads the daemon's snapshot and its own state, so it waits for
+    /// no place behind requests that wait on the writer or the engine.
+    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Immediate;
     fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
         if status_is_deep(arguments) {
             crate::daemon::executor::Class::Background

@@ -6,7 +6,10 @@
 //! (schema inference, verification, imports). Queued work starts in the
 //! order of its deadline, so a short interactive request is not served after
 //! a long read accepted earlier; work without a deadline queues as if it had
-//! the default read deadline, so it still starts in its turn.
+//! the default read deadline, so it still starts in its turn. Work that
+//! reads only the daemon's memory (status without its deep checks) takes no
+//! place: it runs at once on the calling thread, so no queued or waiting
+//! work can delay it.
 //!
 //! Threads are not places. Work that must wait for something outside the
 //! daemon's own computation (the next commit, the writer's result) calls
@@ -26,7 +29,10 @@ pub(crate) const STOP_WAIT: Duration = Duration::from_secs(5);
 /// Which places a piece of work may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
-    /// Status, completion and brief: an ordinary place or the reserved one.
+    /// Work that reads only the daemon's memory: no place, run at once on
+    /// the calling thread.
+    Immediate,
+    /// Completion and brief: an ordinary place or the reserved one.
     Interactive,
     /// Every other request: an ordinary place.
     Ordinary,
@@ -54,6 +60,7 @@ impl Place {
 impl Class {
     fn index(self) -> usize {
         match self {
+            Self::Immediate => unreachable!("immediate work is never queued"),
             Self::Interactive => 0,
             Self::Ordinary => 1,
             Self::Background => 2,
@@ -185,6 +192,13 @@ impl Executor {
         deadline: Option<Instant>,
         job: impl FnOnce() + Send + 'static,
     ) -> bool {
+        if class == Class::Immediate {
+            if self.shared.state.locked().stopping {
+                return false;
+            }
+            job();
+            return true;
+        }
         let deadline = effective_deadline(deadline);
         let mut state = self.shared.state.locked();
         if state.stopping {
@@ -237,6 +251,12 @@ impl Executor {
             state = polylogue_model::unpoisoned(self.shared.finished.wait_timeout(state, left)).0;
         }
         0
+    }
+
+    /// Every place: the ordinary ones, the reserved one and the background one.
+    #[cfg(test)]
+    pub(crate) fn places(&self) -> usize {
+        self.shared.places
     }
 
     #[cfg(test)]

@@ -77,6 +77,21 @@ pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
     }
 }
 
+/// Why a standalone index a build set aside was replaced, and its schema
+/// identity, read from the file without changing it; `None` when this build
+/// could open it after all.
+pub(crate) fn set_aside_reason(
+    previous: &Connection,
+) -> Result<Option<(IndexRebuildReason, String)>> {
+    let Err(error) = crate::schema::check_standalone_index(previous) else {
+        return Ok(None);
+    };
+    let Some(reason) = reason(&error) else {
+        return Err(error);
+    };
+    Ok(Some((reason, crate::schema::index_identity(previous)?)))
+}
+
 /// Renames the primary cache (closed by the caller after reading `previous`)
 /// and any write-ahead files it left beside it, under its schema identity.
 pub(crate) fn set_aside(index: &Path, previous: &str) -> Result<()> {
