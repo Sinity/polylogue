@@ -166,6 +166,7 @@ impl SearchFill {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         reader.pragma_update(None, "query_only", true)?;
+        crate::activity::trace_statements(&reader, crate::activity::Connection::Reader);
         // The writer's transactions, an index creation among them, hold the
         // build file for as long as they run.
         reader.busy_timeout(Duration::from_secs(3600))?;
@@ -450,7 +451,9 @@ impl Coordinator {
 
     /// Reads, folds and hands over every wanted entry.
     fn fetch(&mut self, work: &Receiver<Work>) -> Result<()> {
+        let _doing = crate::activity::doing("reading texts for the search index");
         while !self.wanted.is_empty() {
+            crate::activity::progressed();
             let started = Instant::now();
             let take = self.wanted.len().min(FETCH_TEXTS);
             let mut wanted: Vec<(i64, u8)> = self.wanted.drain(..take).collect();
@@ -565,6 +568,7 @@ impl Coordinator {
 
     /// Brings the entries to every text's committed membership.
     fn settle_entries(&mut self, work: &Receiver<Work>) -> Result<()> {
+        let _doing = crate::activity::doing("settling the search index");
         let mut members = [Keys::default(), Keys::default()];
         let mut after = 0i64;
         // Read from the writer's commit of the membership on, in short
@@ -628,6 +632,7 @@ fn fill_file(file: Connection, batches: &Receiver<Vec<Entry>>, queued: &AtomicUs
     let mut written = 0usize;
     let mut since = Instant::now();
     while let Ok(batch) = batches.recv() {
+        let _doing = crate::activity::doing("writing search entries");
         let bytes = batch_bytes(&batch);
         let started = Instant::now();
         for entry in &batch {

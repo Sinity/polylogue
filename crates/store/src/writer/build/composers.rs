@@ -457,7 +457,10 @@ impl Pool {
                             Err(_) => return,
                         };
                         let Ok(batch) = batch else { return };
-                        let composed = batch.and_then(|batch| composing.compose(batch));
+                        let composed = batch.and_then(|batch| {
+                            let _doing = crate::activity::doing("composing sessions");
+                            composing.compose(batch)
+                        });
                         let failed = composed.is_err();
                         if sender.send(composed).is_err() || failed {
                             return;

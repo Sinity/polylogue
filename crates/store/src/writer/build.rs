@@ -1447,6 +1447,9 @@ pub(super) struct BuildJob {
     /// Set once the file is complete and being installed: a failure then
     /// leaves it for a later finish, rather than discarding it.
     pub(super) installing: bool,
+    /// The running step in the writer's activity, while the writer
+    /// advances the build ([`BuildJob::show_step`]).
+    step: Option<crate::activity::Doing>,
 }
 
 enum Stage {
@@ -1568,7 +1571,21 @@ impl BuildJob {
             after_stream: Vec::new(),
             search: None,
             installing: false,
+            step: None,
         }
+    }
+
+    /// Shows the running step, since it began, in the writer's activity
+    /// until [`BuildJob::hide_step`]; a step started meanwhile replaces it.
+    pub(super) fn show_step(&mut self) {
+        self.step = self
+            .clock
+            .as_ref()
+            .map(|(clock, _)| crate::activity::doing_since(clock.name, clock.started));
+    }
+
+    pub(super) fn hide_step(&mut self) {
+        self.step = None;
     }
 
     /// Starts `name` unless it is the phase already running, ending the one
@@ -1599,12 +1616,16 @@ impl BuildJob {
             let _ = announce.send(name);
         }
         self.clock = Some((PhaseClock::start(name, counted(name)), 0));
+        if self.step.is_some() {
+            self.step = Some(crate::activity::doing(name));
+        }
     }
 
     fn count(&mut self, items: u64) {
         if let Some((_, counted)) = &mut self.clock {
             *counted += items;
         }
+        crate::activity::progressed();
     }
 
     /// Runs `step`, `done` of `total`.

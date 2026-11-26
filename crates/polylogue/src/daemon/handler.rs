@@ -972,6 +972,7 @@ fn answer<H: Handler>(
     let text = H::query_text(&arguments).map(str::to_owned);
     let class = H::class(&arguments);
     let work = || {
+        let _doing = polylogue_store::activity::doing_on("answering a request", row.name);
         if daemon.blocked() && !read_only {
             return daemon.write_refusal().answer();
         }

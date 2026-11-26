@@ -29,6 +29,9 @@ pub struct Arguments {
 /// How many log records an ordinary status answer carries.
 pub const RECENT_LOG: usize = 20;
 
+/// How long a SQL statement runs before status lists it.
+pub const STATEMENTS_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Answer {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +72,11 @@ pub struct Answer {
     /// [`RECENT_LOG`], or every kept one with `--log`.
     #[serde(default)]
     pub recent_log: Vec<polylogue_store::log::Record>,
+    /// Each daemon thread that is doing something, with what, for how long
+    /// and how long since it last made progress, and the SQL statements
+    /// running longer than [`STATEMENTS_AFTER`], by thread name.
+    #[serde(default)]
+    pub threads: Vec<polylogue_store::activity::Thread>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

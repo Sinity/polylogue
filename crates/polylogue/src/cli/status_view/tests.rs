@@ -67,6 +67,7 @@ fn answer() -> Answer {
         #[cfg(feature = "sinex")]
         primary: None,
         recent_log: Vec::new(),
+        threads: Vec::new(),
     }
 }
 
@@ -835,5 +836,74 @@ fn a_step_without_progress_says_what_did_not_move() {
             "\n           ▸ joining sessions across files  1h10m  1,024 of 3,310 sessions\n                                                   no sessions done in the last 15m\n"
         ),
         "{text}"
+    );
+}
+
+/// `THREADS` gives each busy thread's work, outermost first, with the time
+/// of the innermost, says when it has gone a while without progress
+/// (stalled after ten minutes), and puts each long statement under its
+/// thread with its running time before the SQL (docs/operations.md#status).
+#[test]
+fn threads_show_their_work_progress_and_long_statements() {
+    use polylogue_store::activity::{Statement, Thread, Work};
+    let work = |what: &str, subject: Option<&str>, seconds: f64| Work {
+        what: what.into(),
+        subject: subject.map(Into::into),
+        seconds,
+    };
+    let mut status = answer();
+    status.threads = vec![
+        Thread {
+            name: "polylogue-parse-0".into(),
+            doing: vec![work("parsing a file", Some("/home/op/a.jsonl"), 4.)],
+            seconds_since_progress: Some(4.),
+            statements: Vec::new(),
+        },
+        Thread {
+            name: "polylogue-request".into(),
+            doing: Vec::new(),
+            seconds_since_progress: None,
+            statements: vec![Statement {
+                connection: "reader".into(),
+                sql: "SELECT 1".into(),
+                seconds: 5.,
+            }],
+        },
+        Thread {
+            name: "polylogue-search-fill".into(),
+            doing: vec![work("reading texts for the search index", None, 40.)],
+            seconds_since_progress: Some(30.),
+            statements: Vec::new(),
+        },
+        Thread {
+            name: "polylogue-writer".into(),
+            doing: vec![
+                work("building the index", None, 2.),
+                work("indexing sessions", None, 3720.),
+            ],
+            seconds_since_progress: Some(3500.),
+            statements: vec![Statement {
+                connection: "writer".into(),
+                sql: "UPDATE session_item SET shown = 1".into(),
+                seconds: 3500.,
+            }],
+        },
+    ];
+    let text = plain(&status, &[]);
+    let section: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("THREADS"))
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        section,
+        [
+            "THREADS    parse-0  parsing a file (/home/op/a.jsonl)  4s",
+            "           request  no work recorded",
+            "             running 5s on the reader connection: SELECT 1",
+            "           search-fill  reading texts for the search index  40s · no progress for 30s",
+            "           writer  building the index › indexing sessions  1h2m · stalled, no progress for 58m",
+            "             running 58m on the writer connection: UPDATE session_item SET shown = 1",
+        ]
     );
 }

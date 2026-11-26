@@ -3077,7 +3077,11 @@ impl Engine {
             let pending;
             self.planned.clear();
             let mut completed = false;
-            let mut finished = match self.one_pass(discover, &changed) {
+            let passed = {
+                let _doing = polylogue_store::activity::doing("running a pass");
+                self.one_pass(discover, &changed)
+            };
+            let mut finished = match passed {
                 Err(EngineError::Stopped) => {
                     // Writes the pass queued before stopping are committed.
                     if let Err(error) = self.flush_writes() {
