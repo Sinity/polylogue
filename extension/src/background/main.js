@@ -7,7 +7,7 @@
 import { ImportJob } from "./import_job.js";
 import { Capturer } from "./capture.js";
 import { ChatActions } from "./chat_actions.js";
-import { Host, HostError } from "./host.js";
+import { Host } from "./host.js";
 import "../capture_state.js";
 import { notePayload } from "./notes.js";
 import { ProviderScheduler } from "./provider.js";
@@ -235,7 +235,13 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     },
     "polylogue.answer": async (message) => host.call("internal chat answer", { id: message.id, value: message.value === "allow" ? "allow" : "deny" }),
     "polylogue.reader": async () => {
-      throw new HostError("reader_unavailable", null, "The reader address is unavailable; open Polylogue with `polylogue web`.");
+      try {
+        const { url } = await host.call("internal reader-url");
+        await chrome.tabs.create({ url });
+        return {};
+      } catch (error) {
+        return { error: error.code, message: error.message };
+      }
     },
   };
 

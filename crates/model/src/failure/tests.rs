@@ -635,6 +635,11 @@ fn every_reason_has_one_code_and_one_text() {
             "the note may or may not be saved; retry it with the same ID",
         ),
         (
+            Reason::ReaderNotRunning {},
+            Code::ReaderUnavailable,
+            "the reader is not running; start it with `polylogue web`",
+        ),
+        (
             Reason::NativeVersionMismatch { version: Some(1) },
             Code::Refused,
             "the browser host needs version 2; reload the extension",

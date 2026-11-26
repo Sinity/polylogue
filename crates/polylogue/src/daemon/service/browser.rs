@@ -494,6 +494,24 @@ browser!(
 );
 
 browser!(
+    ReaderUrl,
+    protocol::ReaderUrl,
+    protocol::ReaderAddress,
+    print::json,
+    Policy::READ,
+    |_a, call| {
+        let directory = call
+            .daemon
+            .config
+            .paths
+            .runtime_dir(&call.daemon.archive.root);
+        let url = crate::web::access::reader_url_in(&directory)
+            .map_err(|_| Failure::refusal(polylogue_model::Reason::ReaderNotRunning {}))?;
+        Answer::ok(protocol::ReaderAddress { url })
+    }
+);
+
+browser!(
     CaptureFiles,
     protocol::CaptureFiles,
     serde_json::Value,
@@ -522,7 +540,7 @@ impl protocol::SelectionNote {
                 problem: "the note needs a request ID, a body, a selection and its source".into(),
             }));
         }
-        let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
+        let Ok(url) = reqwest::Url::parse(&source.page_url) else {
             return Err(Failure::refusal(polylogue_model::Reason::BadAnnotation {
                 problem: "the source page URL is invalid".into(),
             }));
@@ -535,10 +553,13 @@ impl protocol::SelectionNote {
             }));
         };
         let parts: Vec<_> = url.path().split('/').filter(|s| !s.is_empty()).collect();
-        if url.scheme_str() != Some("https")
+        if url.scheme() != "https"
             || !url
-                .authority()
-                .is_some_and(|a| chat.hosts.contains(&a.as_str()))
+                .host_str()
+                .is_some_and(|host| chat.hosts.contains(&host))
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
             || parts.len() != 2
             || parts[0] != chat.path
             || parts[1] != source.conversation_id

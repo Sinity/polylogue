@@ -138,5 +138,22 @@ it("forwards a selection's request ID and the popup's answer by operation name",
     arguments: { body: note.body, quote: note.quote, ...source }, request_id: "note-id" })));
   expect(await handlers["polylogue.answer"]({ id: "a/1", value: "deny" })).toEqual({ action: { status: "denied" } });
   expect(chrome.calls[2]).toMatchObject({ operation: "internal chat answer", arguments: { id: "a/1", value: "deny" } });
-  await expect(handlers["polylogue.reader"]()).rejects.toMatchObject({ code: "reader_unavailable" });
+});
+
+it("opens the reader address returned by the daemon", async () => {
+  const url = "http://127.0.0.1:8102/auth#test-token";
+  const chrome = fakeChrome({ operations: { "internal reader-url": () => ({ json: { url } }) } });
+  const { handlers } = start(chrome, { indexedDB: new IDBFactory() });
+  expect(await handlers["polylogue.reader"]()).toEqual({});
+  expect(chrome.calls[0]).toMatchObject({ operation: "internal reader-url", arguments: {} });
+  expect(chrome.tabs.list.map((tab) => tab.url)).toContain(url);
+});
+
+it("returns the reader refusal sentence to the popup", async () => {
+  const message = "the reader is not running; start it with `polylogue web`";
+  const chrome = fakeChrome({ operations: { "internal reader-url": () => ({ status: 503, json: {
+    error: "reader_unavailable", message, reason: { name: "reader_not_running", fields: {} },
+  } }) } });
+  const { handlers } = start(chrome, { indexedDB: new IDBFactory() });
+  expect(await handlers["polylogue.reader"]()).toEqual({ error: "reader_unavailable", message });
 });

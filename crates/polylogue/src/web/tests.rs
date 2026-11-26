@@ -1287,3 +1287,44 @@ fn status_vector_details_use_the_http_route_but_verification_is_cli_only() {
 }
 
 mod failure_pages;
+
+#[test]
+fn reader_address_operation_requires_a_running_web_listener() {
+    let daemon = test_daemon::start("Reader address fixture");
+    let ask = || {
+        serde_json::to_value(
+            crate::test_daemon::Call::new("internal reader-url", serde_json::json!({}))
+                .answer(&daemon.daemon),
+        )
+        .unwrap()
+    };
+    let refused = serde_json::json!({
+        "name": "reader_not_running", "fields": {}
+    });
+    let answer = ask();
+    assert_eq!(answer["outcome"], "error");
+    assert_eq!(answer["error"]["code"], "reader_unavailable");
+    assert_eq!(answer["error"]["reason"], refused);
+    assert_eq!(
+        answer["error"]["message"],
+        "the reader is not running; start it with `polylogue web`"
+    );
+
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    let directory = daemon
+        .daemon
+        .config
+        .paths
+        .runtime_dir(&daemon.daemon.archive.root);
+    let token = std::fs::read_to_string(directory.join("token")).unwrap();
+    let answer = ask();
+    assert_eq!(answer["outcome"], "ok");
+    assert_eq!(
+        answer["value"],
+        serde_json::json!({
+            "url": format!("http://127.0.0.1:{}/auth#{}", server.port, token)
+        })
+    );
+    server.shutdown().unwrap();
+    assert_eq!(ask()["error"]["reason"], refused);
+}

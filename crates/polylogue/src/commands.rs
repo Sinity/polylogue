@@ -661,6 +661,15 @@ pub static COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "internal reader-url",
+        reason: "The extension opens the running reader",
+        help: "The running reader's authenticated address",
+        run: Run::Daemon(daemon::<browser::ReaderUrl>()),
+        cli: Cli::Hidden,
+        tool: None,
+        ..CLI
+    },
+    Command {
         name: "internal capture-files",
         reason: "The extension reads attachment names with the capture parser",
         help: "Read the conversation and attachment names in a capture",
