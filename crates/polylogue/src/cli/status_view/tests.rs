@@ -854,12 +854,14 @@ fn threads_show_their_work_progress_and_long_statements() {
     let mut status = answer();
     status.threads = vec![
         Thread {
+            worker: None,
             name: "polylogue-parse-0".into(),
             doing: vec![work("parsing a file", Some("/home/op/a.jsonl"), 4.)],
             seconds_since_progress: Some(4.),
             statements: Vec::new(),
         },
         Thread {
+            worker: None,
             name: "polylogue-request".into(),
             doing: Vec::new(),
             seconds_since_progress: None,
@@ -870,12 +872,14 @@ fn threads_show_their_work_progress_and_long_statements() {
             }],
         },
         Thread {
+            worker: None,
             name: "polylogue-search-fill".into(),
             doing: vec![work("reading texts for the search index", None, 40.)],
             seconds_since_progress: Some(30.),
             statements: Vec::new(),
         },
         Thread {
+            worker: None,
             name: "polylogue-writer".into(),
             doing: vec![
                 work("building the index", None, 2.),

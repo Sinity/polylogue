@@ -167,6 +167,7 @@ pub(super) fn answer(
     if let crate::protocol::status::Notices::Unavailable { error } = &notices {
         missing.push(format!("notices: {error}"));
     }
+    let threads = polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER);
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -190,8 +191,14 @@ pub(super) fn answer(
         mode: mode(d),
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
-        threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
+        threads,
     };
+    missing.extend(
+        status
+            .threads
+            .iter()
+            .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name)),
+    );
     capture_note(
         d,
         if !blocked && freshness.up_to_date() && missing.is_empty() {
@@ -311,6 +318,7 @@ fn unread(
         Some(Err(error)) => (None, Some(error)),
         None => (None, None),
     };
+    let threads = polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER);
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -338,10 +346,16 @@ fn unread(
         mode: mode.clone(),
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
-        threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
+        threads,
     };
+    let problems = status
+        .threads
+        .iter()
+        .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name))
+        .collect::<Vec<_>>();
     let mut answer = crate::protocol::read(status, &freshness);
     if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {
+        missing.extend(problems);
         if build.is_none() {
             missing.push(unread);
         }

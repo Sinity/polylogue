@@ -484,6 +484,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 ## The daemon and its surfaces
 
+- **worker**: work following committed changes. It is **running**, **failing** while a transient failure waits for another commit, or **halted** when repeating the work cannot end its failure.
+
 - **daemon**: the one process on the archive, the background service; it
   holds the lock, runs the two writers and serves every client.
 - **archive writer**: the one thread that commits `archive.db`'s record:

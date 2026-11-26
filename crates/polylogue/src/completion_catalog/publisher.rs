@@ -40,82 +40,22 @@ impl Publisher {
                 Some(Arc::clone(&completed)),
             );
             let mut publisher = State::new(daemon.config.requests.clone());
-            let mut last_error = None;
-            loop {
-                if stopped.load(Ordering::Acquire) {
-                    completed.store(true, Ordering::Release);
-                    return;
-                }
-                let result = (|| {
+            let expected = polylogue_store::follow::follow(
+                "completion catalog",
+                subscription.as_ref(),
+                &stopped,
+                || daemon.config.requests.now(),
+                || daemon.status.changed(),
+                || {
                     let reader = daemon.reads.reader()?;
                     publisher.refresh(
                         &reader,
                         &daemon.completion_path,
                         &crate::runtime_dir::archive_key(&daemon.archive.root),
                     )
-                })();
-                match result {
-                    Ok(()) => last_error = None,
-                    Err(error) => {
-                        if stopped.load(Ordering::Acquire) {
-                            completed.store(true, Ordering::Release);
-                            return;
-                        }
-                        let building =
-                            matches!(error, polylogue_store::StoreError::IndexBuilding(_));
-                        // A build's message carries its progress; waiting
-                        // for it is logged once, not at every commit.
-                        let error = error.to_string();
-                        let condition = if building {
-                            "the index is being built".to_owned()
-                        } else {
-                            error.clone()
-                        };
-                        if last_error.as_ref() != Some(&condition) {
-                            if building {
-                                // Waiting for a build is normal; its progress is in `status`.
-                                polylogue_store::log!(
-                                    info,
-                                    "completion catalog: waits for the index being built"
-                                );
-                            } else {
-                                polylogue_store::log!(warning, "completion catalog: {error}");
-                            }
-                            last_error = Some(condition);
-                        }
-                        // Nothing is readable until the index being built is
-                        // installed, which is a commit: wait for it.
-                        if building && let Some(subscription) = &subscription {
-                            if !crate::daemon::lifecycle::wait_for_index(
-                                subscription,
-                                &stopped,
-                                &completed,
-                            ) {
-                                return;
-                            }
-                            continue;
-                        }
-                        // Retry a failed write without advancing its position.
-                        // Successful idle publishers wait solely on commit events.
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        continue;
-                    }
-                }
-                match &subscription {
-                    Some(subscription) => {
-                        if subscription.recv().is_err() {
-                            if stopped.load(Ordering::Acquire) {
-                                completed.store(true, Ordering::Release);
-                            }
-                            return;
-                        }
-                    }
-                    None => {
-                        completed.store(true, Ordering::Release);
-                        return;
-                    }
-                }
-            }
+                },
+            );
+            completed.store(expected, Ordering::Release);
         })?;
         Ok(Self {
             stop,
