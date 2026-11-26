@@ -355,7 +355,8 @@ struct PoolState {
 /// database access starts the read on both databases and checks them. A
 /// reader whose read has not started when a rebuild's install replaces the
 /// index starts it on the installed index; a read that has started keeps the
-/// file it opened.
+/// file it opened until it ends, and the read after a [`Reader::restart`]
+/// starts on the installed index.
 /// Current annotation revisions are stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
@@ -363,7 +364,7 @@ pub struct Reader<'a> {
     /// until its read starts.
     opened: std::cell::RefCell<Option<(Connection, IndexIdentity)>>,
     /// The connection and its index file once the read has started.
-    started: std::cell::OnceCell<(Connection, IndexIdentity)>,
+    started: std::cell::OnceCell<Box<Started>>,
     holder: ThreadId,
     background: bool,
     limit: Option<limit::ReadLimit>,
@@ -379,6 +380,34 @@ pub struct Reader<'a> {
     /// The read was ended ([`Self::restart`]); the next access starts a new
     /// one on the same connection.
     ended: std::cell::Cell<bool>,
+}
+
+/// A connection a read started on. A read ended by [`Reader::restart`]
+/// that finds the index replaced starts on a new connection, `next`; the
+/// earlier one stays open until the reader is dropped, since what it
+/// returned may still be borrowed.
+struct Started {
+    conn: Connection,
+    identity: IndexIdentity,
+    next: std::cell::OnceCell<Box<Started>>,
+}
+
+impl Started {
+    fn new((conn, identity): (Connection, IndexIdentity)) -> Box<Self> {
+        Box::new(Self {
+            conn,
+            identity,
+            next: std::cell::OnceCell::new(),
+        })
+    }
+
+    fn latest(&self) -> &Self {
+        let mut latest = self;
+        while let Some(next) = latest.next.get() {
+            latest = next;
+        }
+        latest
+    }
 }
 
 /// The path a connection was opened through and the file it named: a build
@@ -788,9 +817,18 @@ fn pool_poisoned() -> StoreError {
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
-        let conn = self
-            .started
-            .take()
+        let mut started = self.started.take();
+        let mut latest = None;
+        while let Some(link) = started {
+            let Started {
+                conn,
+                identity,
+                next,
+            } = *link;
+            started = next.into_inner();
+            latest = Some((conn, identity));
+        }
+        let conn = latest
             .or_else(|| self.opened.get_mut().take())
             .filter(|(conn, _)| {
                 conn.progress_handler(0, None::<fn() -> bool>).is_ok()
@@ -952,13 +990,22 @@ impl Reader<'_> {
 
     pub(crate) fn conn(&self) -> Result<&Connection> {
         self.check()?;
-        if let Some((conn, _)) = self.started.get() {
-            // A read ended by `restart` starts again on the file it had.
-            if self.ended.get() {
-                self.start_on(conn, None)?;
-                self.ended.set(false);
+        if let Some(started) = self.started.get() {
+            loop {
+                let latest = started.latest();
+                // A read ended by `restart` is a new read: it starts on the
+                // installed index.
+                if !self.ended.get() {
+                    return Ok(&latest.conn);
+                }
+                if self.start_on(&latest.conn, Some(&latest.identity))? {
+                    self.ended.set(false);
+                    return Ok(&latest.conn);
+                }
+                let reopened = self.open()?;
+                self.prepare(&reopened.0)?;
+                let _ = latest.next.set(Started::new(reopened));
             }
-            return Ok(conn);
         }
         loop {
             if self.start()? {
@@ -967,8 +1014,8 @@ impl Reader<'_> {
                     .borrow_mut()
                     .take()
                     .expect("a started reader holds its connection");
-                let started = self.started.get_or_init(|| started);
-                return Ok(&started.0);
+                let started = self.started.get_or_init(|| Started::new(started));
+                return Ok(&started.conn);
             }
             // The index was replaced before this read started: it starts on
             // the installed one.
@@ -1113,10 +1160,10 @@ impl Reader<'_> {
 
     /// Ends the read in progress; the next access starts a new one.
     pub(crate) fn restart(&self) -> Result<()> {
-        if let Some((conn, _)) = self.started.get()
+        if let Some(started) = self.started.get()
             && !self.ended.get()
         {
-            conn.execute_batch("ROLLBACK; BEGIN")?;
+            started.latest().conn.execute_batch("ROLLBACK; BEGIN")?;
             self.ended.set(true);
             self.annotation_history_ready.borrow_mut().clear();
         }
@@ -1136,7 +1183,12 @@ impl Reader<'_> {
     /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
-        let (_, (_, device, inode)) = self.started.get().expect("a started reader");
+        let (_, device, inode) = &self
+            .started
+            .get()
+            .expect("a started reader")
+            .latest()
+            .identity;
         Ok((*device, *inode))
     }
 

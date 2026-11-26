@@ -837,3 +837,35 @@ fn a_failed_install_is_installed_at_the_next_commit() {
     assert!(!paths.dir.exists());
     assert_eq!(messages(&pool), 1);
 }
+
+/// A read keeps the index it started on through an install; the read after
+/// its restart is a new read and starts on the installed index.
+#[test]
+fn a_restarted_read_starts_on_the_installed_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::of(dir.path());
+    {
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        writer.build(Vec::new()).unwrap();
+        store_message(&archive, &writer, "served", "served while rebuilt");
+    }
+    crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
+        .unwrap()
+        .execute_batch("CREATE INDEX synthetic_extra ON message(pk)")
+        .unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = serving(&archive);
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    // The rebuild loads nothing, so the installed index holds no message.
+    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    reader.restart().unwrap();
+    assert_eq!(reader.status(&[]).unwrap().messages, 0);
+    assert_eq!(reader.index_identity().unwrap(), {
+        use std::os::unix::fs::MetadataExt as _;
+        let installed = std::fs::metadata(&paths.index).unwrap();
+        (installed.dev(), installed.ino())
+    });
+}
