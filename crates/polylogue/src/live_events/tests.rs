@@ -112,7 +112,10 @@ fn the_watcher_writes_only_changes_and_nothing_without_roots() {
     assert_eq!(started[0]["payload"]["ppid"], 10);
     assert_eq!(started[1]["payload"]["comm"], "cargo");
     // A sample with no change writes nothing.
-    assert_eq!(w.sample(now(), instant + Duration::from_secs(1)), vec![]);
+    assert_eq!(
+        w.sample(now(), instant + Duration::from_secs(1)),
+        Vec::<Value>::new()
+    );
     // A child that exits is written once.
     fake_proc(&proc_root, &[(10, 1, 500, "claude"), (11, 10, 600, "bash")]);
     assert_eq!(
@@ -136,15 +139,18 @@ fn descendants_are_sampled_each_second_during_a_tool_call_and_each_fifteen_secon
         [("Started".into(), 10)]
     );
     let instant = Instant::now();
-    assert_eq!(watcher.sample(now(), instant), vec![]);
+    assert_eq!(watcher.sample(now(), instant), Vec::<Value>::new());
 
     fake_proc(&proc_root, &[(10, 1, 500, "claude"), (11, 10, 600, "bash")]);
     assert_eq!(
         watcher.sample(now(), instant + Duration::from_secs(14)),
-        vec![]
+        Vec::<Value>::new()
     );
     live_root.open_call = true;
-    assert_eq!(watcher.update_roots(&[live_root.clone()], now()), vec![]);
+    assert_eq!(
+        watcher.update_roots(&[live_root.clone()], now()),
+        Vec::<Value>::new()
+    );
     assert_eq!(
         events(&watcher.sample(now(), instant + Duration::from_secs(15))),
         [("Started".into(), 11)]
@@ -156,10 +162,13 @@ fn descendants_are_sampled_each_second_during_a_tool_call_and_each_fifteen_secon
     );
 
     live_root.open_call = false;
-    assert_eq!(watcher.update_roots(&[live_root], now()), vec![]);
+    assert_eq!(
+        watcher.update_roots(&[live_root], now()),
+        Vec::<Value>::new()
+    );
     assert_eq!(
         watcher.sample(now(), instant + Duration::from_secs(17)),
-        vec![]
+        Vec::<Value>::new()
     );
     fake_proc(
         &proc_root,
@@ -167,7 +176,7 @@ fn descendants_are_sampled_each_second_during_a_tool_call_and_each_fifteen_secon
     );
     assert_eq!(
         watcher.sample(now(), instant + Duration::from_secs(31)),
-        vec![]
+        Vec::<Value>::new()
     );
     assert_eq!(
         events(&watcher.sample(now(), instant + Duration::from_secs(32))),
