@@ -22,7 +22,7 @@ use tokio::{
 };
 
 /// Reports termination even while unwinding; joins keep the result.
-/// A finite completion snapshot explicitly marks its expected return.
+/// A worker that may finish on its own marks its expected return.
 pub(crate) struct WorkerExit {
     events: tokio::sync::watch::Sender<Option<&'static str>>,
     name: &'static str,

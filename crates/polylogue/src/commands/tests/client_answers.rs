@@ -44,12 +44,8 @@ fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::Parse
         .skip(1)
         .map(|word| (*word).to_owned())
         .collect::<Vec<_>>();
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .map_err(|error| error.message)?;
+    let parsed = crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false)
+        .map_err(|error| error.message)?;
     if parsed.first == crate::cli::line::FirstWord::Command {
         return crate::cli::parse(argv);
     }

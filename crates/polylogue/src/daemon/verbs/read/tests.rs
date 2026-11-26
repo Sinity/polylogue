@@ -99,7 +99,7 @@ fn a_continuation_carries_every_option_of_its_step() {
     .map(str::to_owned);
     let parsed = crate::cli::line::parse(
         &words,
-        &crate::cli::line::FirstWordCatalog::default(),
+        &crate::cli::line::SavedNames::default(),
         false,
     )
     .unwrap();

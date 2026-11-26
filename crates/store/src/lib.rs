@@ -95,7 +95,7 @@ pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
     BehindChain, CapturedSession, ChainCensus, KnownInput, Lane, LatestChain, ReadPool, Reader,
     ReadingContract, RevisionChains, SqlValue, Status, StoredSource,
-    scope::{ReadScopeToken, ScopeInvalidation},
+    scope::ReadScopeToken,
 };
 pub use scope_index::{
     NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
