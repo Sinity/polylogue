@@ -387,7 +387,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         Some(UserWrite::ResolveLine {
             resolved, retained, ..
         }) => Selection {
-            question: match &given {
+            query: match &given {
                 Given::Query(text) => Some(text.clone()),
                 _ => None,
             },
@@ -496,7 +496,7 @@ fn resolve(
             Failure::not_found(format!("no current authored saved query query:{name}"))
         })?;
         let mut selection = resolve(Given::Reference(target), steps, return_selection, call)?;
-        selection.question = Some(text.clone());
+        selection.query = Some(text.clone());
         selection.given = given;
         return Ok(selection);
     }
@@ -542,7 +542,7 @@ fn resolve(
             };
             return Ok(Selection {
                 given,
-                question,
+                query: question,
                 resolved,
                 retained: Some(Box::new(retained)),
             });
@@ -574,7 +574,7 @@ fn resolve(
     Ok(Selection {
         given,
         resolved,
-        question,
+        query: question,
         retained: None,
     })
 }
@@ -637,7 +637,7 @@ fn selects_rows(
 fn summary(selection: &Selection) -> Option<Resolved> {
     let resolved = selection.resolved.as_ref()?;
     Some(Resolved {
-        question: selection.question.clone(),
+        query: selection.query.clone(),
         count: resolved.len() as u64,
         named: !matches!(selection.given, Given::Query(_)),
         first: resolved.iter().take(20).map(ToString::to_string).collect(),
@@ -651,7 +651,7 @@ fn attach_population(answer: &mut Answer<StepsAnswer>, selection: &Selection, ca
     let population = (|| {
         let reader = call.reader()?;
         let text = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .ok_or_else(|| Failure::bad_request("pick needs a selection"))?;
@@ -901,7 +901,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let query = Selection {
         given,
         resolved: None,
-        question: None,
+        query: None,
         retained: None,
     }
     .query_text()
@@ -989,7 +989,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
         _ => None,
     };
     let selection = Selection {
-        question: match &given {
+        query: match &given {
             Given::Query(text) => Some(text.clone()),
             _ => None,
         },
@@ -1007,7 +1007,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
             let plain = || format!("would {} {}", step.verb(), selection.described());
             // A step that acts on rows one by one cannot look at a query's
             // rows here, which are not resolved.
-            let would = if selection.question.is_some() && step.rows() != RowRule::Any {
+            let would = if selection.query.is_some() && step.rows() != RowRule::Any {
                 plain()
             } else {
                 step.would(&selection, &step_call)

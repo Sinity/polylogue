@@ -22,7 +22,7 @@ impl Verb for Save {
         let rows = selection
             .query_text()
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
-        let mut question = selection.question.clone().unwrap_or_else(|| rows.clone());
+        let mut question = selection.query.clone().unwrap_or_else(|| rows.clone());
         if let (Some(name), Some(retained), super::Given::Query(selected)) =
             (&step.name, selection.retained.as_deref(), &selection.given)
             && (selected == name || selected.strip_prefix("query:") == Some(name.as_str()))
@@ -161,7 +161,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
     }
     if step.watch && step.name.is_none() {
         let query = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .unwrap_or_else(|| "QUERY".into());
