@@ -3,10 +3,11 @@
 //! hashes live in the index, beside the parsed rows. Every completed read
 //! records an observation with the database's and its log's file facts, so
 //! a database left as it was when the process restarts is not read again.
+use crate::row::{Row as _, Rows as _, row};
 use crate::{Archive, FileFacts, InputKey, Observation};
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
@@ -246,6 +247,57 @@ fn facts_of(value: &Value) -> Option<FileFacts> {
     })
 }
 
+row! {
+    struct DatabaseObservation {
+        device: Option<i64>,
+        inode: Option<i64>,
+        size: Option<i64>,
+        mtime_ns: Option<i64>,
+        ctime_ns: Option<i64>,
+        details_json: Option<String>,
+    }
+    statements {
+        const LATEST = "SELECT device,inode,size,mtime_ns,ctime_ns,details_json FROM source_observation
+             WHERE input=?1 AND machine=?2 AND path_bytes=?3
+             ORDER BY commit_seq DESC, id DESC LIMIT 1";
+    }
+}
+
+row! {
+    struct TableDefinition {
+        name: String,
+        sql: Option<String>,
+    }
+    statements {
+        const ALL = "SELECT name, sql FROM sqlite_master
+         WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name";
+    }
+}
+
+row! {
+    struct TableColumn {
+        cid: i64,
+        name: String,
+        declared_type: String,
+        not_null: bool,
+        primary_key: i64,
+        hidden: i64,
+    }
+    statements {
+        const OF_TABLE = "SELECT cid, name, type AS declared_type, \"notnull\" AS not_null, pk AS primary_key, hidden
+            FROM temp.pragma_table_xinfo(?1) ORDER BY cid";
+    }
+}
+
+row! {
+    struct TableRowId {
+        wr: bool,
+    }
+    statements {
+        const OF_TABLE = "SELECT wr FROM pragma_table_list WHERE schema='main' AND name=?1";
+    }
+}
+
 /// The database and log facts of the last completed read of `input` at this
 /// observation's machine and path: the newest such observation the
 /// archive holds, committed with that read's rows.
@@ -261,32 +313,26 @@ fn recorded(
     let uri = format!("file:{}?mode=ro", archive.archive_db().display());
     conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
     crate::source::views(&conn)?;
-    let row = conn
-        .query_row(
-            "SELECT device,inode,size,mtime_ns,ctime_ns,details_json FROM source_observation
-             WHERE input=?1 AND machine=?2 AND path_bytes=?3
-             ORDER BY commit_seq DESC, id DESC LIMIT 1",
-            params![input.id, observation.machine, observation.path_bytes],
-            |r| {
-                let column = |n| r.get::<_, Option<i64>>(n);
-                let facts = match (column(0)?, column(1)?, column(2)?, column(3)?, column(4)?) {
-                    (Some(device), Some(inode), Some(size), Some(mtime), Some(ctime)) => {
-                        Some(FileFacts {
-                            device: device as u64,
-                            inode: inode as u64,
-                            size: size as u64,
-                            mtime_ns: mtime.into(),
-                            ctime_ns: ctime.into(),
-                        })
-                    }
-                    _ => None,
-                };
-                Ok((facts, r.get::<_, Option<String>>(5)?))
-            },
-        )
-        .optional()?;
-    let Some((Some(db), Some(details))) = row else {
+    let Some(DatabaseObservation {
+        device: Some(device),
+        inode: Some(inode),
+        size: Some(size),
+        mtime_ns: Some(mtime),
+        ctime_ns: Some(ctime),
+        details_json: Some(details),
+    }) = conn.maybe(
+        &DatabaseObservation::LATEST,
+        params![input.id, observation.machine, observation.path_bytes],
+    )?
+    else {
         return Ok(None);
+    };
+    let db = FileFacts {
+        device: device as u64,
+        inode: inode as u64,
+        size: size as u64,
+        mtime_ns: mtime.into(),
+        ctime_ns: ctime.into(),
     };
     let details: Value = serde_json::from_str(&details)?;
     let Some(wal) = details.get("database_wal") else {
@@ -339,31 +385,22 @@ struct Table {
 
 fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     let mut out = Vec::new();
-    let mut stmt = conn.prepare(
-        "SELECT name, sql FROM sqlite_master
-         WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
-    )?;
-    let names: Vec<(String, String)> = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get(0)?,
-                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (name, sql) in names {
-        let mut info = conn.prepare(&format!(
-            "PRAGMA table_xinfo(\"{}\")",
-            name.replace('"', "\"\"")
-        ))?;
+    let mut statement = conn.prepare(TableDefinition::ALL.sql())?;
+    let names = statement
+        .query_map([], TableDefinition::from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut info = conn.prepare(TableColumn::OF_TABLE.sql())?;
+    let mut rowid = conn.prepare(TableRowId::OF_TABLE.sql())?;
+    for TableDefinition { name, sql } in names {
         let metadata_columns: Vec<Value> = info
-            .query_map([], |r| {
+            .query_map([&name], TableColumn::from_row)?
+            .map(|row| {
+                let row = row?;
                 Ok(
-                    json!({"cid":r.get::<_,i64>(0)?,"name":r.get::<_,String>(1)?,
-                "declared_type":r.get::<_,String>(2)?,"not_null":r.get::<_,bool>(3)?,
-                "primary_key":r.get::<_,i64>(5)?,"hidden":r.get::<_,i64>(6)?}),
+                    json!({"cid":row.cid,"name":row.name,"declared_type":row.declared_type,
+                    "not_null":row.not_null,"primary_key":row.primary_key,"hidden":row.hidden}),
                 )
-            })?
+            })
             .collect::<rusqlite::Result<_>>()?;
         let cols: Vec<(String, i64)> = metadata_columns
             .iter()
@@ -382,11 +419,7 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
             .map(|(i, (_, pk))| (*pk, i))
             .collect();
         key.sort_unstable();
-        let without_rowid: bool = conn.query_row(
-            "SELECT wr FROM pragma_table_list WHERE schema='main' AND name=?1",
-            [&name],
-            |r| r.get(0),
-        )?;
+        let without_rowid = rowid.query_row([&name], TableRowId::from_row)?.wr;
         let rowid = (!without_rowid)
             .then(|| {
                 ["rowid", "_rowid_", "oid"]
@@ -397,7 +430,7 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
             .flatten();
         out.push(Table {
             name,
-            sql,
+            sql: sql.unwrap_or_default(),
             metadata: json!({"columns":metadata_columns,"without_rowid":without_rowid}),
             columns: cols.into_iter().map(|(c, _)| c).collect(),
             key: key.into_iter().map(|(_, i)| i).collect(),
@@ -615,3 +648,11 @@ fn read_rows(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<DatabaseObservation>();
+    check.row::<TableDefinition>();
+    check.row::<TableColumn>();
+    check.row::<TableRowId>();
+}
