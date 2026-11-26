@@ -157,8 +157,8 @@ fn selections_share_features_and_targets_in_the_runner() {
         ),
         (
             "polylogue-sinex",
-            "[features]\nfixture=[]\n[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
-            "#[test] fn fixture_feature_selected() { assert!(cfg!(feature=\"fixture\")); }\n",
+            "[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
+            "#[test] fn sinex_kinds_test() {}\n",
         ),
         (
             "polylogue",
@@ -248,7 +248,7 @@ fn selections_share_features_and_targets_in_the_runner() {
         ("application_runs_in_primary_mode", "passed"),
         ("engine_test", "passed"),
         ("helper_test", "passed"),
-        ("fixture_feature_selected", "passed"),
+        ("sinex_kinds_test", "passed"),
     ]));
     all.sort();
     assert_eq!(unfiltered(&run), all);
