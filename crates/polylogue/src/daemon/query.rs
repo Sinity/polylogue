@@ -1078,12 +1078,7 @@ fn answer(
         Outcome::Rows
     };
     let mut answer_notes = notes.clone();
-    answer_notes.extend(
-        program
-            .incomplete
-            .iter()
-            .map(|part| format!("incomplete: {part}")),
-    );
+    answer_notes.extend(program.incomplete.iter().cloned());
     Ok(QueryAnswer {
         logical_sessions,
         value: Answer::Rows(Box::new(Rows {

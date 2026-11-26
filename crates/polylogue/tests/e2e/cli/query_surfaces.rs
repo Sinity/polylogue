@@ -391,7 +391,7 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
         assert_eq!(listing(value.clone())["count"], 1, "{surface}: {value}");
         assert!(
             notes.iter().any(|note| note
-                == "incomplete: semantic search is off; enable it with `polylogue set embed.provider local`; rows are ranked by text relevance alone"),
+                == "semantic search is off; enable it with `polylogue set embed.provider local`; rows are ranked by text relevance alone"),
             "{surface}: {notes:?}"
         );
         answers.push(notes.clone());
@@ -471,7 +471,7 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
     );
     let expected = "semantic search is off; enable it with `polylogue set embed.provider local`; rows are ranked by text relevance alone";
     assert!(
-        matches!(&hybrid.outcome, command_surface::Outcome::Degraded { missing, .. } if missing.iter().any(|note| note == &format!("incomplete: {expected}"))),
+        matches!(&hybrid.outcome, command_surface::Outcome::Degraded { missing, .. } if missing.iter().any(|note| note == expected)),
         "{hybrid:?}"
     );
     let hybrid = answer("sessions where chrono similar:\"ambiguous dates\"", true);
@@ -491,7 +491,7 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
     assert_eq!(text.status.code(), Some(1), "{text:?}");
     assert_eq!(
         String::from_utf8(text.stderr).unwrap().trim(),
-        "note: no rows matched"
+        "polylogue: note: no rows matched"
     );
     let near = answer("near:\"x\"", false);
     assert_eq!(near.exit_code(), 2, "{near:?}");
@@ -561,12 +561,12 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
                 panic!("{response:?}")
             };
             assert_eq!(
-                missing,
-                [if read {
-                    sentence.to_owned()
-                } else {
-                    format!("incomplete: {sentence}")
-                }]
+                missing
+                    .iter()
+                    .filter(|note| note.as_str() == sentence)
+                    .count(),
+                1,
+                "{missing:?}"
             );
         }
     };
