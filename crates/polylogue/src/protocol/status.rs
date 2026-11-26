@@ -296,7 +296,6 @@ impl Running {
 /// Archive figures with capture summaries for the status reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Store {
-    /// Inputs whose bytes are still being written.
     pub sessions: u64,
     pub messages: u64,
     pub documents: u64,
@@ -387,11 +386,7 @@ impl Store {
                             Root {
                                 error: errors
                                     .iter()
-                                    .find(|error| {
-                                        error.subject == format!("source root {path}")
-                                            || error.subject == path
-                                            || error.subject.starts_with(&format!("{path}/"))
-                                    })
+                                    .find(|error| error.subject == format!("source root {path}"))
                                     .map(ToString::to_string),
                                 path,
                                 path_bytes: std::str::from_utf8(&root.path_bytes)

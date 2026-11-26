@@ -139,7 +139,7 @@ Slow SQL statements have their own in-memory list of the latest hundred distinct
 
 **Exit code.** `status`, with or without `--line` or `--json`, exits with its reply's code: 0 for a current reply, 5 when the reply is degraded (an index behind, a halted unit or a figure not measured), as every other command does ([interfaces.md](interfaces.md#exit-codes)).
 
-**Edge cases.** A new archive's status is `up to date` once its first pass is installed, with zero counts and its sources watched. An archive whose index cannot be read answers degraded, with `totals_error` naming why. With the daemon down, the CLI prints one line naming the service to start and exits 6. A starting daemon makes the client wait within its deadline and say so. Status over HTTP and MCP carries no local paths in errors.
+**Edge cases.** A new archive's status is `up to date` once its first pass is installed, with zero counts and its sources watched. An archive whose index cannot be read answers degraded, with `totals_error` naming why. With the daemon down, the CLI prints one line naming the service to start and exits 6. A starting daemon makes the client wait within its deadline and say so. Transport failures over HTTP and MCP carry no local paths; watched-root status identifies the paths it reports.
 
 ### Checking every stored byte
 

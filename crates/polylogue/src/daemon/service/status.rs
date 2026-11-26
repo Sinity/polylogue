@@ -460,11 +460,27 @@ fn unread(
             Vec::new()
         },
     };
-    let problems = status
-        .threads
+    let mut problems = status
+        .loop_status
+        .last_pass
+        .errors
         .iter()
-        .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name))
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
+    problems.extend(
+        status
+            .loop_status
+            .last_pass
+            .unreadable_roots
+            .iter()
+            .map(|path| format!("{}: unreadable", path.display())),
+    );
+    problems.extend(
+        status
+            .threads
+            .iter()
+            .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name)),
+    );
     let mut answer = crate::protocol::read(status, &freshness);
     if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {
         missing.extend(problems);
