@@ -58,6 +58,8 @@ A brief for continuing work lets its recipient recover the goal, the constraints
 
 **"Here" is the repository, not the directory:** the current directory, its repository root, every worktree sharing its Git directory, the project home, and every repository name recorded for sessions there. Sessions in sibling worktrees are labelled with their worktree.
 
+An unanswered prompt is the last active message written by a human, excluding commands. An unfinished tool call is any active, nonduplicate call without a result. Session summaries, open items and resume selection use these same definitions.
+
 **Sections, in order.** Each item carries its reference and age (`3 d ago`); each section names what it left out and the line that shows it.
 
 1. Header ([trust rendering](agents.md#trust-rendering)).

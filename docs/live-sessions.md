@@ -31,6 +31,8 @@ The live-event writers retain failed appends with their original observation tim
 - `live_until` is the next instant at which the state or stall changes with no new event; empty when only events can change them.
 - **The live clock.** The daemon wakes at the earliest `live_until` of the sessions in the live table and gives each session whose instant passed a new change counter, so a transition that comes from time alone reaches the change feed, `read --follow` and open web views like any other session change. Nothing polls.
 
+Every live read includes a live root regardless of the age of its latest event, including edited files and the next live-state deadline.
+
 A subagent's live state is its parent's process plus its own `SubagentStart`/`SubagentStop`. Query fields on sessions: `live`, `running` (`live` in `working`, `waiting`, `idle`, `unknown`), `waiting`, `waiting_on`, `stall`, `process_alive`, `harness_status`, `open_tool`, `edited_files`, `task`, `todo`, `live_since`, `live_until`, `last_event_at`, `live_rank`, `peers`.
 
 **Live intervals.** Applying events also closes intervals of each session's activity, wait and stall: `(session, aspect, value, start, end, closing event)`, kept in `live_interval`. They depend only on events: an interval stays open until an event closes it, and a rebuild gives the same intervals.

@@ -64,6 +64,7 @@ Footer = CitedAndLinked[], More(ReadyCall)?
   - `continuation`: the parent's messages are history before the context boundary, not the model's context (the [context view](#the-context-view) shows what the model had);
   - `spawn` without a copied prefix adds no parent messages;
   - `reference` links never compose;
+  - a non-copying link whose parent is absent reports `missing_parent`; its branch point is checked only when the parent is stored;
   - shared ancestors are counted once; the walk is iterative with no depth limit;
   - cycles, missing parents, invalid parent IDs, missing copied messages, missing branch points, conflicting parents, and copied messages with no recorded or with conflicting relative order become `link_issue` indicators and `parents.issues[]` in JSON, with `kind` `cycle`, `missing_parent`, `invalid_parent`, `missing_copied_message`, `missing_branch_point`, `conflicting_parents`, `unknown_order` and `conflicting_order`. They are never resolved by choosing one link. Only the two order kinds can fail a reading: a read that needs the undetermined order of copied messages fails with `incomplete_parents`, naming the issue.
 - Every message row carries `source_session` and `inherited`. The header shows `10 own + 18 inherited`.

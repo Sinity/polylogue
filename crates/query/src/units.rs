@@ -702,6 +702,14 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Money,
             },
             ColumnSpec {
+                name: "cost_complete",
+                kind: Bool,
+            },
+            ColumnSpec {
+                name: "unpriced_responses",
+                kind: Number,
+            },
+            ColumnSpec {
                 name: "abandoned",
                 kind: Bool,
             },

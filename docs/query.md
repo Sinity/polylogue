@@ -81,7 +81,7 @@ Raw tool-call failures are queryable as recorded outcomes: `tool_calls where out
 Field rules:
 
 - **Session-field shorthand.** In a row query, a session field without `session.` means `session.<field>` when the row unit has no field of that name; `--explain` shows the full form.
-- **String matching** is case-insensitive. `title`, `path`, `command` and `input` match substrings; `output` and `thinking` match words; `cwd` and `checkout` match subtrees (whole path components, case-sensitive, `_` and `%` literal); everything else matches whole values.
+- **String matching** is case-insensitive. `title`, `path`, `command` and `input` match substrings; `output` and `thinking` match words; `cwd` and `checkout` match subtrees (whole path components, case-sensitive, `_` and `%` literal, a trailing slash ignored, `/` matching every absolute path); everything else matches whole values.
 - **Two models in one session** match either; `group by model` counts the session under each.
 - **Counts and content fields** include `project`, `has:code` and `code_lang`, per-role counts (`human_words`, `model_words`, `thinking_messages`), `since_session:<ref>`, and `time_quality` and `precision` on every time.
 - **Live and open fields on sessions:** `running`, `waiting`, `live_rank`, `live_since` and `last_event_at` ([session-control.md](session-control.md)); `ends_open` (an unanswered prompt, an unfinished tool call, an open todo or handoff, a partial outcome); `triage_score` ([saved-queries.md](saved-queries.md#shipped-saved-queries)).
@@ -124,6 +124,7 @@ Different physical sessions can make one logical session match both `cwd:/a` and
 
 Time expressions (relative, calendar, natural-language dates, bounds, daylight-saving rules) and the logical day are the shared language's. Polylogue's use of them:
 
+- Session-window bounds passed to measurement reads use the same truncated milliseconds as stored message times.
 - A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result records them; a saved query and a watch resolve them again on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
 - A tool call's `result_at` is the time of its result or completion notice. `reported_duration` is the harness's own duration in milliseconds, unknown when absent; it is separate from the elapsed `duration` of [measures](measures.md), which needs both times on one clock.

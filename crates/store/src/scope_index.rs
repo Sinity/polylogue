@@ -254,16 +254,6 @@ impl Reader<'_> {
     }
 }
 
-/// Whether `path` is `dir` or below it, by whole path components.
-fn below(path: &str, dir: &str) -> bool {
-    let base = dir.trim_end_matches('/');
-    path == dir
-        || path == base
-        || (path.len() > base.len()
-            && path.starts_with(base)
-            && path.as_bytes()[base.len()] == b'/')
-}
-
 impl ScopeIndex {
     /// The index of `changes`, which must be a full read.
     pub fn new(changes: ScopeChanges) -> Self {
@@ -336,22 +326,11 @@ impl ScopeIndex {
     fn recorded_under(&self, dirs: &[String]) -> BTreeSet<i64> {
         let mut out = BTreeSet::new();
         for dir in dirs {
-            let base = dir.trim_end_matches('/');
-            let exact: &[&str] = if dir == base {
-                &[base]
-            } else {
-                &[dir.as_str(), base]
-            };
-            for key in exact {
-                if let Some(pks) = self.by_directory.get(*key) {
-                    out.extend(pks);
-                }
+            let [exact, first, end] = crate::session_sql::directory_bounds(dir);
+            if let Some(pks) = self.by_directory.get(&exact) {
+                out.extend(pks);
             }
-            // Every path that starts with `base/`: '0' follows '/'.
-            for (_, pks) in self
-                .by_directory
-                .range(format!("{base}/")..format!("{base}0"))
-            {
+            for (_, pks) in self.by_directory.range(first..end) {
                 out.extend(pks);
             }
         }
@@ -366,11 +345,10 @@ impl ScopeIndex {
             .into_iter()
             .filter_map(|pk| self.sessions.get(&pk))
             .filter(|s| {
-                s.session
-                    .cwd
-                    .as_deref()
-                    .is_some_and(|cwd| dirs.iter().any(|dir| below(cwd, dir)))
-                    && exclude.is_none_or(|exclude| s.session.id.to_string() != exclude)
+                s.session.cwd.as_deref().is_some_and(|cwd| {
+                    dirs.iter()
+                        .any(|dir| crate::session_sql::path_under(cwd, dir))
+                }) && exclude.is_none_or(|exclude| s.session.id.to_string() != exclude)
             })
             .collect();
         out.sort_by(|a, b| {

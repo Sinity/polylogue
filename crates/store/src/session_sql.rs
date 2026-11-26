@@ -1,5 +1,74 @@
 //! Session populations and current derived fields shared by query readers.
 
+/// Exact directory and descendant range, compared as whole path components.
+pub fn directory_bounds(directory: &str) -> [String; 3] {
+    let base = directory.trim_end_matches('/');
+    let exact = if base.is_empty() && !directory.is_empty() {
+        "/"
+    } else {
+        base
+    };
+    [exact.into(), format!("{base}/"), format!("{base}0")]
+}
+
+pub fn path_under(path: &str, directory: &str) -> bool {
+    let [exact, first, end] = directory_bounds(directory);
+    path == exact || (path >= first.as_str() && path < end.as_str())
+}
+
+fn path_range(path: &str, [exact, first, end]: [String; 3]) -> String {
+    format!("({path} = {exact} OR ({path} >= {first} AND {path} < {end}))")
+}
+
+/// Bound directory values let SQLite scan the path column by range.
+pub fn path_under_sql(path: &str, directory: &str, mut bind: impl FnMut(&str) -> String) -> String {
+    path_range(path, directory_bounds(directory).map(|value| bind(&value)))
+}
+
+/// A directory read from another row uses the same component range.
+pub fn path_under_column(path: &str, directory: &str) -> String {
+    let base = format!("rtrim({directory}, '/')");
+    path_range(
+        path,
+        [
+            format!("CASE WHEN {base}='' AND {directory}<>'' THEN '/' ELSE {base} END"),
+            format!("{base}||'/'"),
+            format!("{base}||'0'"),
+        ],
+    )
+}
+
+pub fn live_root(s: &str) -> String {
+    format!(
+        "(json_extract({s}.live_facts, '$.root') IS NOT NULL AND json_extract({s}.live_facts, '$.root_gone_at') IS NULL AND json_extract({s}.live_facts, '$.ended_at') IS NULL)"
+    )
+}
+
+/// Candidates include live roots regardless of the age of their last event.
+pub fn live_candidates(s: &str, now: &str) -> String {
+    use polylogue_model::live;
+    format!(
+        "({} OR {s}.live_last_at >= {now}-{} OR ({s}.live_last_at IS NULL AND {s}.last_activity_at >= {now}-{}))",
+        live_root(s),
+        live::STALE_FOR_MS + live::LIVE_WINDOW_MS,
+        live::LIVE_WINDOW_MS + 1
+    )
+}
+
+pub fn unanswered_prompt(session_pk: &str) -> String {
+    format!(
+        "coalesce((SELECT m.written_by='human' AND coalesce(m.prompt_kind,'prose')<>'command' FROM message m WHERE {} ORDER BY m.session_order DESC,m.id DESC LIMIT 1),0)",
+        own_messages("m", Some(&format!("={session_pk}")))
+    )
+}
+
+pub fn unfinished_tool_call(session_pk: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE {} AND t.result_message_id IS NULL)",
+        own_messages("m", Some(&format!("={session_pk}")))
+    )
+}
+
 /// Messages shown on the active path, optionally joined to selected sessions.
 pub fn own_messages(x: &str, join: Option<&str>) -> String {
     let session = join
@@ -168,8 +237,9 @@ pub fn open_annotation(r: &str) -> String {
 
 pub fn ends_open(s: &str) -> String {
     let last = format!(
-        "(SELECT CASE WHEN m.written_by='human' THEN 1 ELSE EXISTS(SELECT 1 FROM tool_call t JOIN block b ON b.pk=t.call_block_pk WHERE b.message_pk=m.pk AND t.result_message_id IS NULL) END FROM message m WHERE {} ORDER BY m.session_order DESC,m.id DESC LIMIT 1)",
-        own_messages("m", Some(&format!("={s}.pk")))
+        "({} OR {})",
+        unanswered_prompt(&format!("{s}.pk")),
+        unfinished_tool_call(&format!("{s}.pk"))
     );
     let replied = names_record("reply.ref", "'annotation:'||a.root");
     format!(
@@ -248,7 +318,65 @@ pub fn cost_with_parents(s: &str) -> String {
 
 pub fn cost_complete(s: &str) -> String {
     format!(
-        "(NOT {} AND NOT EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND m.duplicate_of IS NULL AND m.role='assistant' AND m.written_by='model' AND json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1) AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk={s}.pk AND e.kind='response_boundaries_unknown'))",
-        crate::measure::unpriced_in(&format!("{s}.pk"))
+        "(NOT EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND m.duplicate_of IS NULL AND {}) AND NOT EXISTS(SELECT 1 FROM event e WHERE e.session_pk={s}.pk AND e.kind='response_boundaries_unknown'))",
+        response_cost_unknown()
     )
 }
+
+pub(crate) fn response_value(column: &str) -> String {
+    format!("CASE WHEN {} THEN m.{column} END", own_responses())
+}
+
+pub(crate) fn response_cost_unknown() -> String {
+    format!(
+        "((m.role='assistant' AND m.written_by='model' AND (m.cost_nusd IS NULL OR NOT ({}))) OR EXISTS(SELECT 1 FROM event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown'))",
+        own_responses()
+    )
+}
+
+pub(crate) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
+ AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
+ AND m.session_pk NOT IN (SELECT e.session_pk FROM event e WHERE e.kind='response_boundaries_unknown' AND e.session_pk IS NOT NULL)";
+
+/// The `own` population (docs/measures.md, populations): each recorded
+/// response once, its shown version, on and off the active path. Every
+/// cost and token figure sums over it.
+pub(crate) fn own_responses() -> String {
+    format!("m.duplicate_of IS NULL AND {RESPONSE_ROWS}")
+}
+
+pub(crate) fn response_unpriced() -> String {
+    format!("({} AND m.cost_nusd IS NULL)", own_responses())
+}
+
+/// The sum of `column` over the own responses of the sessions `sessions`.
+pub(crate) fn own_responses_sum(sessions: &str, column: &str) -> String {
+    format!(
+        "(SELECT sum({}) FROM message m WHERE m.session_pk IN ({sessions}))",
+        response_value(column)
+    )
+}
+
+/// Whether an own response of the sessions `sessions` has no price: the
+/// session cost is then a lower bound.
+pub(crate) fn unpriced_in(sessions: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM message m WHERE m.session_pk IN ({sessions}) AND {})",
+        response_unpriced()
+    )
+}
+
+/// The one session cost: the known cost of the own responses of the
+/// sessions `sessions` (an SQL set of session keys); none when no response
+/// is priced. The field, `agg`, `compare` and `usage` all read it.
+pub(crate) fn cost_of(sessions: &str) -> String {
+    own_responses_sum(sessions, "cost_nusd")
+}
+
+/// A stored message timestamp, for reads that take millisecond bounds.
+pub fn message_time_ms(at: jiff::Timestamp) -> i64 {
+    at.as_millisecond()
+}
+
+#[cfg(test)]
+mod tests;

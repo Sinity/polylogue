@@ -54,6 +54,17 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
             .collect::<Vec<_>>(),
         ["old-pending"]
     );
+    for (directory, expected) in [
+        ("/work/proj/", vec!["old-pending"]),
+        ("/", vec!["old-pending", "sibling"]),
+    ] {
+        let (scoped, _) = reader
+            .pending_notice_candidates(&[directory.into()], None)
+            .unwrap();
+        let mut ids: Vec<_> = scoped.iter().map(|row| row.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, expected);
+    }
     assert_eq!(candidates[0].at, Timestamp::from_unix_ms(1).unwrap());
     assert_eq!(
         reader.delivery(&candidates[0].id).unwrap().unwrap().1,

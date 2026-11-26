@@ -221,7 +221,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
     let t = x.time(c)?;
     if x.cx.is_top() && x.unit == Unit::Sessions {
         // Conditions joined by AND narrow: the latest start wins.
-        let start = t.start_ms();
+        let start = crate::session_sql::message_time_ms(t.start());
         c.session_window.0 = Some(c.session_window.0.map_or(start, |s| s.max(start)));
     }
     let window = units::spec(x.unit)
@@ -250,7 +250,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
 pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let t = x.time(c)?;
     if x.cx.is_top() && x.unit == Unit::Sessions {
-        let bound = crate::calendar::boundary_ms(t.until_bound());
+        let bound = crate::session_sql::message_time_ms(t.until_bound());
         c.session_window.1 = Some(c.session_window.1.map_or(bound, |u| u.min(bound)));
     }
     let window = units::spec(x.unit)
