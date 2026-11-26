@@ -379,7 +379,7 @@ fn schema_check_lists_come_from_names() {
         .iter()
         .map(|precision| precision.as_str())
         .collect();
-    let index_sets: [(&str, &str, &[&str]); 27] = [
+    let index_sets: [(&str, &str, &[&str]); 29] = [
         ("session", "kind", polylogue_model::SessionKind::NAMES),
         ("session", "started_precision", &precisions[..]),
         ("session", "last_active_precision", &precisions[..]),
@@ -392,6 +392,12 @@ fn schema_check_lists_come_from_names() {
         ("block", "kind", polylogue_model::BlockKind::NAMES),
         ("tool_call", "action", polylogue_model::ToolAction::NAMES),
         ("tool_call", "outcome", polylogue_model::CallOutcome::NAMES),
+        ("link_statement", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "link_statement",
+            "reason",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
         ("session_link", "kind", polylogue_model::LinkKind::NAMES),
         (
             "session_link",

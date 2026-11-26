@@ -38,7 +38,7 @@ pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_links",
         "SELECT l.parent_id AS parent, l.child_id AS child, l.kind, l.reason \
-         FROM main.link l",
+         FROM main.session_link l",
     ),
     (
         "v1_annotations",

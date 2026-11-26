@@ -10,7 +10,7 @@ Kind: Exact. Unit: session; parent steps. Denominator: one physical session.
 
 Unknown: Missing parents, conflicting parents and cycles have no root or depth; missing parents set root_pending.
 
-Reads: session.id, session.has_transcript, link.parent_id, link.child_id, link.kind.
+Reads: session.id, session.has_transcript, session_link.parent_id, session_link.child_id, session_link.kind.
 
 Tests: arrival_order_permutation_oracle, depth_cycle_reported.
 
