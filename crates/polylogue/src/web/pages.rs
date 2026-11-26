@@ -103,6 +103,7 @@ pub(super) fn answer_content<T>(answers: &[(&command_surface::Answer<T>, &str)])
                     Outcome::Error(failure) => {
                         div class="error" role="alert" {
                             h1 { "Read failed" }
+                            @if let Some(code) = &failure.code { p { code { (code) } } }
                             p { (&failure.message) }
                             @if let Some(hint) = &failure.hint { p { (hint) } }
                             @if let Some(suggestion) = crate::protocol::suggestion_text(failure) {

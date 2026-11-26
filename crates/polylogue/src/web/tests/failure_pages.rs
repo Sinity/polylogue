@@ -193,6 +193,7 @@ fn failure_pages_show_the_suggested_shorter_period() {
                 .to_vec(),
         )
         .unwrap();
+        assert!(body.contains("<p><code>deadline_exceeded</code></p>"));
         assert!(body.contains("<p>restrict the query to a shorter time range or one session</p>"));
         assert!(body.contains("<p>Try <a href=\"/search?q=sessions%20since%3A7d\"><code>sessions since:7d</code></a></p>"));
     });

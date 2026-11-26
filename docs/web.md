@@ -200,7 +200,7 @@ The workbench's view routes are presentation over those operations. A **reader r
 
 Facet editing in Search and the query field uses the parsed query with spans that `explain: true` returns: editing a facet rewrites the span of its condition and leaves the rest of the query as typed ([terminal.md](terminal.md#explain)).
 
-Unknown view paths answer with HTTP 404 in the reader frame, naming the path and linking the available pages through the navigation. Every view shows the answer's missing reasons, notes and next calls together above its content. Degraded answers label their results as partial. Failed reads use the failure's HTTP status and show its message, hint, suggestion and the command that reproduces the view, including any next call to run without a deadline. Home reports the status reply's index rebuild state or the reason archive totals could not be read.
+Unknown view paths answer with HTTP 404 in the reader frame, naming the path and linking the available pages through the navigation. Every view shows the answer's missing reasons, notes and next calls together above its content. Degraded answers label their results as partial. Failed reads use the failure's HTTP status and show its code, message, hint, suggestion and the command that reproduces the view, including any next call to run without a deadline. Home reports the status reply's index rebuild state or the reason archive totals could not be read.
 
 
 ## Performance targets
