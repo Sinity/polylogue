@@ -175,15 +175,25 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             "socket-query".into(),
         );
         let socket = crate::client::call(&r.web.daemon.archive.socket(), &request).unwrap();
-        let (status, _, raw) = http.block_on(send(
-            &r,
-            authed(get(&format!(
-                "/api/v1/rows?selection={}&page_size=50&why=true",
-                enc(text)
-            )))
-            .body(Body::empty())
-            .unwrap(),
-        ));
+        let response = http
+            .block_on(
+                router(Arc::clone(&r.web)).oneshot(
+                    authed(get(&format!(
+                        "/api/v1/rows?selection={}&page_size=50&why=true",
+                        enc(text)
+                    )))
+                    .body(Body::empty())
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        let status = response.status();
+        let raw = String::from_utf8(
+            http.block_on(to_bytes(response.into_body(), usize::MAX))
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         let api: command_surface::Answer<Value> = serde_json::from_str(&raw).unwrap();
         match crate::protocol::into_value(socket) {
             Ok(answer) => {
