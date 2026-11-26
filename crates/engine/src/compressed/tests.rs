@@ -401,3 +401,107 @@ fn a_file_reached_through_a_linked_directory_is_one_location() {
         crate::location_id("synthetic-machine", &direct)
     );
 }
+
+/// A rollout of `answers` assistant answers after its session header.
+fn long_rollout(session_id: &str, answers: usize) -> String {
+    let mut bytes = rollout(session_id);
+    for i in 0..answers {
+        bytes.push_str(&answer(&format!("a{i}"), &format!("answer {i}")));
+    }
+    bytes
+}
+
+fn answer(id: &str, text: &str) -> String {
+    format!(
+        "{{\"type\":\"response_item\",\"payload\":{{\"id\":\"{id}\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{text}\"}}]}}}}\n"
+    )
+}
+
+fn texts(e: &Engine, session: &str) -> Vec<String> {
+    e.reads
+        .reader()
+        .unwrap()
+        .messages(&polylogue_model::SessionId::parse(session).unwrap(), false)
+        .unwrap()
+        .iter()
+        .map(polylogue_model::Message::text)
+        .collect()
+}
+
+/// An append to a stored rollout is proven by the stored bytes before its
+/// old end and costs its new bytes: the pass reads the appended records
+/// (and that tail), stores only them, writes rows only for them, and leaves
+/// the index a reading of the whole file in one pass gives
+/// (docs/architecture.md, the index is a function of the record).
+#[test]
+fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-00000000000a.jsonl");
+    let first = long_rollout("append-cost", 400);
+    std::fs::write(&path, &first).unwrap();
+    let (mut e, _lock) = engine(&w, 1 << 20);
+    let stored = e.run_pass().unwrap();
+    assert!(stored.errors.is_empty(), "{stored:?}");
+    let appended = answer("late", "written later") + &answer("later", "written last");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(appended.as_bytes())
+        .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(pass.bytes_stored, appended.len() as u64);
+    assert_eq!(pass.messages_written, 2);
+    assert!(
+        pass.bytes_read <= 2 * appended.len() as u64 + read::TAIL as u64,
+        "read {} bytes for an append of {} to a file of {}",
+        pass.bytes_read,
+        appended.len(),
+        first.len() + appended.len()
+    );
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-cost'"),
+        1
+    );
+    let whole = ClaudeHome::new();
+    let whole_dir = whole.home.join(".codex/sessions");
+    std::fs::create_dir_all(&whole_dir).unwrap();
+    std::fs::copy(&path, whole_dir.join(path.file_name().unwrap())).unwrap();
+    let (mut once, _whole_lock) = engine(&whole, 1 << 20);
+    let read_once = once.run_pass().unwrap();
+    assert!(read_once.errors.is_empty(), "{read_once:?}");
+    let session = "codex:append-cost";
+    assert_eq!(texts(&e, session).len(), 403);
+    assert_eq!(texts(&e, session), texts(&once, session));
+    assert_eq!(w.export(session), whole.export(session));
+}
+
+/// A stored rollout changed before its old end and then grown is not taken
+/// as an append: it starts a chain of its own.
+#[test]
+fn a_rollout_rewritten_in_place_and_grown_is_not_an_append() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-00000000000b.jsonl");
+    let first = long_rollout("rewrite-tail", 40);
+    std::fs::write(&path, &first).unwrap();
+    let (mut e, _lock) = engine(&w, 1 << 20);
+    let stored = e.run_pass().unwrap();
+    assert!(stored.errors.is_empty(), "{stored:?}");
+    let rewritten = first.replace("answer 39", "ANSWER 39") + &answer("late", "written later");
+    std::fs::write(&path, &rewritten).unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:rewrite-tail'"),
+        2
+    );
+    let texts = texts(&e, "codex:rewrite-tail");
+    assert_eq!(texts.len(), 42);
+    assert!(texts.iter().any(|text| text == "ANSWER 39"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text == "answer 39"), "{texts:?}");
+}

@@ -125,6 +125,8 @@ struct Captured {
     pending: bool,
     original_added: u64,
     added: u64,
+    /// Bytes of the file read to capture it.
+    read: u64,
 }
 
 impl CapturedRollout {
@@ -241,7 +243,31 @@ impl RolloutCapture {
         let mut same = false;
         let mut appended = false;
         let mut historical = None;
-        if let Some(chain) = chain {
+        // What was read of the file and of the stored chain to decide.
+        let mut file_read = facts.size;
+        // A plain rollout that grew is proven an append by the stored bytes
+        // just before its old end, as any appended file is, and only the
+        // appended bytes are read. A compressed file does not grow in place.
+        let grown = match (&chain, &previous) {
+            (Some(chain), Some(previous))
+                if !compressed && previous.length > 0 && facts.size > previous.length =>
+            {
+                let tail = chain.read_range(
+                    blobs,
+                    previous.length.saturating_sub(read::TAIL as u64),
+                    previous.length,
+                )?;
+                read::tail_intact(path, previous.length, &tail)?.then_some(previous.length)
+            }
+            _ => None,
+        };
+        if let Some(from) = grown {
+            let mut file = source.try_clone()?;
+            file.seek(std::io::SeekFrom::Start(from))?;
+            stream = Box::new(BufReader::new(file));
+            appended = true;
+            file_read = (facts.size - from) + read::TAIL.min(from as usize) as u64;
+        } else if let Some(chain) = chain {
             let mut stored = chain.reader(Arc::clone(blobs));
             let mut left = [0; 65536];
             let mut right = [0; 65536];
@@ -402,6 +428,7 @@ impl RolloutCapture {
                 pending: false,
                 original_added,
                 added,
+                read: file_read,
             },
             reply,
         )))
@@ -550,7 +577,7 @@ impl Engine {
                 }
             }
         };
-        pass.bytes_read += facts.size;
+        pass.bytes_read += captured.read;
         pass.bytes_stored += captured.original_added + captured.added;
         if captured.pending {
             pass.capture_pending = true;

@@ -1969,10 +1969,11 @@ impl Engine {
     }
 
     /// A parse-only plan over a chain's stored bytes. A capture log resumes
-    /// at its last parsed record, and a line input whose read was
-    /// interrupted (still `parsing`) at its last committed parser
-    /// checkpoint; anything else parses from the start as a replacement of
-    /// the chain's reading, so a line parser rebuilds its state. The parser
+    /// at its last parsed record, and a line input at its last committed
+    /// parser checkpoint (a read that was interrupted, or a chain that grew
+    /// after it was read, such as an appended rollout); anything else
+    /// parses from the start as a replacement of the chain's reading, so a
+    /// line parser rebuilds its state. The parser
     /// state itself is restored as the plan starts ([`Engine::load_stored`]).
     pub(crate) fn reparse_plan(
         &self,
@@ -2000,10 +2001,18 @@ impl Engine {
                 .reader()?
                 .parser_checkpoint(&input.id, state.chain, &version)?
                 .filter(|stored| {
+                    // A reading that stopped at a record boundary (an
+                    // interrupted read, or one complete at a length the
+                    // chain has since grown past) resumes there.
                     stored.parse_version == version
                         && stored.parsed_upto == state.parsed_upto
                         && stored.checkpoint.is_some()
-                        && stored.progress == polylogue_model::batch::ParseProgress::Parsing
+                        && matches!(
+                            stored.progress,
+                            polylogue_model::batch::ParseProgress::Parsing
+                                | polylogue_model::batch::ParseProgress::Done
+                                | polylogue_model::batch::ParseProgress::Waiting { .. }
+                        )
                 })
                 .map_or(0, |stored| stored.parsed_upto)
         } else {
