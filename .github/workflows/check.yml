@@ -39,7 +39,30 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           rev: ${{ inputs.rev || '' }}
+      # Temporary experiment: does cargo-sweep keep exactly what the builds use?
+      - name: Stamp the restored build (experiment)
+        run: |
+          findmnt -T target -no OPTIONS
+          f=$(ls target/debug/deps/*.rlib | head -1); stat -c 'atime %x mtime %y %n' "$f"
+          cargo sweep --stamp
       - run: cargo xtask fast
+      - name: Build every test binary and sweep (experiment)
+        run: |
+          cargo xtask test --no-run
+          f=$(ls -t target/debug/deps/*.rlib | tail -1); stat -c 'atime %x mtime %y %n' "$f"
+          du -sb target/debug/deps target/debug/build target/debug/examples target
+          s=$(date +%s); tar -C target -cf - . | zstd -T0 -3 -q | wc -c | sed 's/^/zstd bytes before /'; echo "tar seconds $(( $(date +%s) - s ))"
+          cargo sweep --file
+          du -sb target/debug/deps target/debug/build target/debug/examples target
+          s=$(date +%s); tar -C target -cf - . | zstd -T0 -3 -q | wc -c | sed 's/^/zstd bytes after /'; echo "tar seconds $(( $(date +%s) - s ))"
+          echo "after sweep, rebuilding:"
+          F=polylogue/sinex,polylogue-model/fixture,polylogue-query/fixture,polylogue-sources/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture
+          S=polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture
+          cargo build --locked -p xtask 2>&1 | grep -E '^ *(Compiling|Checking|Fresh) ' | head -5 || true
+          cargo clippy --locked --workspace --all-targets --features $F -- -D warnings 2>&1 | grep -E '^ *(Compiling|Checking) ' | head -20 || true
+          cargo clippy --locked --workspace --exclude polylogue-sinex --all-targets --features $S -- -D warnings 2>&1 | grep -E '^ *(Compiling|Checking) ' | head -20 || true
+          cargo test --no-run --locked --workspace --features $F --tests 2>&1 | grep -E '^ *(Compiling|Checking) ' | head -20 || true
+          echo "rebuild check done"
       # Only this job saves master's build, so it also builds every test
       # binary the other jobs build; with Clippy's results that is all of it.
       # A lint failure still leaves a valid build, which is saved too.
