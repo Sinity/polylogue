@@ -151,9 +151,6 @@ fn open(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-#[cfg(test)]
-mod tests;
-
 /// Stores the supplied capture bytes before acknowledging them.
 pub(super) fn store(
     host: &super::BrowserHost,
@@ -196,3 +193,6 @@ pub(super) fn store(
         "hash": blake3::hash(bytes).to_hex().as_str(), "new": new}),
     ))
 }
+
+#[cfg(test)]
+mod tests;

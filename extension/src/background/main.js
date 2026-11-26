@@ -156,7 +156,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     }
     const daemonUp = status.daemon === "running";
     const jobs = daemonUp ? (await host.call("rows", { selection: "import_jobs" }).catch(() => null))?.reply?.rows || [] : [];
-    const actions = daemonUp ? (await host.call("rows", { selection: "chat_actions" }).catch(() => null))?.reply?.rows || [] : [];
+    const actions = daemonUp ? (await host.call("rows", { selection: "chat_actions where state:awaiting_approval" }).catch(() => null))?.reply?.rows || [] : [];
     const { problems } = await session.get({ problems: [] });
     return {
       status,

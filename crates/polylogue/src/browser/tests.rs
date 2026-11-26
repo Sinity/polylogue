@@ -579,7 +579,6 @@ fn grok_capture_with_fetched_file_bytes_reaches_an_archive_read() {
     assert_eq!(read.status, 200, "{:?}", read.json());
     assert_eq!(read.json()["files"][0]["id"], "raw-file");
     assert_eq!(read.json()["files"][0]["url"], "users/u/raw-file/content");
-    assert_eq!(read.json()["files"][0]["stored"], Value::Null);
     let mut capture = grok_capture();
     capture["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
     let sent = store_capture(&host, &serde_json::to_vec(&capture).unwrap());

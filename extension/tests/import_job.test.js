@@ -18,9 +18,10 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
       reports.push(report);
       return report.by === job.claimed_by && acceptReport(report) ? { json: { job: { ...job, status: report.kind } } } : { status: 409, json: { error: "not_the_claimant" } };
     },
+    "spooled": ({ ids }) => ({ json: { spooled: ids.map((id) => held[id]?.spooled === true) } }),
     "internal conversations": (body) => {
       const { ids } = body;
-      return { json: { daemon: "running", conversations: ids.map((id) => ({ id, ...(held[id] || { state: "missing" }) })) } };
+      return { json: { daemon: "running", conversations: ids.map((id) => ({ id, ...(held[id] || { messages: null }) })) } };
     },
     "internal capture-files": () => ({ json: { conversation: { provider: "chatgpt", id: "c1" }, files: [] } }),
     "capture": (body) => { stored.push(json(body)); return { json: { new: true } }; },
@@ -55,9 +56,9 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
 }
 
 const HELD = {
-  "old-same": { state: "archived", messages: 3, last_captured_at: Date.parse("2026-01-03T00:00:00Z") },
-  changed: { state: "archived", messages: 3, last_captured_at: Date.parse("2026-01-04T00:00:00Z") },
-  spooled: { state: "spooled" },
+  "old-same": { messages: 3, last_captured_at: Date.parse("2026-01-03T00:00:00Z") },
+  changed: { messages: 3, last_captured_at: Date.parse("2026-01-04T00:00:00Z") },
+  spooled: { spooled: true },
 };
 
 describe("an import job held by Polylogue", () => {
@@ -116,7 +117,7 @@ describe("an import job held by Polylogue", () => {
 it("a_provider_edit_after_spooling_is_captured", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
   let text = "first";
-  const { importJob, capturer, stored, reports } = setup({ job, held: { a: { state: "spooled" }, b: { state: "spooled" } },
+  const { importJob, capturer, stored, reports } = setup({ job, held: { a: { spooled: true }, b: { spooled: true } },
     listing: () => ({ status: 200, info: { conversations: [
       { id: "a", updated_at: "2026-01-02T00:00:00Z" },
       { id: "b", updated_at: "2026-01-02T00:00:00Z" },
@@ -175,7 +176,7 @@ it("a_resumed_import_counts_each_conversation_once", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: "0:100", listed: 100, captured: 4, unchanged: 96, failed: 0 };
   const conversations = Array.from({ length: 25 }, (_, i) => ({ id: String(i), updated_at: "2026-01-02T00:00:00Z" }));
   const held = Object.fromEntries(conversations.map((c) => [c.id, HELD["old-same"]]));
-  held["15"] = { state: "missing" };
+  held["15"] = { messages: null };
   const listing = () => ({ status: 200, info: { conversations, done: true, next: null } });
   // Reports go out before the list is read, after ten conversations and
   // before conversation 15 is fetched, where the provider refuses the sign-in.

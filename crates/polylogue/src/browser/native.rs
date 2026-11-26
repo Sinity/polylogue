@@ -137,8 +137,15 @@ fn answer(host: &BrowserHost, mut message: Value) -> Result<Answer<Value>, crate
         Message::Call { request } => Ok(std::os::unix::net::UnixStream::connect(&host.socket)
             .and_then(|socket| crate::client::Exchange::new(&request).on(socket, |_| Ok(false)))
             .map(|answer| answer.expect("events are consumed until the answer"))
-            .unwrap_or_else(|_| {
-                crate::daemon::Failure::refusal(Reason::DaemonDidNotAnswer {}).answer()
+            .unwrap_or_else(|error| {
+                if error.kind() == io::ErrorKind::TimedOut {
+                    Answer::error(crate::protocol::failure(
+                        polylogue_model::Code::DeadlineExceeded,
+                        error.to_string(),
+                    ))
+                } else {
+                    crate::daemon::Failure::refusal(Reason::DaemonDidNotAnswer {}).answer()
+                }
             })),
         Message::Capture { capture } => super::captures::store(host, capture.as_bytes()),
         Message::Spooled { provider, ids } => {
