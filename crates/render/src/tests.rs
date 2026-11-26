@@ -325,7 +325,7 @@ fn specialized_views_need_prepared_layout_facts() {
     let record = message(vec![Block::Text {
         text: "not a summary".into(),
     }]);
-    for view in [View::Overview, View::Tree, View::Changes] {
+    for view in [View::Overview, View::Tree] {
         let parts = layout_record(
             &record,
             &ReadOptions {
@@ -336,6 +336,37 @@ fn specialized_views_need_prepared_layout_facts() {
         )
         .unwrap();
         assert!(parts.is_empty(), "{view:?}: {parts:?}");
+    }
+    let mut changes = document(layout(
+        record.clone(),
+        &ReadOptions {
+            view: View::Changes,
+            ..Default::default()
+        },
+        &LayoutFacts::default(),
+    ));
+    changes.header.view = View::Changes;
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            "session:test:session\nsession:test:session · changes\n\n\n--:-- model\nmessage:test:session:message\n",
+        ),
+        (
+            Format::Markdown,
+            "# session:test:session\nsession:test:session · changes\n\n\n## --:-- model\nmessage:test:session:message\n",
+        ),
+        (
+            Format::Html,
+            concat!(
+                "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                "<p class=\"meta\"><code>session:test:session</code> · changes</p><dl></dl></header>",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"message:test:session:message\">",
+                "<h2><time>--:--</time> <span class=\"value-state\" data-state=\"known\">model</span></h2>",
+                "<code>message:test:session:message</code></section></article>"
+            ),
+        ),
+    ] {
+        assert_eq!(encode(&changes, format), expected, "{format:?}");
     }
     for view in [View::Raw, View::Live] {
         assert!(matches!(
@@ -528,7 +559,7 @@ fn footer_is_outside_prose_content_but_present_in_json() {
             "<div class=\"archived-text\"><p>content</p>\n</div></section>",
             "<footer class=\"read-footer\"><nav aria-label=\"Next page\">",
             "<a class=\"ready-call\" href=\"/api/v1/read?operation=read&amp;arguments=%7B%22target%22%3A%22next-sealed%22%7D&amp;request_id=synthetic\">",
-            "polylogue read --request &#39;{&quot;target&quot;:&quot;next-sealed&quot;}&#39; --request-id synthetic</a>",
+            "polylogue read --request '{&quot;target&quot;:&quot;next-sealed&quot;}' --request-id synthetic</a>",
             "</nav></footer></article>"
         )
     );
