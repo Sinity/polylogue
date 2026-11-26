@@ -191,7 +191,10 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
     assert_eq!(data["rows"][0]["role"], "user");
     assert_eq!(
         data["rows"][0]["snippet"],
-        serde_json::json!({"text":"match stored \x1b[31m λ", "marks":[[0,5]]})
+        serde_json::json!({
+            "text":"match stored \x1b[31m λ", "marks":[[0,5]],
+            "session":"claude-code:s1", "message":"claude-code:u1"
+        })
     );
     // Colour is decided for each sink, as specified in terminal.md.
     for (stdout, stderr, no_color, term, stdout_color, stderr_color) in [
