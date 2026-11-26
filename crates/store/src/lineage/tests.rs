@@ -107,6 +107,8 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     let conn = db(&f);
     conn.execute("UPDATE session SET stub=1 WHERE pk=?1", [parent])
         .unwrap();
+    // As the writer does when a session turns to or from a stub.
+    mark_due(&conn, "test:parent").unwrap();
     // A stub parent ends the walk at the child, exactly as a missing one does.
     assert_eq!(
         read(&f, "test:leaf"),
@@ -122,6 +124,8 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     );
     conn.execute("UPDATE session SET stub=0 WHERE pk=?1", [parent])
         .unwrap();
+    // As the writer does when a session turns to or from a stub.
+    mark_due(&conn, "test:parent").unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:parent", 2));
     conn.execute("DELETE FROM link WHERE parent_id='test:parent'", [])
         .unwrap();

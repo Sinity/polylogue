@@ -376,3 +376,29 @@ fn lanes_decide_the_reserved_connection_and_one_background_holder() {
         assert!(pool.checkout(Lane::Background, &expired()).is_ok());
     });
 }
+
+#[test]
+fn status_counts_pending_search_text_up_to_a_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let conn = rusqlite::Connection::open(f.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<5)
+         INSERT INTO search_pending(text_id, fts_table) SELECT v, 1 FROM n;",
+    )
+    .unwrap();
+    assert_eq!(super::search_pending(&conn, 3).unwrap(), (3, true));
+    assert_eq!(super::search_pending(&conn, 5).unwrap(), (5, false));
+    assert_eq!(super::search_pending(&conn, 10).unwrap(), (5, false));
+    // The statement stops its scan at the limit, so a long queue costs it
+    // no more than the bound.
+    let opcodes: Vec<String> = conn
+        .prepare(&format!("EXPLAIN {}", super::SEARCH_PENDING_COUNT))
+        .unwrap()
+        .query_map([1], |row| row.get(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(opcodes.iter().any(|op| op == "DecrJumpZero"), "{opcodes:?}");
+}

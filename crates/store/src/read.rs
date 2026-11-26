@@ -330,6 +330,9 @@ pub struct ReadPool {
     counts: Mutex<crate::query::execute::CountCache>,
     /// The chain census of the last read position it was computed at.
     census: Mutex<Option<CensusAt>>,
+    /// The unused-record figures of the last read position they were read at:
+    /// they change only when a chain is parsed.
+    unused: Mutex<Option<(polylogue_model::ChangePosition, Arc<Unused>)>>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     /// A pipeline pool closes its idle connections before a build file is
@@ -460,6 +463,28 @@ pub struct LatestChain {
     pub state: polylogue_model::chain::ChainState,
 }
 
+/// How many pending search texts status counts exactly; past it the count
+/// is a minimum, so a backfill's queue costs status a bounded scan.
+pub const SEARCH_PENDING_BOUND: u64 = 1_000_000;
+
+/// The pending search texts, counted up to `bound`, and whether there are
+/// more: the scan reads at most `bound + 1` rows of the queue.
+pub(crate) const SEARCH_PENDING_COUNT: &str =
+    "SELECT count(*) FROM (SELECT 1 FROM main.search_pending LIMIT ?1)";
+
+fn search_pending(conn: &Connection, bound: u64) -> Result<(u64, bool)> {
+    let limit = i64::try_from(bound).unwrap_or(i64::MAX - 1) + 1;
+    let found: u64 = conn.scalar(SEARCH_PENDING_COUNT, [limit])?;
+    Ok((found.min(bound), found > bound))
+}
+
+/// The record kinds and fields parsers did not read, as status shows them.
+#[derive(Debug, Default)]
+struct Unused {
+    top: Vec<(String, u64)>,
+    fields: u64,
+}
+
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
 #[derive(
@@ -485,8 +510,13 @@ pub struct Status {
     /// How many record kinds and fields parsers did not read, all of them.
     pub unused_fields: u64,
     /// Texts stored but not yet in the search index: how far search lags
-    /// the writer.
+    /// the writer. Counted up to [`SEARCH_PENDING_BOUND`].
     pub search_pending: u64,
+    /// The count stopped at its bound: more texts than `search_pending` wait.
+    pub search_pending_is_minimum: bool,
+    /// Sessions whose summaries are due: until they are folded, their
+    /// messages and tool calls are missing from the totals.
+    pub summaries_due: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
     /// Why this index replaced the one before it, as its rebuild recorded.
@@ -566,6 +596,7 @@ impl ReadPool {
             cache_kib,
             counts: Mutex::default(),
             census: Mutex::default(),
+            unused: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -1544,6 +1575,30 @@ impl Reader<'_> {
         })
     }
 
+    /// The unused-record figures, read once for each read position.
+    fn unused_at_position(&self) -> Result<Arc<Unused>> {
+        let position = self.change_position()?;
+        if let Some((at, unused)) = self.pool.unused.locked().as_ref()
+            && *at == position
+        {
+            return Ok(unused.clone());
+        }
+        let c = self.conn()?;
+        let unused = Arc::new(Unused {
+            top: c
+                .all(&NamedCount::UNUSED, [])?
+                .into_iter()
+                .map(|count| (count.name, count.n))
+                .collect(),
+            fields: c.scalar::<u64>(
+                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
+                [],
+            )?,
+        });
+        *self.pool.unused.locked() = Some((position, unused.clone()));
+        Ok(unused)
+    }
+
     /// Totals for `status`, with every chain shown as the model judges it
     /// against the origins' parser versions in `contracts`.
     pub fn status(&self, contracts: &[ReadingContract]) -> Result<Status> {
@@ -1551,11 +1606,8 @@ impl Reader<'_> {
         let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { c.scalar::<u64>(sql, []) };
-        let unused = c
-            .all(&NamedCount::UNUSED, [])?
-            .into_iter()
-            .map(|count| (count.name, count.n))
-            .collect();
+        let unused = self.unused_at_position()?;
+        let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
             // Sessions and documents are counted; messages and tool calls
             // are summed from the sessions' count summaries, which follow
@@ -1568,11 +1620,11 @@ impl Reader<'_> {
             revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
-            unused,
-            unused_fields: count(
-                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
-            )?,
-            search_pending: count("SELECT count(*) FROM main.search_pending")?,
+            unused: unused.top.clone(),
+            unused_fields: unused.fields,
+            search_pending,
+            search_pending_is_minimum,
+            summaries_due: count("SELECT count(*) FROM main.summary_due")?,
             capture_coverage: self.all_capture_coverage()?,
             index_rebuild: crate::index::file::IndexRebuild::recorded(c)?,
         })
