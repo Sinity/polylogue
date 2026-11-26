@@ -1799,3 +1799,42 @@ fn grammar_and_feed_failures_show_the_correction_and_exit_two() {
         "after takes a position GENERATION:INDEX:ARCHIVE"
     );
 }
+
+#[test]
+fn streamed_read_deadline_prints_its_hint_and_next_command() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(
+        &env,
+        &[
+            "session:claude-code:s1",
+            "read",
+            "--follow",
+            "--deadline",
+            "200",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(7));
+    let text = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        text.lines()
+            .find(|line| line.starts_with("polylogue: hint:")),
+        Some("polylogue: hint: rerun with `--deadline none`, or narrow to one session")
+    );
+    let next = text
+        .lines()
+        .find_map(|line| line.strip_prefix("polylogue: complete without a deadline: "))
+        .unwrap();
+    let words: Vec<_> = next.split_whitespace().collect();
+    assert_eq!(&words[..2], &["polylogue", "--request-id"]);
+    assert_eq!(
+        &words[3..],
+        &[
+            "--deadline",
+            "none",
+            "--",
+            "session:claude-code:s1",
+            "read",
+            "--follow"
+        ]
+    );
+}
