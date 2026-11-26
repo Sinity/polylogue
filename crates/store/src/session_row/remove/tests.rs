@@ -23,7 +23,7 @@ fn message(tx: &Transaction<'_>, pk: i64, session: i64) {
             pk,
             format!("claude-code:m-{pk}"),
             session,
-            format!("{pk:08}")
+            crate::encoding::session_order(None, "fixture", pk, 0)
         ],
     )
     .unwrap();

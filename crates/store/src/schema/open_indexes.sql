@@ -6,6 +6,7 @@
 CREATE INDEX IF NOT EXISTS session_activity ON session(last_activity_at, id);   -- default order, since:
 CREATE INDEX IF NOT EXISTS message_time ON message(at, session_order, id);
 CREATE INDEX IF NOT EXISTS event_time ON event(at, id);
+CREATE INDEX IF NOT EXISTS document_time ON document(at, id);
 CREATE INDEX IF NOT EXISTS tool_call_time ON tool_call(at, call_block_pk);
 -- The longest stored period, read by one seek at the end of the index: a
 -- lower time bound K reads the range at >= K - longest, which holds every

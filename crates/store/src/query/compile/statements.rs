@@ -153,11 +153,23 @@ impl Statements {
         reverse: bool,
         columns: PageColumns,
     ) -> String {
-        let source = match self {
-            Statements::Keyed(keyed) => &keyed.keys,
-            Statements::Derived(derived) => &derived.rows,
-        };
-        page_of(source, order, params, after, reverse, columns)
+        match self {
+            Statements::Keyed(keyed) => {
+                page_of(&keyed.keys, order, params, after, reverse, columns)
+            }
+            // A derived relation is computed whole, so reading it as two
+            // parts would compute it twice; it is sorted as one.
+            Statements::Derived(derived) => {
+                let order: Vec<OrderKey> = order
+                    .iter()
+                    .map(|key| OrderKey {
+                        partition: false,
+                        ..key.clone()
+                    })
+                    .collect();
+                page_of(&derived.rows, &order, params, after, reverse, columns)
+            }
+        }
     }
 
     /// The row columns of the keys bound as one JSON array after the

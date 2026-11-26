@@ -108,7 +108,7 @@ fn sort_by_count_after_group() {
                 message,
                 CallFacts {
                     tool: "Read",
-                    action: "read",
+                    action: "file_read",
                     command: None,
                     path: Some(path),
                     outcome: "ok",

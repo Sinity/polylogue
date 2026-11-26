@@ -340,8 +340,10 @@ fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
 fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     let w = test_archive();
     let rows = vec![row(10, message("anchor", Role::User, "anchor"))];
+    // The shown place comes from the input that sorts first.
+    let first = input_sorting_before("z-main", "a-order");
     w.store_reading(
-        batch("a-order", Route::Capture, 0, rows.clone(), &["s"]),
+        batch(&first, Route::Capture, 0, rows.clone(), &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -397,8 +399,9 @@ fn removing_a_redundant_source_invalidates_derivations() {
         id_kind: polylogue_model::IdKind::Content,
         ..row(10, message("shared", Role::User, "same prompt"))
     };
+    let main = input_sorting_before("z-copy", "a-main");
     for (input, route, sessions) in [
-        ("a-main", Route::Live, &["s"][..]),
+        (main.as_str(), Route::Live, &["s"][..]),
         ("z-copy", Route::Capture, &[][..]),
     ] {
         w.store_reading(

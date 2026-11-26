@@ -39,15 +39,15 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 18).unwrap();
+    set_version(&conn, INDEX_VERSION + 1).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 18,
+            found,
             wanted: INDEX_VERSION
-        })
+        }) if found == INDEX_VERSION + 1
     ));
-    assert_eq!(version(&conn).unwrap(), 18);
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION + 1);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))

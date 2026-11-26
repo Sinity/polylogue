@@ -167,6 +167,7 @@ pub(crate) const BUILT_AT_END: &[&str] = &[
     "message_marked",
     "tool_call_time",
     "event_time",
+    "document_time",
     "event_period",
     "session_activity",
     "session_started",

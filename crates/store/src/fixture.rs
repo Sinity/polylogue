@@ -387,8 +387,14 @@ impl Fixture {
                 session_pk,
                 self.input_pk,
                 crate::encoding::session_order(None, "fixture", self.seq, 0),
-                m.role,
-                m.written_by,
+                // Facts that leave the role or the author unstated store
+                // what the writer stores for them.
+                if m.role.is_empty() { "user" } else { m.role },
+                if m.written_by.is_empty() {
+                    "unknown"
+                } else {
+                    m.written_by
+                },
                 m.prompt_kind,
                 m.model,
                 m.at,
@@ -478,7 +484,7 @@ impl Fixture {
                 result.map(|_| message_pk),
                 t.at,
                 t.tool,
-                t.action,
+                (!t.action.is_empty()).then_some(t.action),
                 t.command,
                 t.path,
                 if t.outcome.is_empty() {

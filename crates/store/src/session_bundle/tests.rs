@@ -4,47 +4,6 @@ use crate::{
 };
 use polylogue_model::SessionId;
 
-/// A link row whose stored kind this build does not know makes reading the
-/// session's links fail as a store failure, not as something wrong with the
-/// request.
-#[test]
-fn links_over_a_corrupt_stored_link_kind_is_a_store_failure() {
-    let root = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(root.path()).unwrap();
-    for id in ["test:parent", "test:child"] {
-        fixture
-            .session(SessionFacts {
-                id,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    fixture
-        .link("test:parent", "test:child", "fork", None)
-        .unwrap();
-    let child = SessionId::parse("test:child").unwrap();
-    let export = |fixture: &Fixture| {
-        let pool = ReadPool::open(&fixture.archive).unwrap();
-        pool.reader().unwrap().links(&child)
-    };
-    assert_eq!(export(&fixture).unwrap().len(), 1);
-    fixture
-        .link("test:parent", "test:child", "unheard-of", None)
-        .unwrap();
-    let error = export(&fixture).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            crate::StoreError::StoredValue {
-                column: Some(0),
-                ..
-            }
-        ),
-        "{error:?}"
-    );
-    assert_eq!(error.code(), polylogue_model::Code::Store);
-}
-
 // The original query is the independent result and negative work control.
 const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parse_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
 

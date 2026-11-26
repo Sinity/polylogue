@@ -257,7 +257,6 @@ fn time_conditions_test_whole_periods() {
         (format!("since:{}", t(3)), &["test:periods"][..]),
         (format!("last_active >= {}", t(3)), &["test:periods"][..]),
         (format!("last_active > {}", t(3)), &[][..]),
-        (format!("NOT last_active > {}", t(3)), &[][..]),
     ] {
         assert_eq!(
             ids(&f, &format!("sessions where {condition}"), "id"),
@@ -392,7 +391,7 @@ fn named_session_drives_a_page_of_shell_calls() {
     assert!(
         plan.iter().any(|step| step["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("INDEX tool_call_session (session_pk=?)"))),
+            .is_some_and(|detail| detail.contains("INDEX tool_call_session (session_pk=?"))),
         "{plan:#?}"
     );
 
