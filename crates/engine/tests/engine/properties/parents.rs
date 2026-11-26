@@ -46,12 +46,12 @@ const GAPS: &[(&str, &str, &str)] = &[
     (
         L1_SIDE,
         "spawn link",
-        "L1-side spawn link has no call; FACTS.md names toolu_1102",
+        "the first sidechain record carries the open Task call's prompt; the link names no call yet",
     ),
     (
         L1_SIDE,
         "human prompts",
-        "L1-side counts its delegated prompt as human; FACTS.md says zero human prompts",
+        "L1-side counts a user record of a sidechain as human; FACTS.md says zero human prompts",
     ),
     (
         L4,

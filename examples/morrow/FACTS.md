@@ -182,7 +182,7 @@ unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 | Name | Session ID | What it is | Own msgs | Copies counted elsewhere | Human | Own cost | Tree cost |
 |---|---|---|---|---|---|---|---|
 | L1 | `claude-code:7f3a2c10-0101-4000-8000-000000000101` | main, "Release checklist", 08:00–08:40; also present as a byte prefix under a second project folder, `-home-op-morrow-old` | 10 | 0 | 2 | 0.76 | 0.94 |
-| L1-side | `claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001` | older-layout sidechain inside L1's file (no `agentId`), answering L1's `Task` call `toolu_1102` | 2 | 0 | 0 | 0.03 | 0.03 |
+| L1-side | `claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001` | older-layout sidechain inside L1's file (no `agentId`); its first record has no parent and carries the prompt of the one open `Task` call, `toolu_1102` | 2 | 0 | 0 | 0.03 | 0.03 |
 | L2 | `claude-code:agent-a7f3a2c1000000102` | subagent of L1, spawned by `toolu_1101` (meta `toolUseId`) | 6 | 0 | 0 | 0.10 | 0.15 |
 | L3 | `claude-code:agent-a7f3a2c1000000103` | nested subagent of L2 (meta `parentAgentId`, `spawnDepth: 2`, `toolUseId: toolu_1201`) | 4 | 0 | 0 | 0.05 | 0.05 |
 | L4 | `claude-code:agent-a7f3a2c1000000104` | sibling copy: in L1's folder, repeats L2's first 4 records (L2's `agentId`), then continues; meta has no `toolUseId` | 4 | 4 | 0 | 0.05 | 0.05 |
@@ -210,6 +210,9 @@ Provider links (`how` is absent for provider relationships):
 | L1 | L1-side | spawn | `isSidechain` | `toolu_1102` |
 | L1 | L5 | fork | `forkedFrom` (four distinct recorded message UUIDs) | — |
 | L5 | L6, L7 | spawn | `toolUseId` | `toolu_1501`, `toolu_1502` |
+
+L1-side's first record has `parentUuid: null`. Its text carries the prompt of
+the one `Task` call open at that point, so its spawning call is `toolu_1102`.
 
 #4 physically copies #2, L4 physically copies L2, and L8 physically copies
 `claude-code:7f3a2c10-0199-…`, whose own file is absent. Their copied session or
