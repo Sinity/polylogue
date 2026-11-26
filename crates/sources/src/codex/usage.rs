@@ -1,5 +1,10 @@
 //! Recorded usage is independent of output-item membership. The producer
 //! persists items before completion and can retry without writing a boundary.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use polylogue_model::JsonExt;
 use polylogue_model::UsageReport;

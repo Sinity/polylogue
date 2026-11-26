@@ -130,8 +130,7 @@ fn unmarked_sessions_do_not_read_all_message_rows_and_marks_without_capture_clea
     let expected: Vec<_> = marked.iter().map(|pk| (*pk, None)).collect();
     assert_eq!(compute(&conn, sessions[0]).unwrap(), expected);
     let tx = index.unchecked_transaction().unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    apply(&tx, &expected, &changes).unwrap();
+    apply(&tx, &expected).unwrap();
     tx.commit().unwrap();
     assert!(compute(&conn, sessions[0]).unwrap().is_empty());
     let remaining: i64 = index

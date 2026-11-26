@@ -2,6 +2,11 @@
 //! that become events keep all their fields in the event's data, so only
 //! items that become messages are checked.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule::*};
 

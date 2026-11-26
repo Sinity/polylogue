@@ -375,6 +375,8 @@ pub struct Reader<'a> {
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
     calendar: crate::sql_functions::CalendarContext,
     annotation_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
+    /// How many times the read was ended for a newer one ([`Self::restarts`]).
+    restarts: std::cell::Cell<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -743,6 +745,7 @@ impl ReadPool {
             vectors: std::cell::RefCell::new(None),
             calendar: crate::sql_functions::CalendarContext::new(),
             annotation_history_ready: std::cell::RefCell::new(Default::default()),
+            restarts: std::cell::Cell::new(0),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -1078,6 +1081,37 @@ impl Reader<'_> {
             }
         }
         Ok(conn)
+    }
+
+    /// How many times this reader ended its read so that the next access
+    /// starts a newer one: a transcript read waits for a due session's
+    /// summary that way. Work that read several things before must read
+    /// them again when this moved, so that all of it comes from one read.
+    pub fn restarts(&self) -> u64 {
+        self.restarts.get()
+    }
+
+    /// Ends the read in progress; the next access starts a new one.
+    pub(crate) fn restart(&self) -> Result<()> {
+        if self.state.get() == ReadState::Ready {
+            self.conn
+                .as_ref()
+                .expect("reader holds a connection until dropped")
+                .execute_batch("ROLLBACK; BEGIN")?;
+            self.state.set(ReadState::Deferred);
+            self.annotation_history_ready.borrow_mut().clear();
+        }
+        self.restarts.set(self.restarts.get() + 1);
+        Ok(())
+    }
+
+    /// The request limit this reader reads under, if any.
+    pub(crate) fn limit(&self) -> Option<&limit::ReadLimit> {
+        self.limit.as_ref()
+    }
+
+    pub(crate) fn archive(&self) -> &Archive {
+        &self.pool.archive
     }
 
     /// The index file this reader's read transaction started on.

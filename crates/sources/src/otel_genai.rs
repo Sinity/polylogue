@@ -13,6 +13,10 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
+parser_modules! {
+    mod stream;
+}
+
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState};
@@ -42,8 +46,6 @@ pub fn open(_path: &Path) -> Option<Parse> {
 pub struct OtelGenAi {
     refused_lines: u64,
 }
-
-mod stream;
 
 static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
     "span",

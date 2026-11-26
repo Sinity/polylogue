@@ -309,7 +309,8 @@ fn acknowledged_commits_refresh_catalog_values_while_keystrokes_continue() {
         visibility.push(wait(&value, true));
         upper_bounds.push(submitted.elapsed());
     }
-    eprintln!(
+    polylogue_store::log!(
+        info,
         "five scheduled 1Hz setting batches: acknowledged_commit_offsets={commit_offsets:?}; ack_to_visible={visibility:?}; submit_to_visible_upper_bounds={upper_bounds:?}"
     );
 }

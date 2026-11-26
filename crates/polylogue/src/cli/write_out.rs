@@ -5,14 +5,11 @@ pub(crate) mod bundle;
 #[cfg(test)]
 mod tests;
 
-use super::{Archive, fail};
+use super::Archive;
 use base64::Engine as _;
 use polylogue_model::{bundle::Counts, read::*};
 use polylogue_store::export_items::ExportItems;
-use std::{
-    io::{self, Read, Write},
-    process::ExitCode,
-};
+use std::io::{self, Read, Write};
 
 #[derive(Debug)]
 enum OutputError {
@@ -30,21 +27,18 @@ impl From<&str> for OutputError {
     }
 }
 
-fn output_failure(error: OutputError, startup: &crate::config::Startup, json: bool) -> ExitCode {
-    match error {
-        OutputError::Text(error) => fail(
-            startup.output,
-            json,
-            polylogue_model::Code::ReadOutput,
-            &error,
-        ),
-        OutputError::Answer(answer) => match &answer.outcome {
-            command_surface::Outcome::Error(error) => {
-                super::fail_with(startup.output, json, error, &[])
-            }
-            _ => ExitCode::from(answer.exit_code()),
+fn output_failure(error: OutputError, client: &crate::config::Client, json: bool) -> u8 {
+    let failure = match error {
+        OutputError::Text(error) => {
+            crate::protocol::failure(polylogue_model::Code::ReadOutput, error)
+        }
+        OutputError::Answer(answer) => match answer.outcome {
+            command_surface::Outcome::Error(error) => error,
+            _ => return answer.exit_code(),
         },
-    }
+    };
+    super::fail_with(client.output, json, &failure, &[]);
+    failure.kind.exit_code()
 }
 fn page_of(answer: &command_surface::Answer<serde_json::Value>) -> Result<ReadPage, OutputError> {
     let Some(value) = answer.value() else {
@@ -70,7 +64,7 @@ fn page_of(answer: &command_surface::Answer<serde_json::Value>) -> Result<ReadPa
 /// Writes one page of a line; `last_step` is whether it is the line's final step,
 /// which sends terminal output through the pager.
 pub(crate) fn line_page(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     page: &ReadPage,
     last_step: bool,
     destination: Option<&super::line::Destination>,
@@ -92,7 +86,7 @@ pub(crate) fn line_page(
     let answer = command_surface::Answer::ok(
         serde_json::to_value(line).expect("a typed reading serializes"),
     );
-    let archive = Archive::at(&startup.config.archive);
+    let archive = Archive::at(&client.archive);
     let format = format
         .map(polylogue_render::Format::parse)
         .unwrap_or(Some(polylogue_render::Format::Terminal))
@@ -112,11 +106,11 @@ pub(crate) fn line_page(
                 "file destination requires a streamed reading",
             ));
         }
-        Some(Destination::Pager) => through_pager(&archive, startup, answer, format),
-        None if last_step && startup.output.stdout_terminal => {
-            through_pager(&archive, startup, answer, format)
+        Some(Destination::Pager) => through_pager(&archive, client, answer, format),
+        None if last_step && client.output.stdout_terminal => {
+            through_pager(&archive, client, answer, format)
         }
-        _ => one_page(startup, answer, format),
+        _ => one_page(client, answer, format),
     };
     result.map(|_| ()).map_err(|error| {
         crate::protocol::failure(
@@ -129,11 +123,11 @@ pub(crate) fn line_page(
     })
 }
 pub(crate) fn line_stream(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     accepted: &command_surface::RunnableRequest,
     parsed: &super::line::ParsedLine,
     state: &mut super::run_line::OutputState,
-) -> ExitCode {
+) -> u8 {
     let mut call = accepted.clone();
     for (wire, step) in call.arguments["steps"]
         .as_array_mut()
@@ -181,8 +175,8 @@ pub(crate) fn line_stream(
             }
         }
     }
-    let archive = Archive::at(&startup.config.archive);
-    let result = write_read_stream(startup, parsed, state, |callback| {
+    let archive = Archive::at(&client.archive);
+    let result = write_read_stream(client, parsed, state, |callback| {
         crate::client::call_streaming(
             &archive,
             &call,
@@ -191,14 +185,14 @@ pub(crate) fn line_stream(
         )
     });
     match result {
-        Ok(code) => ExitCode::from(code),
-        Err(error) => output_failure(error, startup, parsed.line.json),
+        Ok(code) => code,
+        Err(error) => output_failure(error, client, parsed.line.json),
     }
 }
 
 /// One page as `format`, the first line bold on a colour terminal.
 fn encode_page(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     answer: &command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
 ) -> Result<(Vec<u8>, Option<ReadyCall>), OutputError> {
@@ -216,21 +210,18 @@ fn encode_page(
     .map_err(|e| e.to_string())?;
     if format == polylogue_render::Format::Terminal {
         let text = String::from_utf8(encoded).map_err(|e| e.to_string())?;
-        encoded = polylogue_render::terminal::bold_first_line(&text, startup.output.stdout_color())
+        encoded = polylogue_render::terminal::bold_first_line(&text, client.output.stdout_color())
             .into_bytes();
     }
     Ok((encoded, page.document.footer.next))
 }
 
 /// Notes and degraded parts of an answer, on standard error.
-fn page_notes(
-    startup: &crate::config::Startup,
-    answer: &command_surface::Answer<serde_json::Value>,
-) {
+fn page_notes(client: &crate::config::Client, answer: &command_surface::Answer<serde_json::Value>) {
     for note in crate::protocol::notes(answer) {
         eprint!(
             "{}",
-            super::print::diagnostic("note", note, None, startup.output.stderr_color())
+            super::print::diagnostic("note", note, None, client.output.stderr_color())
         );
     }
 }
@@ -238,16 +229,16 @@ fn page_notes(
 /// Not a terminal: the page on standard output, then its notes and the
 /// command that continues it on standard error.
 fn one_page(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     answer: command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
 ) -> Result<u8, OutputError> {
-    let (encoded, next) = encode_page(startup, &answer, format)?;
+    let (encoded, next) = encode_page(client, &answer, format)?;
     io::stdout()
         .lock()
         .write_all(&encoded)
         .map_err(|e| e.to_string())?;
-    page_notes(startup, &answer);
+    page_notes(client, &answer);
     if let Some(next) = next {
         eprintln!(
             "continue: {}",
@@ -266,20 +257,20 @@ fn one_page(
 /// whole read is shown once, under one header.
 fn through_pager(
     archive: &Archive,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     mut answer: command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
 ) -> Result<u8, OutputError> {
     let first = page_of(&answer)?;
     let mut pager = std::process::Command::new("sh")
         .arg("-c")
-        .arg(&startup.pager)
+        .arg(&client.pager)
         .stdin(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("starting the pager `{}`: {e}", startup.pager))?;
+        .map_err(|e| format!("starting the pager `{}`: {e}", client.pager))?;
     let mut input = BoldFirstLine {
         out: pager.stdin.take().expect("piped pager input"),
-        state: if format == polylogue_render::Format::Terminal && startup.output.stdout_color() {
+        state: if format == polylogue_render::Format::Terminal && client.output.stdout_color() {
             Bold::Before
         } else {
             Bold::Done
@@ -289,7 +280,7 @@ fn through_pager(
     let shown = (|| -> Result<(), OutputError> {
         // A pager closed before the end has shown what its reader wanted.
         let closed = |error: &io::Error| error.kind() == io::ErrorKind::BrokenPipe;
-        page_notes(startup, &answer);
+        page_notes(client, &answer);
         let mut encoder = match polylogue_render::Encoder::new(
             &first.document.header,
             format,
@@ -330,7 +321,7 @@ fn through_pager(
             call.arguments = serde_json::to_value(rows).map_err(|e| e.to_string())?;
             answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
             code = code.max(answer.exit_code());
-            page_notes(startup, &answer);
+            page_notes(client, &answer);
             page = page_of(&answer)?;
         }
     })();
@@ -390,7 +381,7 @@ enum Sink {
 }
 
 fn write_read_stream(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     parsed: &super::line::ParsedLine,
     state: &mut super::run_line::OutputState,
     run: impl FnOnce(
@@ -434,7 +425,7 @@ fn write_read_stream(
                 }
             }
             if !json {
-                let reported = super::run_line::stream_steps(&frame.data, parsed, startup, state)?;
+                let reported = super::run_line::stream_steps(&frame.data, parsed, client, state)?;
                 match reported {
                     std::ops::ControlFlow::Continue(5) => code = 5,
                     std::ops::ControlFlow::Break(failure) => {
@@ -451,14 +442,17 @@ fn write_read_stream(
                     return Err(io::Error::other("line ended inside a read"));
                 }
                 completed = true;
-                code = failed.unwrap_or(state.exit_code());
+                // A read this stream delivered degraded stays degraded; an
+                // empty read defers to the line, which other steps may
+                // have answered.
+                code = failed.unwrap_or_else(|| if code == 5 { 5 } else { state.exit_code() });
                 return Ok(true);
             }
             return Ok(false);
         }
         if follow_record {
             let step = &parsed.steps[state.offset].step;
-            if super::follow::record(startup, step, &frame.data, json)? {
+            if super::follow::record(client, step, &frame.data, json)? {
                 completed = true;
                 return Ok(true);
             }

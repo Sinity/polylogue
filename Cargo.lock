@@ -4104,6 +4104,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "devkit",
+ "libc",
+ "polylogue-testkit",
  "serde_json",
  "tempfile",
  "workspace-hack",

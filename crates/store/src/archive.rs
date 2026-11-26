@@ -145,6 +145,8 @@ pub struct Archive {
     stop: crate::cancellation::Cancellation,
     /// Whether `index.db` is being built, shared by every value for this root.
     pub(crate) index_build: std::sync::Arc<index_build::State>,
+    /// The summary worker readers of this root ask, shared like `index_build`.
+    pub(crate) summaries: std::sync::Arc<crate::summary::ask::Asking>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -259,6 +261,7 @@ impl Archive {
             read_scope: crate::read::scope::state(root),
             stop: crate::cancellation::Cancellation::stop_request(),
             index_build: index_build::state(root),
+            summaries: crate::summary::ask::state(root),
         }
     }
 

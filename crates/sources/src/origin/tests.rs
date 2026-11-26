@@ -107,3 +107,141 @@ fn a_synthetic_home_moves_every_declared_root_under_it() {
         ]
     );
 }
+
+#[test]
+fn parser_versions_include_referenced_modules() {
+    use std::collections::BTreeSet;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let opens: Vec<_> = include_str!("../origin.rs")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("open: "))
+        .collect();
+    assert_eq!(opens.len(), ORIGINS.len());
+    for (origin, open) in ORIGINS.iter().zip(opens) {
+        let version = origin.parse_version();
+        let declared: BTreeSet<_> = version
+            .split(',')
+            .filter_map(|entry| entry.split_once('='))
+            .map(|(name, _)| {
+                name.strip_prefix("crate::")
+                    .or_else(|| name.strip_prefix("polylogue_sources::"))
+                    .unwrap_or(name)
+                    .trim_end_matches("::VERSION")
+                    .to_owned()
+            })
+            .collect();
+        if let Some(open) = open.strip_prefix("crate::") {
+            let (module, _) = open.rsplit_once("::").unwrap();
+            assert!(
+                declared.contains(module),
+                "{}: parser version is missing module {module}",
+                origin.name
+            );
+        } else {
+            assert_eq!(
+                open, "opens_nothing,",
+                "{}: read the parser's module path",
+                origin.name
+            );
+        }
+        let mut files: Vec<_> = declared
+            .iter()
+            .filter(|name| !name.starts_with("polylogue_model::") && *name != "command")
+            .map(|name| root.join(name.replace("::", "/")).with_extension("rs"))
+            .collect();
+        let mut read = BTreeSet::new();
+        while let Some(path) = files.pop() {
+            if !read.insert(path.clone()) {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let mut test_only = false;
+            let mut references = String::new();
+            for line in source.lines().map(str::trim) {
+                if line == "#[cfg(test)]" {
+                    test_only = true;
+                    continue;
+                }
+                if std::mem::take(&mut test_only) {
+                    continue;
+                }
+                if line.starts_with("//") {
+                    continue;
+                }
+                // A declaration outside the macro must not omit a child.
+                if let Some(child) = line.strip_prefix("mod ").and_then(|s| s.strip_suffix(';'))
+                    && child != "tests"
+                {
+                    let child_path = path.with_extension("").join(child);
+                    let module = child_path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('/', "::");
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module}",
+                        origin.name
+                    );
+                    files.push(child_path.with_extension("rs"));
+                }
+                references.push_str(line);
+            }
+            for child in source
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("pub mod ")?.strip_suffix(';'))
+            {
+                if references.contains(&format!("{child}::")) {
+                    let child_path = path.with_extension("").join(child);
+                    let module = child_path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('/', "::");
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module}",
+                        origin.name
+                    );
+                    files.push(child_path.with_extension("rs"));
+                }
+            }
+            // Other origins in the registry do not contribute to this parser.
+            if path == root.join("origin.rs") {
+                continue;
+            }
+            for reference in references.split("crate::").skip(1) {
+                let names = reference.strip_prefix('{').map_or_else(
+                    || vec![reference],
+                    |group| group.split('}').next().unwrap().split(',').collect(),
+                );
+                for reference in names {
+                    let reference = reference.trim();
+                    let module: String = reference
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                        .collect();
+                    // Metadata readers use only the shared line interface.
+                    if origin.support != Support::Parsed
+                        && module == "export"
+                        && path == root.join("parse.rs")
+                    {
+                        continue;
+                    }
+                    if module.is_empty() || !root.join(&module).with_extension("rs").exists() {
+                        continue;
+                    }
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module} (referenced by {})",
+                        origin.name,
+                        path.strip_prefix(&root).unwrap().display()
+                    );
+                }
+            }
+        }
+    }
+}

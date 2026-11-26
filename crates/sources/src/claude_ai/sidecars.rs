@@ -1,4 +1,9 @@
 //! Account/project text is staged as documents, never conversation turns.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::fields;
 use crate::document::Sink;
 use crate::export::{self, ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};

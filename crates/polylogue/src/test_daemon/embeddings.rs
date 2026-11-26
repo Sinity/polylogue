@@ -95,3 +95,65 @@ impl TestDaemon {
         listener
     }
 }
+
+/// A ranked command stopped at its vector-store read until dropped.
+pub(crate) struct VectorLoad(
+    Option<std::thread::JoinHandle<command_surface::Answer<serde_json::Value>>>,
+);
+
+pub(crate) fn vector_query() -> super::Call {
+    let mut call = super::Call::new(
+        "rows",
+        serde_json::json!({"selection": "messages where similar:parser"}),
+    );
+    call.deadline = command_surface::Deadline::None;
+    call
+}
+
+impl VectorLoad {
+    pub(crate) fn start(daemon: &TestDaemon) -> Self {
+        use polylogue_store::fault::{self, Action};
+        drop(daemon.embedding_endpoint());
+        let reader = daemon.daemon.reads.reader().unwrap();
+        reader
+            .vectors_writer()
+            .unwrap()
+            .put_query_vector(
+                "local/synthetic/2/query/unit",
+                "parser",
+                &[1., 0.],
+                &daemon.daemon.clock,
+            )
+            .unwrap();
+        drop(reader);
+        fault::clear();
+        fault::arm("vectors.read", "local/synthetic/", Action::Hold, 0, 1);
+        let daemon = std::sync::Arc::clone(&daemon.daemon);
+        let thread = std::thread::spawn(move || vector_query().answer(&daemon));
+        let loading = Self(Some(thread));
+        assert!(
+            fault::wait_held_within(std::time::Duration::from_secs(10)),
+            "request did not reach the vector store"
+        );
+        loading
+    }
+}
+
+impl VectorLoad {
+    pub(crate) fn finish(mut self) -> command_surface::Answer<serde_json::Value> {
+        polylogue_store::fault::release();
+        let answer = self.0.take().unwrap().join().unwrap();
+        polylogue_store::fault::clear();
+        answer
+    }
+}
+
+impl Drop for VectorLoad {
+    fn drop(&mut self) {
+        if let Some(thread) = self.0.take() {
+            polylogue_store::fault::release();
+            let _ = thread.join();
+            polylogue_store::fault::clear();
+        }
+    }
+}

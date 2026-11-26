@@ -19,6 +19,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
 | `cargo xtask prune-build` | remove from the target directory every artifact that both Clippy configurations, the test build and xtask's build no longer use |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
+| `cargo xtask run [--root <dir>] [--watch \| --binary <path>]` | the checkout's daemon in a sandbox on a scratch root, until stopped ([below](#a-daemon-to-probe)) |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
@@ -62,11 +63,55 @@ features (the fixture, fault and `sinex` features listed in `FEATURES` in
 `xtask/src/main.rs`) reach it through the selected packages: xtask passes
 the entries for the selected packages and their direct dependencies, the
 store's `fixture` forwards the model's and the query catalog's, and the
-testkit, which only tests depend on, enables the test features of what it
-builds on. Shared dependency features are declared once in the root
+testkit enables the test features of what it builds on. xtask uses the
+testkit without its default `archives` feature, so an xtask build compiles
+the model and the sources, whose units the test build shares, but not the
+engine or the store. Shared dependency features are declared once in the root
 manifest's `[workspace.dependencies]`. For an isolated dependency
 investigation, invoke Cargo directly with its own package and feature flags;
 that creates a separate compilation graph.
+
+## A daemon to probe
+
+`cargo xtask run` builds the checkout's `polylogue` and starts its daemon,
+standalone, in the testkit's sandbox on a scratch root: `--root <dir>`, or a
+new directory under `$TMPDIR` that is removed at the stop. It prints the
+daemon's process, its web reader's address, the archive, the home the daemon
+watches (write session files there to give it something to find) and the
+path of a CLI script, `<root>/polylogue`, that reaches this daemon and no
+other (`<root>/polylogue status`). An archive already under the root is
+reopened. `--watch` rebuilds when the sources change and restarts the
+daemon on the new build; a failed build keeps the running daemon.
+`--binary <path>` serves with a binary already built, an installed one for
+instance, and builds nothing. Stopping the command (Ctrl-C or SIGTERM)
+stops the daemon's process group, and a killed command takes the daemon
+with it. One checkout runs one such daemon at a time while it builds its
+own (devkit's development lock). The run is standalone only; it starts no
+Sinex stack.
+
+The sandbox is the environment every daemon a test or xtask spawns runs in
+(`polylogue_testkit::Sandbox`). Nothing of the caller's environment reaches
+it but `PATH`: `HOME`, every XDG directory, every root variable the sources
+declare (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME` and the rest) and
+`TMPDIR` lie under the root, and `POLYLOGUE_LISTEN` names a port that was
+free when the sandbox was made, so the daemon neither finds the caller's
+files nor competes for the default web port 8765. A probe started by hand
+follows the same recipe: an explicit environment from `env -i`, a scratch
+root, and a free port.
+
+```sh
+root=$(mktemp -d)
+mkdir -p "$root"/home "$root"/runtime && chmod 700 "$root"/runtime
+env -i PATH="$PATH" HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
+  XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state" \
+  XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
+  POLYLOGUE_LISTEN=127.0.0.1:<free port> \
+  polylogue --archive "$root/archive" daemon
+```
+
+With `HOME` under the root and the tools' root variables unset, every
+source location resolves under the scratch home. The CLI reaches that
+daemon under the same environment with the same `--archive`.
 
 ## Compiler cache
 

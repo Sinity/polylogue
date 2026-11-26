@@ -23,6 +23,11 @@
 //! [`EarlierRows`]: the store's rows of the chain, or [`Formed`], the rows
 //! settled earlier in the same run.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::content_ids;
 use polylogue_model::{Alias, Json, MessageId, MessageRow, Output, SessionId};
 use std::collections::{BTreeMap, HashMap};

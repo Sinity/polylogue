@@ -1,4 +1,9 @@
 //! Validate a whole OTLP document, otherwise account independent JSONL lines.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use crate::export::{Input, ItemSink, ScanError, ScanStats};
 use polylogue_model::JsonExt;

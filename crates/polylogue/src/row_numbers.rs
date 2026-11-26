@@ -126,9 +126,23 @@ pub(crate) fn remember_listing(paths: &crate::config::Paths, root: &Path, shown:
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    // Remembering rows is a convenience: a failure leaves the earlier list.
-    if let Ok(bytes) = serde_json::to_vec(shown) {
-        let _ = polylogue_model::atomic_write::write_atomic(&path, &bytes, None);
+    replace_listing(&path, shown, |path, bytes| {
+        polylogue_model::atomic_write::write_atomic(path, bytes, None)
+    });
+}
+/// Remembering rows is a convenience, so a failure is not reported; but a
+/// list that cannot be written removes the previous one, so a row number
+/// never names a row of an older list.
+fn replace_listing(
+    path: &Path,
+    shown: &ShownRows,
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) {
+    let written = serde_json::to_vec(shown)
+        .map_err(std::io::Error::other)
+        .and_then(|bytes| write(path, &bytes));
+    if written.is_err() {
+        let _ = fs::remove_file(path);
     }
 }
 pub(crate) fn last_listing(paths: &crate::config::Paths, root: &Path) -> Result<ShownRows, String> {

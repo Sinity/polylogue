@@ -19,6 +19,8 @@ pub mod server;
 
 pub const VERSION: u32 = 1;
 
+parser_modules! {}
+
 pub const ORIGIN: &str = "antigravity";
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb", cli::LOCATION];
 

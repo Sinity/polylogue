@@ -93,9 +93,12 @@ fn deliver(destination: &Path, failed: bool) -> Result<u8, OutputError> {
         crate::protocol::stream::event(&mut bytes, "steps", &answer).unwrap();
         crate::protocol::stream::event(&mut bytes, "answer", &answer).unwrap();
     }
-    write_read_stream(&startup, &parsed, &mut Default::default(), |callback| {
-        crate::client::receive(&mut bytes.as_slice(), None, callback)
-    })
+    write_read_stream(
+        &startup.client,
+        &parsed,
+        &mut Default::default(),
+        |callback| crate::client::receive(&mut bytes.as_slice(), None, callback),
+    )
 }
 
 #[test]
@@ -161,4 +164,124 @@ fn streamed_primary_bundle_preserves_terminal_error_without_publication() {
         .collect();
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert!(kept[0].join("_staging/begin.json").is_file());
+}
+
+/// Runs a streamed line, printed for a person, over the given events.
+fn stream_line(
+    root: &Path,
+    words: &[&str],
+    events: &[(&str, serde_json::Value)],
+) -> Result<u8, OutputError> {
+    let engine = polylogue_engine::Config::new(
+        root.to_owned(),
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        1,
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+    .unwrap();
+    let startup = crate::config::Startup::for_test(engine, &root.join("archive"));
+    let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+    let parsed = super::super::line::parse(&words, &Default::default(), true).unwrap();
+    let mut bytes = Vec::new();
+    for (event, data) in events {
+        crate::protocol::stream::event(&mut bytes, event, data).unwrap();
+    }
+    write_read_stream(
+        &startup.client,
+        &parsed,
+        &mut Default::default(),
+        |callback| crate::client::receive(&mut bytes.as_slice(), None, callback),
+    )
+}
+
+/// docs/interfaces.md#exit-codes: a line exits with its failed step's
+/// code, and a step whose output cannot be delivered here has failed.
+#[test]
+fn streamed_line_with_failed_delivery_exits_nonzero() {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome, StepReport, StepsAnswer};
+    let root = tempfile::tempdir().unwrap();
+    let steps = command_surface::Answer::ok(LineAnswer::Steps(StepsAnswer {
+        resolved: None,
+        steps: vec![StepReport {
+            verb: "read".into(),
+            request_id: None,
+            outcome: StepOutcome::Done {
+                reply: StepAnswer::Attachment(Box::new(crate::daemon::attachment::BytePage {
+                    descriptor: None,
+                    input: None,
+                    blob: polylogue_model::BlobHash::of(b"synthetic attachment"),
+                    size: 20,
+                    offset: 0,
+                    content_base64: "c3ludGhldGljIGF0dGFjaG1lbnQ=".into(),
+                    next: None,
+                })),
+                undo: vec![],
+            },
+        }],
+    }));
+    let steps = serde_json::to_value(steps).unwrap();
+    assert_eq!(
+        stream_line(
+            root.path(),
+            &["sessions", "read", "--to", "clipboard"],
+            &[("steps", steps.clone()), ("answer", steps)],
+        )
+        .unwrap(),
+        2
+    );
+}
+
+/// A read this stream received degraded keeps the line degraded (5), even
+/// when the line's final answer is ok.
+#[test]
+fn write_out_keeps_the_earlier_failure_status() {
+    let root = tempfile::tempdir().unwrap();
+    let destination = root.path().join("reading.jsonl");
+    let mut header = begin();
+    header["snapshot"]["incomplete"] = serde_json::json!(["synthetic missing index"]);
+    let complete = ReadComplete {
+        footer: ReadFooter::default(),
+        counts: Counts {
+            sessions: 1,
+            ..Default::default()
+        },
+    };
+    let answer = serde_json::to_value(command_surface::Answer::ok(serde_json::json!({
+        "kind":"steps", "reply":{"resolved":null, "steps":[{
+            "verb":"read", "request_id":null,
+            "outcome":{"status":"done", "reply":{"kind":"streamed", "reply":complete}, "undo":[]}
+        }]}
+    })))
+    .unwrap();
+    let code = stream_line(
+        root.path(),
+        &[
+            "sessions",
+            "read",
+            "--format",
+            "jsonl",
+            "--to",
+            destination.to_str().unwrap(),
+        ],
+        &[
+            ("begin", header),
+            (
+                "record",
+                serde_json::json!({
+                    "kind":"original", "record":{"record":"session", "data":{
+                        "ref":"session:codex:synthetic", "commit":1,
+                        "session":{"id":"codex:synthetic", "kind":"main"}
+                    }}, "parts":[]
+                }),
+            ),
+            ("complete", serde_json::to_value(&complete).unwrap()),
+            ("steps", answer.clone()),
+            ("answer", answer),
+        ],
+    )
+    .unwrap();
+    assert_eq!(code, 5);
+    assert!(destination.is_file());
 }

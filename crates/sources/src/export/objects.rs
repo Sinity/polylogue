@@ -1,5 +1,10 @@
 //! Stream selected object fields, array elements or map values while keeping
 //! only named metadata. Selected text never enters the metadata object.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use polylogue_model::Json;
 use serde::de::{Error as _, IgnoredAny, MapAccess};

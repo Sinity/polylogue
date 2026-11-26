@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
 pub const VERSION: u32 = 3;
+
+parser_modules! {}
 pub const LOCATION: &str =
     ".gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl";
 const TYPES: &[&str] = &[

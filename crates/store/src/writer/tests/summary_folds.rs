@@ -367,18 +367,35 @@ fn summaries(w: &WriterArchive) -> Json {
             "lines",
             "SELECT s.id, i.seq, hex(i.unit) AS unit, hex(i.entry) AS entry, i.class, i.call_id,
                     hex(i.counts) AS counts, m.id AS message, e.id AS event
-             FROM session_item i JOIN session s ON s.pk = i.session_pk
+             FROM transcript_line i JOIN session s ON s.pk = i.session_pk
              LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk
              ORDER BY s.id, i.seq",
-        ),
-        (
-            "line_totals",
-            "SELECT s.id, t.entries, hex(t.counts) AS counts FROM session_item_state t
-             JOIN session s ON s.pk = t.session_pk ORDER BY s.id",
         ),
     ] {
         out.insert(name.into(), Json::Array(w.rows(sql)));
     }
+    // The line count and the counts over every line; the counters follow
+    // the division into steps (an append moves one, a rewrite the other).
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let sessions: Vec<(String, i64)> = index
+        .prepare("SELECT id, pk FROM session ORDER BY id")
+        .unwrap()
+        .query_map([], |r| <(String, i64)>::try_from(r))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let totals = sessions
+        .into_iter()
+        .filter_map(|(id, pk)| {
+            let state = crate::summary::lines::state(&index, pk).unwrap()?;
+            Some(serde_json::json!({
+                "id": id,
+                "entries": state.entries,
+                "counts": state.counts,
+            }))
+        })
+        .collect();
+    out.insert("line_totals".into(), Json::Array(totals));
     Json::Object(out)
 }
 
