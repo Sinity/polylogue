@@ -465,7 +465,7 @@ pub enum Card {
         to: String,
         relation: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        how: Option<String>,
+        reason: Option<String>,
         branch_point: Option<String>,
         spawning_call: Option<String>,
         copies_prefix: bool,

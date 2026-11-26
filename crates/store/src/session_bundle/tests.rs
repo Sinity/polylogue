@@ -66,7 +66,7 @@ fn copied_messages_keep_sources_and_branch_points() {
     archive.links.push(Link {
         kind: LinkKind::Fork,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("branched"),
         branch_point: Some(id.clone()),

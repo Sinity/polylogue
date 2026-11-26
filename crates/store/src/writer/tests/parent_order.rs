@@ -4,7 +4,7 @@ fn copy(parent: &str) -> Link {
     Link {
         kind: LinkKind::Resume,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid(parent),
         child: sid("c1"),
         branch_point: None,

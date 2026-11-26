@@ -282,7 +282,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
         links: vec![polylogue_model::Link {
             kind: polylogue_model::LinkKind::Spawn,
             copies_prefix: true,
-            how: None,
+            reason: None,
             parent: sid("parent"),
             child,
             branch_point: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),

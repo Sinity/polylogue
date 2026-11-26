@@ -72,7 +72,7 @@ fn recorded_link(
     polylogue_model::Link {
         kind,
         copies_prefix: kind == polylogue_model::LinkKind::Resume,
-        how: None,
+        reason: None,
         parent: crate::fixture::writer::sid(parent),
         child: crate::fixture::writer::sid(child),
         branch_point: None,

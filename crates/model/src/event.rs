@@ -98,7 +98,7 @@ pub struct Link {
     #[serde(default)]
     pub copies_prefix: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub how: Option<ReferenceReason>,
+    pub reason: Option<ReferenceReason>,
     pub parent: SessionId,
     pub child: SessionId,
     /// The parent's message the child branched from or was spawned by.
@@ -164,12 +164,12 @@ impl Link {
             &self.child,
             self.branch_point.as_ref(),
             self.call_id.as_deref(),
-            self.how,
+            self.reason,
         )
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        match (self.kind, self.how) {
+        match (self.kind, self.reason) {
             (LinkKind::Reference, None) => Err("a reference link requires its reason"),
             (LinkKind::Reference, Some(_)) => Ok(()),
             (_, Some(_)) => Err("a provider link has no reference reason"),

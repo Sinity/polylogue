@@ -58,7 +58,7 @@ pub struct SessionLink {
     pub child: String,
     /// A documented provider relationship, or `reference`.
     pub kind: String,
-    pub how: Option<String>,
+    pub reason: Option<String>,
     pub copies_prefix: bool,
     pub branch_point: Option<String>,
     pub spawning_call: Option<String>,
@@ -132,7 +132,7 @@ fn links_where(conn: &Connection, end: End, session: &str) -> Result<Vec<Session
             parent: link.parent_id,
             child: link.child_id,
             kind: link.kind,
-            how: link.reason,
+            reason: link.reason,
             branch_point: link.branch_point,
             spawning_call: link.spawning_call,
         })

@@ -606,7 +606,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         branch_point: None,
@@ -622,7 +622,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         branch_point: None,
@@ -676,7 +676,7 @@ fn copied_messages_are_stored_once_and_read_logically() {
     child.parse.first_mut().unwrap().output.links = vec![Link {
         kind: LinkKind::Resume,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("child"),
         branch_point: None,

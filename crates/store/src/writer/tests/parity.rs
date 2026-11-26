@@ -300,7 +300,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
                 output.links.push(Link {
                     kind: LinkKind::Spawn,
                     copies_prefix: false,
-                    how: None,
+                    reason: None,
                     parent,
                     child: sid(&session_name(*child)),
                     branch_point: None,

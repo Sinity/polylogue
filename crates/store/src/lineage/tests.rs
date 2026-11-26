@@ -459,7 +459,7 @@ fn link_statements_resolve_to_relations() {
                 parent: (*parent).into(),
                 child: (*child).into(),
                 kind: (*kind).into(),
-                how: how.map(str::to_owned),
+                reason: how.map(str::to_owned),
                 copies_prefix: copies || (*parent, *child) == ("test:q", "test:b"),
                 branch_point: relation.branch_point.clone(),
                 spawning_call: relation.spawning_call.clone(),
@@ -487,7 +487,7 @@ fn link_statements_resolve_to_relations() {
                 &a.parent,
                 &a.child,
                 &a.kind,
-                &a.how,
+                &a.reason,
                 &a.branch_point,
                 &a.spawning_call,
             )
@@ -495,7 +495,7 @@ fn link_statements_resolve_to_relations() {
                     &b.parent,
                     &b.child,
                     &b.kind,
-                    &b.how,
+                    &b.reason,
                     &b.branch_point,
                     &b.spawning_call,
                 ))

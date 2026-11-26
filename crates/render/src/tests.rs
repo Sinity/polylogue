@@ -3086,7 +3086,7 @@ fn html_relationship_links_encode_only_recorded_session_references() {
                         branch_point: Some("message:claude-code:<branch>".into()),
                         spawning_call: Some("call <marker>".into()),
                         copies_prefix: true,
-                        how: Some("fork <marker>".into()),
+                        reason: Some("fork <marker>".into()),
                         cross_link: false,
                     }),
                 },

@@ -193,7 +193,7 @@ unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 
 "Own msgs" counts the messages counted in the session (`counted_as` null); "Copies counted elsewhere" counts its copies whose source is stored (`session_facts.inherited_messages`). L8's three copies carry `inherited_from` but count as its own, since their source is absent (`spec/model.md`).
 
-Provider links (`how` is absent for provider relationships):
+Provider links (`reason` is absent for provider relationships):
 
 | Parent | Child | Kind | Evidence | Spawning call |
 |---|---|---|---|---|
@@ -212,7 +212,7 @@ marker and create no provider link. L4 has no spawning-call marker either;
 its file location alone establishes no spawn.
 
 The delivery row below addresses #4 from #2, the source of a separate
-`reference` relationship with `how: briefing`.
+`reference` relationship with `reason: briefing`.
 
 Things the examples rely on:
 

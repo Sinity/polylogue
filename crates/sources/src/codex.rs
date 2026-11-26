@@ -467,7 +467,7 @@ impl Rollout {
             parser_state.branch_relation = Some(Link {
                 kind,
                 copies_prefix: false,
-                how: None,
+                reason: None,
                 parent: fork_parent,
                 child: id.clone(),
                 branch_point: None,
@@ -489,7 +489,7 @@ impl Rollout {
                 parser_state.branch_relation = Some(Link {
                     kind,
                     copies_prefix: true,
-                    how: None,
+                    reason: None,
                     parent: copied_parent.clone(),
                     child: id,
                     branch_point: None,
@@ -1231,7 +1231,7 @@ fn link(
     let value = Link {
         kind,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: at,

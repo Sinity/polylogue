@@ -608,7 +608,7 @@ fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
         child: sid("child"),
         kind: polylogue_model::LinkKind::Fork,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: Some(MessageId::parse("claude-code:p1").unwrap()),
         call_id: None,
         evidence: "fixture".into(),

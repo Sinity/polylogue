@@ -808,7 +808,7 @@ fn link_at(
     out.links.push(Link {
         kind,
         copies_prefix: evidence == "fork-context-ref",
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: at,
