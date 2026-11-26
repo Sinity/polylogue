@@ -35,7 +35,6 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                         std::slice::from_ref(&path),
                         &ImportOptions {
                             origin: Some("openai-chat".into()),
-                            explain: false,
                             ..Default::default()
                         },
                     )
@@ -106,7 +105,6 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
             &[path],
             &ImportOptions {
                 origin: Some("openai-chat".into()),
-                explain: false,
                 ..Default::default()
             },
         )

@@ -61,7 +61,6 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
             std::slice::from_ref(&path),
             &ImportOptions {
                 origin: Some("claude-code".into()),
-                explain: false,
                 ..Default::default()
             },
         )

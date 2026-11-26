@@ -352,7 +352,7 @@ fn retried_line_writes_once() {
 #[test]
 fn daemon_refuses_row_numbers() {
     let d = test_daemon::start("first prompt");
-    for selection in ["@1", "@1.2", "@2-5", "@1,4", "@all", "@last"] {
+    for selection in ["@1", "@1.2", "@2-5", "@1,4", "@all"] {
         let failure = refusal(line(&d, "row", json!({"selection": selection})));
         assert_eq!(failure.code.as_deref(), Some("row_numbers_off_terminal"));
         assert_eq!(

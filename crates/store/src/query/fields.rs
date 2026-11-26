@@ -218,7 +218,7 @@ pub const SESSION_HAS: [Has; 8] = [
                 "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
                  WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
-                live_annotation("hn")
+                current_annotation("hn")
             )
         },
     },
@@ -739,7 +739,7 @@ fn sessions_outcome(a: &Aliases) -> String {
     format!(
         "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_annotation n JOIN source_annotation_link nt ON nt.record=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
         s = a.s,
-        live = live_annotation("n"),
+        live = current_annotation("n"),
     )
 }
 
@@ -884,7 +884,7 @@ fn notes_judged(a: &Aliases) -> String {
     format!(
         "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_annotation j JOIN source_annotation_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='annotation:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
         r = a.row,
-        live = live_annotation("j"),
+        live = current_annotation("j"),
     )
 }
 
@@ -892,7 +892,7 @@ fn notes_withdrawn(a: &Aliases) -> String {
     format!("({})", withdrawn_annotation(&a.row))
 }
 
-pub use crate::annotations::sql::{current_annotation, live_annotation, withdrawn_annotation};
+pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 
 /// When Polylogue first had message `m`'s bytes: the earliest observation,
 /// over every chain whose records hold a version of it, of a revision of
@@ -953,7 +953,7 @@ pub fn hidden(s: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
-        live_annotation("hn")
+        current_annotation("hn")
     )
 }
 
