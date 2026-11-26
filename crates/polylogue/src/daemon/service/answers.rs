@@ -110,9 +110,9 @@ pub(crate) fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
 
 /// The answer of an advisory that has nothing to offer: also its answer
 /// when preparation cannot finish within its cap, on every surface.
-pub(crate) fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
+pub(crate) fn advisory_silence() -> Answer<crate::brief::BriefReply> {
     crate::protocol::written(
-        crate::protocol::context::Answer {
+        crate::brief::BriefReply {
             delivery: None,
             prepared: crate::advisory::empty(),
         },
@@ -133,7 +133,7 @@ pub(crate) fn context(
     sender: Option<polylogue_model::DeliverySender>,
     budget_tokens: command_surface::TokenBudget,
     operation: &Arc<Context>,
-) -> Answer<crate::protocol::context::Answer> {
+) -> Answer<crate::brief::BriefReply> {
     use polylogue_store::read::limit::ReadLimit;
     let is_advisory = matches!(ask, Ask::Advisory { .. });
     let mut cooldown = if let Ask::Advisory { session, .. } = ask {
@@ -144,7 +144,7 @@ pub(crate) fn context(
             Some(cooldown) => Some(cooldown),
             None => {
                 return crate::protocol::written(
-                    crate::protocol::context::Answer {
+                    crate::brief::BriefReply {
                         delivery: None,
                         prepared: crate::advisory::empty(),
                     },
@@ -188,7 +188,7 @@ pub(crate) fn context(
         }),
         _ => None,
     };
-    let prepare = || -> Result<_, Box<Answer<crate::protocol::context::Answer>>> {
+    let prepare = || -> Result<_, Box<Answer<crate::brief::BriefReply>>> {
         let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
         // A settings error stays the reason similarity cannot rank.
         let provider = if is_advisory {
@@ -231,7 +231,7 @@ pub(crate) fn context(
         .map_err(|e| match &request_limit {
             Some(limit) if limit.check().is_err() => {
                 let text = match ask {
-                    Ask::Recall { text, .. } => Some(text.as_str()),
+                    Ask::Words { text, .. } => Some(text.as_str()),
                     _ => None,
                 };
                 Box::new(crate::daemon::execution::stopped_read(
@@ -281,7 +281,7 @@ pub(crate) fn context(
         && let Err(error) = limit.check()
     {
         let text = match ask {
-            Ask::Recall { text, .. } => Some(text.as_str()),
+            Ask::Words { text, .. } => Some(text.as_str()),
             _ => None,
         };
         return crate::daemon::execution::stopped_read(&error, "context", text, limit);
@@ -332,10 +332,7 @@ pub(crate) fn context(
         }
         delivery = Some(request_id);
     }
-    crate::protocol::written(
-        crate::protocol::context::Answer { delivery, prepared },
-        false,
-    )
+    crate::protocol::written(crate::brief::BriefReply { delivery, prepared }, false)
 }
 
 /// Queues what happened to a delivery and answers at once: the writer
