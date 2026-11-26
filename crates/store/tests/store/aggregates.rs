@@ -5,17 +5,17 @@
 //! computed yet.
 
 use crate::rows;
-use polylogue_store::fault::{self, Action};
-use polylogue_testkit::{Morrow, Set, morrow_dir};
+use polylogue_testkit::{Morrow, Set};
 use serde_json::json;
 
 const SUM: &str = "kind:* | agg sum(messages)";
 
-/// A session is pending between the commit of its rows and the summary
-/// worker's pass over it. An import that fails after storing one export's
-/// conversation leaves that conversation there (the engine summarizes at
-/// the end of a successful import or pass), until the writer's next
-/// derivation computes it.
+/// A session is pending from the commit of its rows until the summary
+/// worker's pass over it is applied. Importing Morrow's two exports into an
+/// archive of its other six sessions commits #7's and #8's rows, then asks
+/// for their summaries; the derive thread is held once it has computed
+/// them and before the writer applies anything, and the reply then counts
+/// both sessions' rows and names them pending.
 #[test]
 fn pending_counts_the_sessions_stored_before_their_summary_and_none_after() {
     let morrow = Morrow::lay_out(Set::Main);
@@ -29,27 +29,25 @@ fn pending_counts_the_sessions_stored_before_their_summary_and_none_after() {
         [json!({"sum_messages": 70, "unknown_messages": 0, "pending_messages": 0})]
     );
 
-    // The ChatGPT export (#7) imports; reading the claude.ai export fails
-    // before its first conversation.
-    fault::arm("parse", "claude-ai/export", Action::Fail, 0, 1);
-    let exports = [
-        morrow_dir().join("chatgpt/export/conversations.json"),
-        morrow_dir().join("claude-ai/export/conversations.json"),
-    ];
-    assert!(engine.import(&exports).is_err());
-    fault::clear();
-    engine.writer().flush_rows().unwrap();
-    // #7's 6 messages on the active path are counted while its summary is
-    // pending.
+    let pause = engine.writer().pause_derive_for_test();
+    std::thread::scope(|scope| {
+        let import = scope.spawn(|| morrow.import_exports(&mut engine));
+        pause.wait().expect("the import's summaries are computed");
+        // #8's 4 messages and all 8 of #7's: which of them are on the
+        // active path is itself a summary, and a message whose path is not
+        // known yet counts (docs/query.md, defaults). Once computed, #7's
+        // abandoned branch of 2 leaves the count.
+        assert_eq!(
+            rows(&pool.reader().unwrap(), SUM, &[]),
+            [json!({"sum_messages": 82, "unknown_messages": 0, "pending_messages": 2})]
+        );
+        pause.release();
+        let report = import.join().unwrap().expect("the main set imports");
+        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    });
     assert_eq!(
         rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 76, "unknown_messages": 0, "pending_messages": 1})]
-    );
-
-    engine.writer().derive().unwrap();
-    assert_eq!(
-        rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 76, "unknown_messages": 0, "pending_messages": 0})]
+        [json!({"sum_messages": 80, "unknown_messages": 0, "pending_messages": 0})]
     );
 }
 
