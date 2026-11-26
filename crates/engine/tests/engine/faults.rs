@@ -13,64 +13,31 @@ mod older_chains;
 mod prefix_copies;
 mod reparse;
 
-/// a failure at any step of a write loses nothing. The writer fails
-/// at its n-th archive commit, between its archive and index commits, or at
-/// its index commit; the engine is dropped as a crashed process would leave
-/// it, and a fresh one runs a pass and comes back to the uninterrupted view with every input
-/// reading back byte for byte.
 #[test]
-fn a_failed_write_step_loses_nothing() {
-    let source = Morrow::build(Set::Main);
-    let reference = source.view();
-    for point in [
-        "write.archive_commit",
-        "write.between_commits",
-        "write.index_commit",
-    ] {
-        for skip in 0..4 {
-            fault::clear();
-            let mut w = Morrow::lay_out(Set::Main);
-            // Source IDs include paths, so both builds read the same home.
-            w.home = source.home.clone();
-            fault::arm(point, "", Action::Fail, skip, 1);
-            {
-                let (mut engine, _lock) = w.engine();
-                let _ = engine.run_pass();
-                let _ = w.import_exports(&mut engine);
-            }
-            fault::clear();
-            w.run_pass();
-            assert_eq!(
-                w.view(),
-                reference,
-                "{point} after {skip} writes: the view differs"
-            );
-            for file in w.provider_files() {
-                if let Ok(stored) = w.stored_bytes(&file) {
-                    if polylogue_sources::ORIGINS
-                        .iter()
-                        .any(|origin| origin.is_row_dump(&file))
-                    {
-                        assert!(!stored.is_empty());
-                        assert_eq!(
-                            stored,
-                            source.stored_bytes(&file).unwrap(),
-                            "{point}/{skip}: {}",
-                            file.display()
-                        );
-                        continue;
-                    }
-                    assert_eq!(
-                        stored,
-                        fs::read(&file).unwrap(),
-                        "{point}/{skip}: {}",
-                        file.display()
-                    );
-                }
-            }
-        }
-    }
+fn arming_an_undeclared_point_names_it() {
+    let error = std::panic::catch_unwind(|| {
+        fault::arm("write.between_commits", "", Action::Fail, 0, 1);
+    })
+    .expect_err("an undeclared point must fail when armed");
+    assert_eq!(
+        error.downcast_ref::<String>().unwrap(),
+        "undeclared fault point: write.between_commits"
+    );
 }
+
+#[test]
+fn checking_an_undeclared_point_names_it() {
+    let error = std::panic::catch_unwind(|| {
+        fault::check("write.misspelled_commit", "").unwrap();
+    })
+    .expect_err("an undeclared point must fail when checked");
+    assert_eq!(
+        error.downcast_ref::<String>().unwrap(),
+        "undeclared fault point: write.misspelled_commit"
+    );
+}
+
+mod write_failures;
 
 /// a failing parser loses only its input. #2's parser panics: every
 /// other session is built, the pass names the failure, an unchanged file is
