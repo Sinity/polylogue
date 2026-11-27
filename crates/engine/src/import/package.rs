@@ -24,11 +24,17 @@ struct PendingMember {
 }
 
 impl PendingMember {
-    fn new(path: PathBuf, bytes: polylogue_store::staging::PreparedBytes) -> std::io::Result<Self> {
-        let mut file = bytes.reader().map_err(std::io::Error::other)?;
-        let mut magic = [0; 512];
-        let n = file.read(&mut magic)?;
-        let format = Container::of(&path, &magic[..n]);
+    fn prepare(path: PathBuf, archive: &Archive, mut source: impl Read) -> std::io::Result<Self> {
+        let (bytes, format) = archive
+            .prepare_write(|output| {
+                // The longest container signature is four bytes. Feed them
+                // back into the encoder so these are exactly the staged bytes.
+                let mut magic = Vec::with_capacity(4);
+                source.by_ref().take(4).read_to_end(&mut magic)?;
+                std::io::copy(&mut magic.as_slice().chain(source), output)?;
+                Ok(Container::of(&path, &magic))
+            })
+            .map_err(std::io::Error::other)?;
         Ok(Self {
             member: Member {
                 path,
@@ -64,10 +70,7 @@ pub(super) fn stage(
     };
     let pending = paths
         .into_iter()
-        .map(|path| {
-            let bytes = copy_source(&path, archive)?;
-            PendingMember::new(path, bytes)
-        })
+        .map(|path| prepare_source(path, archive))
         .collect::<std::io::Result<_>>()?;
     let mut members = Vec::new();
     expand_members(
@@ -119,17 +122,12 @@ fn expand_members(
     Ok(())
 }
 
-fn copy_source(
-    path: &Path,
-    archive: &Archive,
-) -> std::io::Result<polylogue_store::staging::PreparedBytes> {
-    let mut source = std::fs::File::open(path)?;
+fn prepare_source(path: PathBuf, archive: &Archive) -> std::io::Result<PendingMember> {
+    let mut source = std::fs::File::open(&path)?;
     let before = FileFacts::of(&source.metadata()?);
-    let copied = archive
-        .prepare_bytes(&mut source)
-        .map_err(std::io::Error::other)?;
-    unchanged(&source, before, copied.len())?;
-    Ok(copied)
+    let pending = PendingMember::prepare(path, archive, &mut source)?;
+    unchanged(&source, before, pending.member.bytes.len())?;
+    Ok(pending)
 }
 
 /// What container expansion has seen so far. Work follows distinct content:
@@ -185,6 +183,7 @@ fn expand(
         return Ok(());
     }
     let mut file = member.bytes.reader().map_err(std::io::Error::other)?;
+    let root = PathBuf::from(format!("{}!", path.display()));
     let mut children = Vec::new();
     if let Container::Zip = container {
         let mut zip = zip::ZipArchive::new(&mut file).map_err(std::io::Error::other)?;
@@ -205,10 +204,13 @@ fn expand(
             let display = member.name().to_owned();
             let expected = member.size();
             // One byte past the declaration is enough to know it lied.
-            let decoded = archive
-                .prepare_bytes((&mut member).take(expected.saturating_add(1)))
-                .map_err(std::io::Error::other)?;
-            if decoded.len() != expected {
+            // A member name is provenance, even when it starts with a slash.
+            let child = PendingMember::prepare(
+                PathBuf::from(format!("{}/{display}", root.display())),
+                archive,
+                (&mut member).take(expected.saturating_add(1)),
+            )?;
+            if child.member.bytes.len() != expected {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
@@ -217,7 +219,7 @@ fn expand(
                     ),
                 ));
             }
-            children.push((name, i as u64, decoded, Some(display)));
+            children.push((name, i as u64, child));
         }
     } else {
         let decoded: Box<dyn Read + '_> = match container {
@@ -231,17 +233,16 @@ fn expand(
             if !entry.header().entry_type().is_file() {
                 continue;
             }
-            let name = entry.path()?.into_owned();
+            let name = entry.path()?.as_os_str().as_encoded_bytes().to_vec();
+            let display = String::from_utf8(name.clone())
+                .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect());
             fits_in_staging(archive, entry.header().size()?)?;
-            let member = archive
-                .prepare_bytes(&mut entry)
-                .map_err(std::io::Error::other)?;
-            children.push((
-                name.as_os_str().as_encoded_bytes().to_vec(),
-                i as u64,
-                member,
-                None,
-            ));
+            let child = PendingMember::prepare(
+                PathBuf::from(format!("{}/{display}", root.display())),
+                archive,
+                &mut entry,
+            )?;
+            children.push((name, i as u64, child));
         }
         // A tar iterator stops at its end marker before the compression
         // footer. Drain the decoder so checksum/truncation failures still
@@ -250,21 +251,10 @@ fn expand(
     }
     drop(file);
     let index = out.len();
-    let root = PathBuf::from(format!("{}!", path.display()));
     out.push(member);
     let kind = container.kind();
     let mut pending = Vec::new();
-    for (name, i, bytes, display) in children {
-        let display = display.unwrap_or_else(|| {
-            String::from_utf8(name.clone())
-                .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect())
-        });
-        // Preserve the full member name in provenance, including any leading
-        // slash, even though it is never resolved as a filesystem path.
-        let mut child = PendingMember::new(
-            PathBuf::from(format!("{}/{display}", root.display())),
-            bytes,
-        )?;
+    for (name, i, mut child) in children {
         child.member.parent = Some((index, i));
         child.member.container_kind = Some(kind.into());
         child.member.member_path_bytes = Some(name);
