@@ -222,10 +222,7 @@ impl TestDaemon {
                     Err(failure)
                         if failure.retryable
                             && failure.code.as_deref()
-                                == Some(polylogue_model::Code::DeadlineExceeded.as_str()) =>
-                    {
-                        ()
-                    }
+                                == Some(polylogue_model::Code::DeadlineExceeded.as_str()) => {}
                     Err(failure) => panic!("status failed: {failure:?}"),
                 }
                 std::thread::sleep(Duration::from_millis(10));
