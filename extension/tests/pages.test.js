@@ -317,9 +317,11 @@ describe("the shared page script", () => {
       const pageMessages = window.chrome.runtime.sendMessage;
       window.chrome.runtime.sendMessage = (message) => {
         void pageMessages(message);
-        return chrome.runtime.sendMessage(message, { tab });
+        return chrome.runtime.sendMessage(message, { tab, frameId: 0 });
       };
-      expect((await extension.captureTab(tab.id, "opened")).outcome).toBe("stored");
+      const opened = await extension.captureTab(tab.id, "opened");
+      const { problems } = await chrome.storage.session.get({ problems: [] });
+      expect(opened, problems.map(({ text }) => text).join("\n")).toMatchObject({ outcome: "stored" });
       const shown = "shown chatgpt:c1";
       const original = (await chrome.storage.local.get(shown))[shown];
 
