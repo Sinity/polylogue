@@ -200,7 +200,7 @@ impl Reader<'_> {
             let link = Link {
                 kind,
                 copies_prefix,
-                reason: reason,
+                reason,
                 parent,
                 child,
                 branch_point: at,
