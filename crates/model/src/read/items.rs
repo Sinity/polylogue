@@ -344,6 +344,7 @@ stored_names! {
         LinkIssue => "link_issue",
         Stale => "stale",
         Alternate => "alternate",
+        Selected => "selected",
     }
 }
 

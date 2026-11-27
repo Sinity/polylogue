@@ -1137,6 +1137,7 @@ pub(crate) fn indicator_mark(kind: IndicatorKind) -> &'static str {
         IndicatorKind::Compacted | IndicatorKind::Microcompacted => "⟲",
         IndicatorKind::RateLimited => "⏸",
         IndicatorKind::AwaySummary => "↺",
+        IndicatorKind::Selected => "›",
         _ => "·",
     }
 }

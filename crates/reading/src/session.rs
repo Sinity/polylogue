@@ -37,6 +37,7 @@ pub(super) struct Scope {
     pub range: Option<(MessageId, MessageId)>,
     /// `root:SESSION`: the logical session the root names.
     pub logical: bool,
+    pub selected: Option<Source>,
 }
 
 impl Scope {
@@ -64,6 +65,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
             session,
             range: None,
             logical: true,
+            selected: None,
         }));
     }
     let Ok(reference) = Reference::parse(target) else {
@@ -79,11 +81,13 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
             session,
             range: None,
             logical: false,
+            selected: None,
         }),
         Reference::Message(message) => Some(Scope {
             session: session_of(&message)?,
             range: Some((message.clone(), message)),
             logical: false,
+            selected: None,
         }),
         Reference::MessageRange { first, last } => {
             let session = session_of(&first)?;
@@ -94,6 +98,31 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
                 session,
                 range: Some((first, last)),
                 logical: false,
+                selected: None,
+            })
+        }
+        Reference::Block { .. } | Reference::ToolCall(..) | Reference::Span { .. } => {
+            if let Reference::Span { container, .. } = &reference
+                && !matches!(
+                    container.as_ref(),
+                    Reference::Message(_) | Reference::Block { .. }
+                )
+            {
+                return Ok(None);
+            }
+            let source = reader
+                .reading_item(&reference)?
+                .ok_or_else(|| Error::not_found(format!("no item {reference}")))?;
+            let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
+                return Err(Error::internal(
+                    "the selected item has no containing message",
+                ));
+            };
+            Some(Scope {
+                session: session.clone(),
+                range: Some((message.clone(), message.clone())),
+                logical: false,
+                selected: Some(source),
             })
         }
         _ => None,
@@ -153,6 +182,7 @@ pub(super) struct Reading {
     /// The lines that open the reading, before its first entry.
     lead: Vec<ReadItem>,
     omission: Option<PositionedOmission>,
+    selection: Option<((usize, usize), ReadItem)>,
 }
 
 struct PositionedOmission {
@@ -186,6 +216,7 @@ impl Reading {
                     session: bound.session.clone(),
                     range: None,
                     logical: true,
+                    selected: None,
                 },
                 None => Scope {
                     logical: scope.logical && !options.physical,
@@ -196,7 +227,11 @@ impl Reading {
         let mut accepted = request.clone();
         let inherited_from = range::trim(reader, &mut accepted, operation, &scope, &mut composed)?;
         let mut accepted = bind::bind_seen(reader, accepted, operation, &composed)?;
-        let bound = if options.view == View::Context && options.annotation_at().is_some() {
+        // An item already binds the context to its containing message.
+        let bound = if scope.selected.is_none()
+            && options.view == View::Context
+            && options.annotation_at().is_some()
+        {
             bind::bind_context(reader, &accepted, &mut composed)?
         } else {
             None
@@ -286,6 +321,12 @@ impl Reading {
         } else {
             None
         };
+        let selection = scope
+            .selected
+            .as_ref()
+            .map(|source| selected_item(reader, &composed, &runs, options, source))
+            .transpose()?
+            .flatten();
         Ok(Self {
             continuation: bound.unwrap_or_else(|| accepted.clone()),
             request: accepted,
@@ -296,6 +337,7 @@ impl Reading {
             header,
             lead,
             omission,
+            selection,
         })
     }
 
@@ -362,12 +404,73 @@ impl Reading {
                 items.insert(0, omission.item.clone());
             }
         }
+        if let Some((place, item)) = &self.selection
+            && let Some(slot) = entries.iter().position(|entry| entry.place() == *place)
+        {
+            if matches!(
+                entries[slot].entry.key,
+                EntryKey::Message { block: None, .. }
+            ) {
+                laid.items[slot].push(item.clone());
+            } else {
+                laid.items[slot].insert(0, item.clone());
+            }
+        }
         still_wanted()?;
         Ok(laid)
     }
 }
 
 /// One page of a session reading and the seen marks its display leaves.
+/// Place the mark at the selected block, or at its message header when the
+/// view hides that block. Choosing the place before paging shows it once.
+fn selected_item(
+    reader: &Reader<'_>,
+    composed: &Composed,
+    runs: &compose::Runs,
+    options: &ReadOptions,
+    source: &Source,
+) -> Result<Option<((usize, usize), ReadItem)>, Error> {
+    let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
+        return Ok(None);
+    };
+    let shown = ShownEntries::new(reader, composed, runs, ShowProfile::of(options))?;
+    for (part, range) in composed.parts.iter().enumerate() {
+        if &range.session != session {
+            continue;
+        }
+        for block in source.block.into_iter().map(Some).chain([None]) {
+            let key = EntryKey::Message {
+                message: message.clone(),
+                block,
+            };
+            let Some(seq) = reader.item_place(composed.indexes[part].pk, &key)? else {
+                continue;
+            };
+            let place = (part, seq as usize);
+            if !shown
+                .first_at(place)?
+                .is_some_and(|entry| entry.place() == place)
+            {
+                continue;
+            }
+            let item = ReadItem {
+                source: Source {
+                    inherited: range.inherited,
+                    ..source.clone()
+                },
+                kind: ItemKind::Indicator {
+                    indicator: IndicatorKind::Selected,
+                    text: format!("selected {}", source.reference),
+                    expand: None,
+                },
+            };
+            return Ok(Some((place, item)));
+        }
+    }
+    Ok(None)
+}
+
 pub(super) fn page(
     reader: &Reader<'_>,
     services: &impl ReadServices,
