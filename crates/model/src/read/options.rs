@@ -136,6 +136,9 @@ pub struct ReadOptions {
     /// Start at this message, time within the session or absolute time; `seen` where this reader stopped
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// End before this message, elapsed or absolute time, or compaction[:N].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
     /// Show the first N messages of the selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first: Option<u64>,

@@ -30,6 +30,7 @@ pub(super) fn apply(
             logical: false,
             parts: Vec::new(),
             window_end: None,
+            until: None,
         }));
     }
     if let ReadStart::Bound(bound) = &mut request.start {

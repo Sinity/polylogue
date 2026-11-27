@@ -101,7 +101,7 @@ Each tool's description is generated from the declarations: fixed sentences arou
 ```
 Read the archive. A call is {operation, arguments}; operation defaults to rows.
 selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order. Steps:
-  read(view?, show?, hide?, from?, first?, last?, around?, diff?, alternate?, physical?, neutral_names?, at?, follow?, format?, budget?, cursor?, input?) show the rows' content in a view, a page at a time.
+  read(view?, show?, hide?, from?, until?, first?, last?, around?, diff?, alternate?, physical?, neutral_names?, at?, follow?, format?, budget?, cursor?, input?) show the rows' content in a view, a page at a time.
   brief(cwd?, for?, budget?, cursor?) package context: with no selection for the directory `cwd`, of a session to take it over, of search words what is already known.
 Operations: help(topic?, all?) | rows(selection?, steps?, all?, dry_run?, explain?, page_size?, fields?, why?, wait?) | dev schema infer(origin?) | dev schema unread(origin?) | status(line?, vectors?, verify?, manifest?, log?, details?, watch?, wait?, after_changes?) | dev sql(statement) | set(key?, machine?)
 explain: true says how a call is read and what it would do, running nothing; dry_run: true resolves the rows and says what each step would do.

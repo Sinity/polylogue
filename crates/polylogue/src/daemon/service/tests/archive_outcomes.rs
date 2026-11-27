@@ -146,3 +146,88 @@ fn a_reply_while_the_index_catches_up_is_degraded_with_the_count_and_origin() {
     test_answers::ok(listing(&d, ROWS));
     fault::clear();
 }
+
+#[test]
+fn a_waiting_listing_keeps_its_deadline_while_the_index_catches_up() {
+    use polylogue_store::read::limit::ReadLimit;
+    use std::time::{Duration, Instant};
+
+    let mut d = test_daemon::start("source read under the previous parser");
+    let archive = d.daemon.archive.clone();
+    d.restart_after_stop(|| {
+        let (older, _) = polylogue_store::fixture::older_reading(&archive, "claude-code").unwrap();
+        assert!(older > 0);
+        fault::arm("parse", "", Action::Hold, 0, 1);
+    });
+    // The restarted parser stays behind until the first page has been read.
+    struct ReleaseParser;
+    impl Drop for ReleaseParser {
+        fn drop(&mut self) {
+            fault::release();
+        }
+    }
+    let release = ReleaseParser;
+    fault::wait_held();
+
+    let selection = "sessions where id:claude-code:absent";
+    let (first, _) = test_answers::degraded(
+        Call::new("rows", json!({"selection": selection})).answer(&d.daemon),
+    );
+    assert_eq!(first["reply"]["rows"], json!([]));
+
+    let limit = ReadLimit::new(Duration::from_secs(5), Default::default());
+    let request = Call::new("rows", json!({"selection": selection, "wait": "1m"})).within(&limit);
+    std::thread::scope(|scope| {
+        let (send, received) = std::sync::mpsc::sync_channel(1);
+        let daemon = &d.daemon;
+        scope.spawn(move || {
+            let _ = send.send(request.answer(daemon));
+        });
+
+        // A page that will be retried keeps the required read phase open.
+        // Its count must not take the budget away from that retry.
+        let ready = Instant::now() + Duration::from_secs(4);
+        while !matches!(limit.stage(), Some("listing wait" | "optional query count"))
+            && Instant::now() < ready
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if limit.stage() != Some("listing wait") {
+            limit.cancellation.cancel();
+            panic!(
+                "the first page did not keep waiting under the read limit: {:?}",
+                limit.stage()
+            );
+        }
+
+        // A commit from the resumed parser wakes the listing. Its next
+        // required read must time out even with all ordinary slots held.
+        let pool = &d.daemon.reads;
+        let held = loop {
+            match (0..pool.max_readers())
+                .map(|_| pool.reader())
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(held) => break held,
+                Err(polylogue_store::StoreError::ReadPoolNested) if Instant::now() < ready => {
+                    std::thread::yield_now();
+                }
+                Err(error) => {
+                    limit.cancellation.cancel();
+                    panic!("could not hold the reader slots: {error}");
+                }
+            }
+        };
+        fault::release();
+        let reply = received.recv_timeout(Duration::from_secs(6));
+        drop(held);
+        let reply = reply.expect("the listing must finish while the reader slots are held");
+        assert_eq!(
+            test_answers::refusal(reply).code.as_deref(),
+            Some("deadline_exceeded")
+        );
+    });
+    d.wait_for(|status| status["caught_up"] == true);
+    drop(release);
+    fault::clear();
+}
