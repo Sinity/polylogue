@@ -30,7 +30,7 @@
     if (status.host === "missing") {
       tone = "bad";
       label = "Not installed for this browser";
-      detail = `Run: polylogue install chrome --extension-id ${chrome.runtime.id}`;
+      detail = "Run: polylogue install chrome";
     } else if (status.host !== "ok") {
       tone = "bad";
       label = "Polylogue did not answer";

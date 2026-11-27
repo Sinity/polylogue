@@ -11,6 +11,20 @@ use std::time::Duration;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+#[test]
+fn extension_id_matches_the_manifest_key() {
+    use sha2::{Digest, Sha256};
+    let manifest: Value =
+        serde_json::from_str(include_str!("../../../../extension/manifest.json")).unwrap();
+    let key = B64.decode(manifest["key"].as_str().unwrap()).unwrap();
+    let id: String = Sha256::digest(key)[..16]
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 15])
+        .map(|digit| char::from(b'a' + digit))
+        .collect();
+    assert_eq!(id, super::native::CHROME_EXTENSION_ID);
+}
+
 fn host(w: &TestDaemon) -> Arc<BrowserHost> {
     Arc::new(BrowserHost::at(&w.config, &w.daemon.archive).unwrap())
 }
@@ -171,6 +185,18 @@ fn host_without_daemon(dir: &std::path::Path) -> Arc<BrowserHost> {
     let archive = polylogue_store::Archive::at(&dir.join("archive"));
     let config = config_at(dir);
     Arc::new(BrowserHost::at(&config, &archive).unwrap())
+}
+
+#[test]
+fn native_host_reports_its_revision_without_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_without_daemon(dir.path());
+    let status = exchange(&host, json!({"version":2,"type":"status"}));
+    assert_eq!(status.status, 200);
+    assert_eq!(
+        status.json(),
+        json!({"revision": option_env!("POLYLOGUE_REVISION").filter(|revision| *revision != "unavailable")})
+    );
 }
 
 fn chat_request(conversation: Option<&str>, submit: bool) -> actions::ChatRequest {
