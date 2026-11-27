@@ -2,6 +2,17 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
+fn selection_forms_keep_their_wire_bytes() {
+    use crate::protocol::line::SelectionForm;
+    let wire = r#"["none","query","reference","references","kept_result"]"#;
+    assert_eq!(serde_json::to_string(SelectionForm::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<SelectionForm>>(wire).unwrap(),
+        SelectionForm::ALL
+    );
+}
+
+#[test]
 fn a_pending_write_is_degraded_with_its_note_and_http_success() {
     let write_result = json!({"id":"record:one", "pending":true});
     let answer = written(write_result.clone(), true);

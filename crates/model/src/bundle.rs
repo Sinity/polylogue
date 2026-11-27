@@ -90,13 +90,14 @@ pub struct Flags {
     pub read: crate::read::ReadOptions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Format {
-    Json,
-    Jsonl,
-    Markdown,
-    Html,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Format {
+        Json => "json",
+        Jsonl => "jsonl",
+        Markdown => "markdown",
+        Html => "html",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -118,12 +119,13 @@ pub struct InventoryRecord {
     pub file: FileDescriptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemberKind {
-    Records,
-    Rendered,
-    Blob,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemberKind {
+        Records => "records",
+        Rendered => "rendered",
+        Blob => "blob",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

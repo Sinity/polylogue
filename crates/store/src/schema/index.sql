@@ -614,7 +614,7 @@ CREATE INDEX event_kind    ON event(kind, at);
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  state             TEXT NOT NULL CHECK (state IN ('parsed','failed')),
+  state             TEXT NOT NULL CHECK (state IN (@names(ParseState))),
   parser_version    TEXT NOT NULL,
   parsed_to         INTEGER NOT NULL CHECK (parsed_to >= 0),  -- after the last complete record
   waiting           INTEGER NOT NULL CHECK (waiting >= 0),    -- the stored length the parser saw, less parsed_to

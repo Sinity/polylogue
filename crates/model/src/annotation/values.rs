@@ -199,35 +199,39 @@ record!(ReplyTo {
 });
 record!(SentMessage {text:String,subject:Option<Reference>,reply_to:Option<ReplyTo>});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldType {
-    String,
-    Integer,
-    Number,
-    Boolean,
-    Enum,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FieldType {
+        String => "string",
+        Integer => "integer",
+        Number => "number",
+        Boolean => "boolean",
+        Enum => "enum",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Layout {
-    Linear,
-    Board,
-    Wiki,
-    Table,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Layout {
+        Linear => "linear",
+        Board => "board",
+        Wiki => "wiki",
+        Table => "table",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SlotMode {
-    Follow,
-    Fixed,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SlotMode {
+        Follow => "follow",
+        Fixed => "fixed",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Solved,
-    Partial,
-    Abandoned,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Outcome {
+        Solved => "solved",
+        Partial => "partial",
+        Abandoned => "abandoned",
+    }
 }
 
 record!(OutcomeWithPrevious {
