@@ -147,6 +147,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
 
 #[test]
 fn directory_and_zip_imports_describe_stored_attachment_bytes() {
+    use polylogue_model::bundle::Record;
     for zip in [false, true] {
         let fixture = TestArchive::new(zip);
         let descriptor = fixture.descriptor();
@@ -181,20 +182,18 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             ],
         );
         assert_eq!(delivered.status.code(), Some(0), "{delivered:?}");
-        let records: Vec<polylogue_model::bundle::Record> =
-            std::fs::read_to_string(destination.join("records.jsonl"))
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect();
-        assert!(matches!(
-            records.first(),
-            Some(polylogue_model::bundle::Record::Manifest(_))
-        ));
+        let records: Vec<Record> = std::fs::read_to_string(destination.join("records.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let Some(Record::Manifest(manifest)) = records.first() else {
+            panic!("bundle must start with its manifest");
+        };
         let messages: Vec<_> = records
             .iter()
             .filter_map(|record| match record {
-                polylogue_model::bundle::Record::Message(message) => Some(message),
+                Record::Message(message) => Some(message),
                 _ => None,
             })
             .collect();
@@ -220,6 +219,46 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             assert_eq!(binding.candidates[0].size, SECRET.len() as u64);
             binding.validate().unwrap();
         }
+        let hash = polylogue_model::BlobHash::of(SECRET);
+        let blobs = destination.join("blobs");
+        assert_eq!(std::fs::read(blobs.join(hash.to_string())).unwrap(), SECRET);
+        let file_count = std::fs::read_dir(&blobs).unwrap().count();
+        assert_eq!(manifest.counts.blobs, file_count as u64);
+        assert_eq!(file_count, 1);
+        let blob_records: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Blob(blob) => Some(&blob.file),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blob_records.len(), 1);
+        assert_eq!(blob_records[0].path, format!("blobs/{hash}"));
+        assert_eq!(blob_records[0].hash, hash);
+        assert_eq!(blob_records[0].size, SECRET.len() as u64);
+
+        let receiving_root = fixture._dir.path().join("receiving-archive");
+        let receiver = crate::Fixture::new(&receiving_root, &fixture.home, &fixture.config);
+        let receiving_daemon = start_daemon(&receiver);
+        let imported = cli(
+            &receiver,
+            &["--json", "import", destination.to_str().unwrap()],
+        );
+        assert!(imported.status.success(), "{imported:?}");
+        assert_eq!(json(&imported)["pass"]["errors"], json!([]));
+        wait_status(&receiver, |status| status["store"]["messages"] == 1);
+        drop(receiving_daemon);
+        let (archive, _lock) = polylogue_store::Archive::open_or_create(&receiving_root).unwrap();
+        let mut restored = Vec::new();
+        archive
+            .blob_reader()
+            .unwrap()
+            .read_plain(&hashed_blobs::Hash(hash.0), SECRET.len() as u64, || Ok(()))
+            .unwrap()
+            .read_to_end(&mut restored)
+            .unwrap();
+        assert_eq!(restored, SECRET);
+
         let shown = cli(&fixture.env(), &[SESSION, "read", "--format", "markdown"]);
         assert!(shown.status.success(), "{shown:?}");
         let shown = String::from_utf8(shown.stdout).unwrap();
