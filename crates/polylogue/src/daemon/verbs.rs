@@ -16,7 +16,7 @@ use crate::daemon::handler::Call;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::*;
 use command_surface::{Answer, JsonSchema, Outcome, StepDeclarations};
-use polylogue_model::{Code, Reason, Reference};
+use polylogue_model::{Reason, Reference};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// One verb of a line.
@@ -26,6 +26,8 @@ pub(crate) trait Verb {
     const ROWS: RowRule;
     /// The smallest tool that may run the step.
     const ACCESS: ToolAccess;
+    /// It needs a person at a terminal, so no MCP tool offers it.
+    const NEEDS_A_PERSON: bool = false;
     fn run(
         step: Self::Step,
         selection: &Selection,
@@ -100,6 +102,16 @@ macro_rules! verbs {
                     $(Self::$variant(step) => <$verb as Verb>::would(step, selection, call),)+
                 }
             }
+        }
+
+        /// The verbs an MCP tool offers, in the order of the verb table,
+        /// each with the smallest tool that may run it.
+        pub fn offered_over_mcp() -> Vec<(&'static str, ToolAccess)> {
+            [$((<$verb as Verb>::NAME, <$verb as Verb>::ACCESS, <$verb as Verb>::NEEDS_A_PERSON),)+]
+                .into_iter()
+                .filter(|(_, _, person)| !person)
+                .map(|(name, access, _)| (name, access))
+                .collect()
         }
 
         /// Every verb's declaration, in the order of the verb table.
@@ -329,19 +341,6 @@ pub(crate) fn undo_line(
         })
 }
 
-/// The refusal of an option whose body is not built yet.
-pub(crate) fn not_built(verb: &str, option: &str) -> Failure {
-    Failure::new(
-        Code::NotBuilt,
-        format!("{verb} --{option} is not built yet"),
-    )
-}
-
-/// The refusal of a use of a verb whose body is not built yet.
-pub(crate) fn not_built_use(verb: &str, what: &str) -> Failure {
-    Failure::new(Code::NotBuilt, format!("{verb} {what} is not built yet"))
-}
-
 /// The sessions among the rows, refusing any other row.
 pub(crate) fn sessions(
     verb: &str,
@@ -368,6 +367,7 @@ impl Verb for Pick {
     const NAME: &'static str = "pick";
     const ROWS: RowRule = RowRule::Any;
     const ACCESS: ToolAccess = ToolAccess::Read;
+    const NEEDS_A_PERSON: bool = true;
     fn run(_: Self::Step, _: &Selection, _: &StepCall<'_>) -> Result<StepDone, Failure> {
         Err(refused_pick())
     }

@@ -142,10 +142,20 @@ fn prepared_requests_validate_preimages_before_returning_lookup_keys() {
                     Some(*blake3::hash("Café".as_bytes()).as_bytes())
                 );
             }
-            _ => assert!(
-                source.addressed().is_err(),
-                "unproven request must not imply target absence"
-            ),
+            _ => match source.addressed().unwrap_err() {
+                StoreError::StoredValue { column, reason } => {
+                    assert_eq!(column, None);
+                    assert_eq!(
+                        reason,
+                        if request.is_none() {
+                            "prepared vector has no request text"
+                        } else {
+                            "prepared vector request does not prove its address"
+                        }
+                    );
+                }
+                other => panic!("expected invalid stored request, got {other:?}"),
+            },
         }
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
@@ -160,5 +170,10 @@ fn prepared_marker_requires_its_complete_supported_schema() {
     conn.execute_batch("PRAGMA application_id=0x504c5650; PRAGMA user_version=1;")
         .unwrap();
     drop(conn);
-    assert!(VectorStore::open(&path, dir.path()).is_err());
+    match VectorStore::open(&path, dir.path()).err().unwrap() {
+        StoreError::Internal(reason) => {
+            assert_eq!(reason, "unsupported prepared vector source format")
+        }
+        other => panic!("expected unsupported prepared source, got {other:?}"),
+    }
 }
