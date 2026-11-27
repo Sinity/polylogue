@@ -211,6 +211,7 @@ step 1:     would tag each matched session needs-tests; needs --all if more than
 ```
 
 - It names the rule that read the first word ([interfaces.md](interfaces.md#the-first-word)), reads the selection back in words, lists the defaults it applied and how to lift each, names the unit and the verbs valid on it, and says per step what it would do with its words.
+- A daemon line explanation gives each step an `access` word in JSON (`read`, `write`, or `act`). It names the smallest MCP tool that can run the step.
 - For the two optional words it says which reading the line got: `polylogue page:flaky-ci edit read --explain` prints `step 1: edit with no text: opens page:flaky-ci in your editor` and `step 2: read`, and `polylogue annotation:01JB7Q2M edit 'read.' --explain` prints `step 1: edit with the text "read."`.
 - On a command it says what the command would do with its arguments: `polylogue import chatgpt --explain` prints `would ask the browser extension to fetch chatgpt conversations the archive lacks`.
 - A line that does not parse is explained up to where it fails, with the refusal's `try:` line.

@@ -1848,23 +1848,29 @@ impl Reader<'_> {
         self.stored_range(&asset.input, asset.chain, range.start, range.end, &store)
     }
 
-    /// A current full hash may span several stored new blobs. Compute
-    /// it once for an explicitly requested delivery, streaming the bytes.
+    /// Opens the selected member's complete bytes, which can span extents.
+    pub fn attachment_reader(
+        &self,
+        asset: &crate::assets::AssetMatch,
+    ) -> Result<crate::blobs::ChainReader<crate::blobs::Blobs>> {
+        let chain = if asset.size == 0 {
+            self.attachment_range(asset, 0..0)?;
+            crate::blobs::StoredChain::default()
+        } else {
+            self.current_attachment(asset)?;
+            self.stored_chain(&asset.input, asset.chain, asset.size)?
+        };
+        Ok(chain.reader(std::sync::Arc::new(self.blob_store()?)))
+    }
+
+    /// A current full hash may span several stored blobs. Compute it
+    /// by streaming the member's bytes.
     pub fn attachment_hash(
         &self,
         asset: &crate::assets::AssetMatch,
     ) -> Result<polylogue_model::BlobHash> {
-        if asset.size == 0 {
-            return Ok(polylogue_model::BlobHash::of(
-                &self.attachment_range(asset, 0..0)?,
-            ));
-        }
-        self.current_attachment(asset)?;
         use std::io::Read;
-        let store = std::sync::Arc::new(self.blob_store()?);
-        let mut source = self
-            .stored_chain(&asset.input, asset.chain, asset.size)?
-            .reader(store);
+        let mut source = self.attachment_reader(asset)?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = [0; 64 * 1024];
         let mut length = 0u64;

@@ -147,6 +147,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
 
 #[test]
 fn directory_and_zip_imports_describe_stored_attachment_bytes() {
+    use polylogue_model::bundle::Record;
     for zip in [false, true] {
         let fixture = TestArchive::new(zip);
         let descriptor = fixture.descriptor();
@@ -181,20 +182,18 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             ],
         );
         assert_eq!(delivered.status.code(), Some(0), "{delivered:?}");
-        let records: Vec<polylogue_model::bundle::Record> =
-            std::fs::read_to_string(destination.join("records.jsonl"))
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect();
-        assert!(matches!(
-            records.first(),
-            Some(polylogue_model::bundle::Record::Manifest(_))
-        ));
+        let records: Vec<Record> = std::fs::read_to_string(destination.join("records.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let Some(Record::Manifest(manifest)) = records.first() else {
+            panic!("bundle must start with its manifest");
+        };
         let messages: Vec<_> = records
             .iter()
             .filter_map(|record| match record {
-                polylogue_model::bundle::Record::Message(message) => Some(message),
+                Record::Message(message) => Some(message),
                 _ => None,
             })
             .collect();
@@ -220,6 +219,149 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             assert_eq!(binding.candidates[0].size, SECRET.len() as u64);
             binding.validate().unwrap();
         }
+        let hash = polylogue_model::BlobHash::of(SECRET);
+        let blobs = destination.join("blobs");
+        assert_eq!(std::fs::read(blobs.join(hash.to_string())).unwrap(), SECRET);
+        let file_count = std::fs::read_dir(&blobs).unwrap().count();
+        assert_eq!(manifest.counts.blobs, file_count as u64);
+        assert_eq!(file_count, 1);
+        let blob_records: Vec<_> = records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Blob(blob) => Some(&blob.file),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blob_records.len(), 1);
+        assert_eq!(blob_records[0].path, format!("blobs/{hash}"));
+        assert_eq!(blob_records[0].hash, hash);
+        assert_eq!(blob_records[0].size, SECRET.len() as u64);
+
+        let receiving_root = fixture._dir.path().join("receiving-archive");
+        let receiver = crate::Fixture::new(&receiving_root, &fixture.home, &fixture.config);
+        let receiving_daemon = start_daemon(&receiver);
+        let imported = cli(
+            &receiver,
+            &["--json", "import", destination.to_str().unwrap()],
+        );
+        assert!(imported.status.success(), "{imported:?}");
+        assert_eq!(json(&imported)["pass"]["errors"], json!([]));
+        wait_status(&receiver, |status| status["store"]["messages"] == 1);
+        let target = fixture._dir.path().join("restored.bin");
+        let restored = cli(
+            &receiver,
+            &[
+                "--json",
+                ATTACHMENT,
+                "read",
+                "--to",
+                target.to_str().unwrap(),
+            ],
+        );
+        assert!(restored.status.success(), "{restored:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), SECRET);
+
+        let exported_again = fixture._dir.path().join("exported-again");
+        std::fs::create_dir(&exported_again).unwrap();
+        let reexport = cli(
+            &receiver,
+            &[
+                "--json",
+                SESSION,
+                "read",
+                "--format",
+                "json",
+                "--to",
+                exported_again.to_str().unwrap(),
+            ],
+        );
+        assert!(reexport.status.success(), "{reexport:?}");
+        assert_eq!(
+            std::fs::read(exported_again.join("blobs").join(hash.to_string())).unwrap(),
+            SECRET
+        );
+
+        // A fresh reader of the same message with only its claims must not
+        // borrow a hash already stored by a different explicit import.
+        if !zip {
+            let claims_only = fixture._dir.path().join("claims-only");
+            std::fs::create_dir(&claims_only).unwrap();
+            let files_only = fixture._dir.path().join("files-only");
+            std::fs::create_dir_all(files_only.join("blobs")).unwrap();
+            std::fs::copy(
+                blobs.join(hash.to_string()),
+                files_only.join("blobs").join(hash.to_string()),
+            )
+            .unwrap();
+            let inventory = serde_json::to_vec(&polylogue_model::bundle::InventoryRecord {
+                kind: polylogue_model::bundle::MemberKind::Blob,
+                reference: None,
+                file: blob_records[0].clone(),
+            })
+            .unwrap();
+            std::fs::write(files_only.join("members.jsonl"), &inventory).unwrap();
+            let mut claims = std::fs::File::create(claims_only.join("records.jsonl")).unwrap();
+            let mut files = std::fs::File::create(files_only.join("records.jsonl")).unwrap();
+            for mut record in records {
+                match &mut record {
+                    Record::Blob(_) => {
+                        serde_json::to_writer(&mut files, &record).unwrap();
+                        writeln!(files).unwrap();
+                        continue;
+                    }
+                    Record::Manifest(manifest) => {
+                        manifest.inventory = None;
+                        let mut files_manifest = manifest.clone();
+                        files_manifest.inventory = Some(polylogue_model::bundle::FileDescriptor {
+                            path: "members.jsonl".into(),
+                            hash: polylogue_model::BlobHash::of(&inventory),
+                            size: inventory.len() as u64,
+                        });
+                        files_manifest.counts = polylogue_model::bundle::Counts {
+                            blobs: 1,
+                            ..Default::default()
+                        };
+                        serde_json::to_writer(&mut files, &Record::Manifest(files_manifest))
+                            .unwrap();
+                        writeln!(files).unwrap();
+                        manifest.counts.blobs = 0;
+                    }
+                    _ => {}
+                }
+                serde_json::to_writer(&mut claims, &record).unwrap();
+                writeln!(claims).unwrap();
+            }
+            let separate_root = fixture._dir.path().join("archive-with-claims-only");
+            let separate = crate::Fixture::new(&separate_root, &fixture.home, &fixture.config);
+            let _separate_daemon = start_daemon(&separate);
+            for path in [files_only, claims_only] {
+                let report = cli(&separate, &["--json", "import", path.to_str().unwrap()]);
+                assert!(report.status.success(), "{report:?}");
+                let report = json(&report);
+                assert_eq!(report["pass"]["errors"], json!([]), "{report}");
+                assert_eq!(report["refused"], json!([]), "{report}");
+            }
+            wait_status(&separate, |status| status["store"]["messages"] == 1);
+            let not_written = fixture._dir.path().join("unavailable.bin");
+            let absent = cli(
+                &separate,
+                &[
+                    "--json",
+                    ATTACHMENT,
+                    "read",
+                    "--to",
+                    not_written.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(absent.status.code(), Some(4), "{absent:?}");
+            assert!(
+                String::from_utf8_lossy(&[absent.stdout, absent.stderr].concat())
+                    .contains("attachment_unavailable")
+            );
+            assert!(!not_written.exists());
+        }
+        drop(receiving_daemon);
+
         let shown = cli(&fixture.env(), &[SESSION, "read", "--format", "markdown"]);
         assert!(shown.status.success(), "{shown:?}");
         let shown = String::from_utf8(shown.stdout).unwrap();

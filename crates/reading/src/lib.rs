@@ -151,13 +151,9 @@ pub fn resolve_start(
             None
         };
         request.start = ReadStart::Bound(Box::new(SessionRead {
-            session: scope.session,
             from_seen,
             after,
-            logical,
-            parts: vec![],
-            window_end: None,
-            until: None,
+            ..SessionRead::beginning(scope.session, logical)
         }));
     } else if from_seen {
         return Err(Reason::FromSeenNeedsOneSession {}.into());
@@ -702,8 +698,13 @@ enum Route {
 
 fn route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
     let route = reading_route(reader, request)?;
-    if request.options.until.is_some() && !matches!(route, Route::Session(_)) {
-        return Err(Error::invalid_query("--until needs a session reading"));
+    if !matches!(route, Route::Session(_)) {
+        if request.options.from_position().is_some() {
+            return Err(Error::invalid_query("--from needs a session reading"));
+        }
+        if request.options.until.is_some() {
+            return Err(Error::invalid_query("--until needs a session reading"));
+        }
     }
     Ok(route)
 }

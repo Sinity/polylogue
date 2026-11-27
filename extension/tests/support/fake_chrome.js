@@ -37,7 +37,7 @@ const encode = (bytes) => Buffer.from(bytes).toString("base64");
 const decode = (text) => new Uint8Array(Buffer.from(text, "base64"));
 
 /** A port pair: what one side posts, the other receives. */
-function portPair(name) {
+export function portPair(name) {
   const a = { name, onMessage: event(), onDisconnect: event(), connected: true };
   const b = { name, onMessage: event(), onDisconnect: event(), connected: true };
   const link = (from, to) => {
@@ -139,8 +139,8 @@ export function fakeChrome({ operations = {}, pages = {}, tabs = [], installed =
         return hostPort(operations, calls);
       },
       // Resolves with the first response a listener sends, as Chrome does.
-      sendMessage: (message) => new Promise((resolve) => {
-        const answers = chrome.runtime.onMessage.fire(message, {}, resolve);
+      sendMessage: (message, sender = {}) => new Promise((resolve) => {
+        const answers = chrome.runtime.onMessage.fire(message, sender, resolve);
         if (!answers.includes(true)) resolve(undefined);
       }),
     },

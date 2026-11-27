@@ -4,7 +4,7 @@ How the operator and agents reach live sessions: `send` (to sessions, roles, mem
 
 Every act here is a step of a line or an operation of the `polylogue_act` tool ([agents.md](agents.md#mcp-server)), the same from the CLI, MCP and the web. Each act is recorded as a [delivery](agent-context.md#deliveries) with its computed author ([authorship.md](authorship.md)); an act on several rows of a query needs `--all` ([interfaces.md](interfaces.md#steps)); `--dry-run` shows each recipient and channel and reaches nothing. Polylogue records what happened and does not coordinate: it never locks, assigns or schedules work.
 
-An act's reply reports what its recipient or channel acknowledged. Its outcome record is queued for the writer; status reports any pending outcome writes and their last failure ([delivery recording](agent-context.md#deliveries)). Retrying that record never repeats the act.
+An act's reply reports what its recipient or channel acknowledged. An act outcome is `delivered`, `prepared`, `started`, `queued`, `not_sent`, or `cancelled`. Its outcome record is queued for the writer; status reports any pending outcome writes and their last failure ([delivery recording](agent-context.md#deliveries)). Retrying that record never repeats the act.
 
 ## Send
 

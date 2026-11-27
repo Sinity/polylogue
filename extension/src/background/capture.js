@@ -188,9 +188,9 @@ export class Capturer {
 
   /** The tab's conversation and a digest of what its page shows, or null. */
   async shownOnPage(tabId) {
-    const page = await askPage(this.chrome, tabId, { type: "page" }).catch(() => null);
+    const page = await askPage(this.chrome, tabId, { type: "page", shown: true }).catch(() => null);
     if (page?.status !== 200 || !page.info?.id || typeof page.shown !== "string") return null;
-    return { conversation: page.info.id, digest: await sha256(page.shown) };
+    return { conversation: page.info.id, digest: page.shown };
   }
 
   async shownUnchanged(provider, shown) {

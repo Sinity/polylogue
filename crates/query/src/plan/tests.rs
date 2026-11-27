@@ -111,24 +111,31 @@ fn object_validation_refuses_forged_or_missing_dependencies() {
         refusal(&changed),
         "saved output schema differs from its saved definition"
     );
-    let mut changed = prepare("sessions", &Bindings::default(), |_| Ok(()))
+    let valid = prepare("sessions | sort by id", &Bindings::default(), |_| Ok(()))
         .unwrap()
         .query_object()
         .unwrap();
-    changed.query.transforms.push(Transform {
-        span: Span::default(),
-        kind: TransformKind::Sort {
-            keys: vec![SortKey {
-                expression: Expression::field("invented"),
-                descending: false,
-            }],
-        },
-    });
+    validate_object(&valid).unwrap();
+    let mut changed = valid.clone();
+    let TransformKind::Sort { keys } = &mut changed.query.transforms[0].kind else {
+        panic!("expected a sort");
+    };
+    assert_eq!(
+        keys.as_slice(),
+        &[SortKey {
+            expression: Expression::field("id"),
+            descending: false,
+        }]
+    );
+    keys[0].expression = Expression::field("invented");
     let catalog = crate::catalog::catalog(&[]);
     changed.normal_form = identity::normal_form(&changed.query, &catalog).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
-    assert!(validate_object(&changed).is_err());
+    assert_eq!(
+        validate_object(&changed).unwrap_err().kind(),
+        polylogue_model::Code::UnknownField
+    );
 }
 fn refusal(object: &polylogue_model::query_objects::QueryObject) -> String {
     match validate_object(object) {
@@ -354,9 +361,17 @@ fn denominator_classification_and_reference_use_the_pure_validated_plan() {
     for malformed in [
         plan.question_id().to_string(),
         "query:abc".into(),
-        reference.to_uppercase(),
+        format!("QUERY:{}", plan.question_id()),
+        format!("query:{}", plan.question_id().to_string().to_uppercase()),
     ] {
-        assert!(question_id_from_reference(&malformed).is_err());
+        assert_eq!(
+            question_id_from_reference(&malformed).unwrap_err(),
+            QueryError::Invalid {
+                message: "expected an exact lowercase query:<hash> reference".into(),
+                position: 0,
+            },
+            "{malformed}"
+        );
     }
 }
 

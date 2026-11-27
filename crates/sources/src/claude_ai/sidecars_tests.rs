@@ -1,4 +1,5 @@
 use super::*;
+use crate::export::ScanError;
 use polylogue_model::{DocumentAuthorship, DocumentPurpose};
 use serde_json::json;
 
@@ -98,7 +99,20 @@ fn missing_ids_use_input_and_byte_position() {
             .as_str()
             .contains("~input:")
     );
-    assert!(crate::export::fixture::parse_input(&mut parser, "", original).is_err());
+    let Parse::Export(parser) = &mut parser else {
+        panic!("expected an export parser");
+    };
+    let ScanError::Callback(reason) = parser
+        .scan(
+            "",
+            &mut std::io::Cursor::new(original),
+            &mut |_, _, _: Option<&str>, _: &[u8]| Ok(()),
+        )
+        .unwrap_err()
+    else {
+        panic!("expected a refusal for a missing input identity");
+    };
+    assert_eq!(reason, "sidecar parsing needs its input identity");
 }
 
 #[test]

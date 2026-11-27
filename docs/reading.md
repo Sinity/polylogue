@@ -102,7 +102,7 @@ A word without a level means its fullest. Tool output cut to head and tail marks
 
 ## Ranges
 
-- `--from` and `--until` take a message, a time within the session or an absolute time; `--until` also takes `compaction[:N]` (before the last or the Nth-last boundary) and is exclusive. A duration such as `2m` is elapsed from the session's recorded start. An end beyond the last entry keeps the entries available on the first page. Continuations keep the accepted end even when another compaction arrives.
+- `--from` and `--until` take a message, a time within the session or an absolute time. `--from` includes the selected first entry. `--until` also takes `compaction[:N]` (before the last or the Nth-last boundary) and is exclusive. A duration such as `2m` is elapsed from the session's recorded start. An end beyond the last entry keeps the entries available on the first page. Continuations keep the accepted end even when another compaction arrives.
 - `--first N` shows the first N visible messages and `--last N` shows the last N. Together they show both ends, with one omission line giving the exact count between. Overlapping ends show each message once. Continuation pages keep the window selected on its first page as new messages arrive.
 - `--around N` takes N messages either side of the message holding the selected item: a message, block, tool call or span.
 - Positions are message IDs underneath, so a range stays put while a session grows. A `--from` position inside an inherited message, or an item there with `--around`, shows the inherited messages of that range.
@@ -181,7 +181,7 @@ This writes a bundle; `read --to FILE` writes one document. Annotations are writ
 - the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the index was up to date, counts, the reading options as the caller wrote them (view, show and hide words and the rest), enabled alternates, and the computed author;
 - then one record per physical session (its messages, blocks, events, links and attachment descriptors inline), per document, per input event, per annotation, kept result and delivery, and per alternate, in commit order;
 - `json` writes the manifest plus one file per session at `<origin>/<percent-encoded native ID>.json` (long names hashed), for diffing; `jsonl` writes everything to one file with the manifest first; `markdown` and `html` write one file per session plus `index.md` or `index.html` linking them, rendered with the chosen view and enabled alternates;
-- `json` and `jsonl` bundles write the bytes of present attachments under `blobs/<hex>`, so they resolve after import; `markdown` and `html` link them there (`![name](blobs/<hex>)`);
+- `json` and `jsonl` bundles write the bytes of present attachments under `blobs/<hex>`, including files supplied as separate members of a provider export. Each hash is written once. A binding can state candidates whose bytes are unavailable in the exporting archive; those claims stay in the message without a blob file. After import, a candidate is readable when a member admitted by the same import supplies the declared hash and length at `blobs/<hex>`. `markdown` and `html` link stored blobs there (`![name](blobs/<hex>)`);
 - branches are written in full; `--hide inherited` writes no inherited prefixes and `--hide annotations` no annotations.
 
 **Rules:**

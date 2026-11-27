@@ -1,60 +1,87 @@
-//! Resolve an exclusive end once against a composed transcript.
+//! Resolve transcript bounds once, then apply their accepted positions.
 use super::{Scope, bind::session_read, compose::Composed};
 use crate::{Error, ReadRequest, ReadStart, operation::Context};
-use polylogue_model::read::{ClassKind, EntryKey, SessionEnd, SessionRead};
+use polylogue_model::read::{ClassKind, EntryKey, SessionBoundary, SessionRead};
 use polylogue_model::{MessageId, Reason};
 use polylogue_store::Reader;
 use query_language::time;
 
-pub(super) fn trim_end(
+pub(super) fn trim(
     reader: &Reader<'_>,
     request: &mut ReadRequest,
     operation: &Context,
     scope: &Scope,
     composed: &mut Composed,
-) -> Result<(), Error> {
-    let Some(text) = request.options.until.as_deref() else {
-        return Ok(());
+) -> Result<bool, Error> {
+    let from = request.options.from_position();
+    let until = request.options.until.as_deref();
+    if from.is_none() && until.is_none() {
+        return Ok(false);
+    }
+    let bound = session_read(request);
+    let resolve = |text, accepted, ending| match (text, accepted) {
+        (None, _) => Ok(None),
+        (Some(_), Some(accepted)) => Ok(Some(accepted)),
+        (Some(text), None) => resolve(reader, composed, operation, scope, text, ending),
     };
-    let end = match session_read(request).and_then(|bound| bound.until.clone()) {
-        Some(end) => end,
-        None => match resolve(reader, composed, operation, scope, text)? {
-            Some(end) => end,
-            None => return Ok(()),
-        },
-    };
-    for (i, part) in composed.parts.iter().enumerate() {
-        if part.session != end.owner {
-            continue;
-        }
-        let Some(seq) = reader.item_place(composed.indexes[i].pk, &end.entry)? else {
-            continue;
-        };
-        let seq = seq as usize;
-        if !(part.start..part.end).contains(&seq) {
-            continue;
-        }
+    let from = resolve(
+        from,
+        bound.and_then(|bound| bound.from_position.clone()),
+        false,
+    )?;
+    let until = resolve(until, bound.and_then(|bound| bound.until.clone()), true)?;
+    let start = from
+        .as_ref()
+        .map(|cut| locate(reader, composed, cut))
+        .transpose()?;
+    let end = until
+        .as_ref()
+        .map(|cut| locate(reader, composed, cut))
+        .transpose()?;
+    let inherited_from = start.is_some_and(|(i, position)| {
+        composed.parts[i].inherited && position < composed.parts[i].end
+    });
+    if let Some((i, position)) = end {
         composed.parts.truncate(i + 1);
         composed.indexes.truncate(i + 1);
-        composed.parts[i].end = seq + usize::from(end.after);
-        if matches!(request.start, ReadStart::Beginning) {
-            request.start = ReadStart::Bound(Box::new(SessionRead {
-                session: scope.session.clone(),
-                from_seen: false,
-                after: None,
-                logical: scope.logical,
-                parts: Vec::new(),
-                window_end: None,
-                until: None,
-            }));
+        composed.parts[i].end = position;
+    }
+    if let Some((i, position)) = start {
+        for part in composed.parts.iter_mut().take(i) {
+            part.start = part.end;
         }
-        if let ReadStart::Bound(bound) = &mut request.start {
-            bound.until = Some(end);
+        if let Some(part) = composed.parts.get_mut(i) {
+            part.start = position.clamp(part.start, part.end);
         }
-        return Ok(());
+    }
+    if matches!(request.start, ReadStart::Beginning) {
+        request.start = ReadStart::Bound(Box::new(SessionRead::beginning(
+            scope.session.clone(),
+            scope.logical,
+        )));
+    }
+    if let ReadStart::Bound(bound) = &mut request.start {
+        bound.from_position = from;
+        bound.until = until;
+    }
+    Ok(inherited_from)
+}
+
+fn locate(
+    reader: &Reader<'_>,
+    composed: &Composed,
+    cut: &SessionBoundary,
+) -> Result<(usize, usize), Error> {
+    for (i, part) in composed.parts.iter().enumerate() {
+        if part.session == cut.owner
+            && let Some(seq) = reader.item_place(composed.indexes[i].pk, &cut.entry)?
+            && (part.start as u64..part.end as u64).contains(&seq)
+        {
+            return Ok((i, seq as usize + usize::from(cut.after)));
+        }
     }
     Err(Error::stale_cursor(
-        "the end of the requested range changed",
+        "a boundary of the requested range changed",
     ))
 }
 
@@ -64,8 +91,14 @@ fn resolve(
     operation: &Context,
     scope: &Scope,
     text: &str,
-) -> Result<Option<SessionEnd>, Error> {
+    ending: bool,
+) -> Result<Option<SessionBoundary>, Error> {
     if text == "compaction" || text.starts_with("compaction:") {
+        if !ending {
+            return Err(Error::invalid_query(
+                "a compaction can only end a read range",
+            ));
+        }
         let count = text.split_once(':').map_or("1", |(_, count)| count);
         let mut remaining = count
             .parse::<usize>()
@@ -83,7 +116,7 @@ fn resolve(
                 |class| class.kind() == ClassKind::Compaction,
             )?;
             if entries.len() == remaining {
-                return Ok(entries.into_iter().last().map(|row| SessionEnd {
+                return Ok(entries.into_iter().last().map(|row| SessionBoundary {
                     owner: part.session.clone(),
                     entry: row.entry.key,
                     after: false,
@@ -100,7 +133,7 @@ fn resolve(
             if let Some(seq) = reader.item_place(composed.indexes[i].pk, &entry)?
                 && (part.start as u64..part.end as u64).contains(&seq)
             {
-                return Ok(Some(SessionEnd {
+                return Ok(Some(SessionBoundary {
                     owner: part.session.clone(),
                     entry,
                     after: false,
@@ -136,7 +169,7 @@ fn before_time(
     reader: &Reader<'_>,
     composed: &Composed,
     at: i128,
-) -> Result<Option<SessionEnd>, Error> {
+) -> Result<Option<SessionBoundary>, Error> {
     for (i, part) in composed.parts.iter().enumerate() {
         let mut start = part.start as u64;
         let end = part.end as u64;
@@ -160,7 +193,7 @@ fn before_time(
                     .at
                     .is_some_and(|milliseconds| i128::from(milliseconds) * 1_000_000 >= at)
                 {
-                    return Ok(Some(SessionEnd {
+                    return Ok(Some(SessionBoundary {
                         owner: part.session.clone(),
                         entry: row.entry.key,
                         after: false,
@@ -181,7 +214,7 @@ fn before_time(
     };
     Ok(composed
         .entry(reader, i, part.end - 1)?
-        .map(|last| SessionEnd {
+        .map(|last| SessionBoundary {
             owner: part.session.clone(),
             entry: last.key,
             after: true,

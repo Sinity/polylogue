@@ -23,15 +23,7 @@ pub(super) fn apply(
         return Ok(None);
     }
     if matches!(request.start, ReadStart::Beginning) {
-        request.start = ReadStart::Bound(Box::new(SessionRead {
-            session: session.clone(),
-            from_seen: false,
-            after: None,
-            logical: false,
-            parts: Vec::new(),
-            window_end: None,
-            until: None,
-        }));
+        request.start = ReadStart::Bound(Box::new(SessionRead::beginning(session.clone(), false)));
     }
     if let ReadStart::Bound(bound) = &mut request.start {
         if let Some((owner, key)) = &bound.window_end {

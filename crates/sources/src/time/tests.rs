@@ -78,7 +78,9 @@ fn persisted_parser_time_rejects_inconsistent_accuracy() {
     // cannot come from a misspelled key or a wrong JSON type.
     let mut invalid = serde_json::to_value(valid).unwrap();
     invalid["accuracy"]["precision"] = Json::Null;
-    assert!(serde_json::from_value::<SourceTime>(invalid).is_err());
+    let error = serde_json::from_value::<SourceTime>(invalid).unwrap_err();
+    assert_eq!(error.classify(), serde_json::error::Category::Data);
+    assert_eq!(error.to_string(), "a known timestamp requires precision");
     assert_eq!(
         serde_json::from_value::<SourceTime>(serde_json::to_value(valid).unwrap()).unwrap(),
         valid

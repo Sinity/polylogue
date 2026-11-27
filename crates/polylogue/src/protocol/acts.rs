@@ -55,19 +55,20 @@ pub struct Permission {
     pub input: serde_json::Value,
 }
 
-/// What came of an act by the time it answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ActOutcome {
-    Delivered,
-    /// Recorded and held for its channel; its outcome is recorded later.
-    Prepared,
-    /// A resumed run started with it.
-    Started,
-    /// Queued behind the session's running resume.
-    Queued,
-    NotSent,
-    Cancelled,
+polylogue_model::stored_names! {
+    /// What came of an act by the time it answered.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ActOutcome {
+        Delivered => "delivered",
+        /// Recorded and held for its channel; its outcome is recorded later.
+        Prepared => "prepared",
+        /// A resumed run started with it.
+        Started => "started",
+        /// Queued behind the session's running resume.
+        Queued => "queued",
+        NotSent => "not_sent",
+        Cancelled => "cancelled",
+    }
 }
 
 /// One session a message went to.

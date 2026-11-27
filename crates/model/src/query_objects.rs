@@ -301,11 +301,25 @@ fn span_container(origin: &TextSpanOrigin) -> Result<&crate::Reference, TextFrag
     Ok(container)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RunOutcome {
-    Ok,
-    Error { kind: String },
+// The query filter uses the same state names as the tagged outcome.
+macro_rules! run_outcomes {
+    ($($variant:ident $({ $field:ident: $ty:ty })? => $state:literal),+ $(,)?) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+        #[serde(tag = "state", deny_unknown_fields)]
+        pub enum RunOutcome {
+            $(#[serde(rename = $state)] $variant $({ $field: $ty })?),+
+        }
+
+        impl RunOutcome {
+            /// The state names accepted by a `runs` outcome filter.
+            pub const STATES: &'static [&'static str] = &[$($state),+];
+        }
+    };
+}
+
+run_outcomes! {
+    Ok => "ok",
+    Error { kind: String } => "error",
 }
 
 /// One accepted execution. Authorship is computed at the daemon boundary.

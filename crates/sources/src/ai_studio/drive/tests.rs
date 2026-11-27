@@ -102,10 +102,14 @@ fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     let c = collector(&drive, dir.path());
     c.advance(&|_, _, _| Ok(false)).unwrap();
-    assert!(
-        c.advance(&|_, _, _| Err("archive rejected".into()))
-            .is_err()
-    );
+    let DriveError::Io(error) = c
+        .advance(&|_, _, _| Err("archive rejected".into()))
+        .unwrap_err()
+    else {
+        panic!("expected the archive error");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    assert_eq!(error.to_string(), "archive rejected");
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     assert_eq!(std::fs::read(&kept.body).unwrap(), original);
@@ -405,12 +409,33 @@ fn a_missing_folder_is_reported() {
 fn a_prompt_id_cannot_leave_the_spool_or_name_the_listing() {
     let dir = tempfile::tempdir().unwrap();
     let c = offline(dir.path());
-    for id in ["", "../escape", "a/b", "a\\b", ".", "..", "files"] {
-        assert!(c.prompt_path(id).is_err(), "{id:?}");
-        assert!(
-            c.keep_revision(id, Some(revision("r1")), b"x").is_err(),
-            "{id:?}"
+    for (id, valid) in [
+        ("", "a"),
+        ("../escape", "..-escape"),
+        ("a/b", "a-b"),
+        ("a\\b", "a-b"),
+        (".", ".a"),
+        ("..", "..a"),
+        ("files", "file"),
+    ] {
+        let kept = c.keep_revision(id, Some(revision("r1")), b"x");
+        let Err(keep_error) = kept else {
+            panic!("kept a revision for {id:?}");
+        };
+        for error in [c.prompt_path(id).unwrap_err(), keep_error] {
+            let DriveError::Io(error) = error else {
+                panic!("expected an invalid ID for {id:?}, got {error:?}");
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{id:?}");
+            assert_eq!(error.to_string(), "invalid Drive prompt ID", "{id:?}");
+        }
+        assert_eq!(
+            c.prompt_path(valid).unwrap(),
+            c.spool.join(format!("{valid}.json"))
         );
+        let pending = c.keep_revision(valid, Some(revision("r1")), b"x").unwrap();
+        assert_eq!(pending.file, valid);
+        assert_eq!(std::fs::read(pending.body).unwrap(), b"x");
     }
     assert!(!dir.path().join("escape.json").exists());
     assert!(!c.spool.join("files.json").exists());

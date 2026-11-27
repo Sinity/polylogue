@@ -329,7 +329,10 @@ fn designed_units_answer_not_built() {
 
 #[test]
 fn a_run_outcome_is_ok_or_error() {
-    assert!(compile("runs where outcome:Error", &opts(&[])).is_ok());
+    for state in ["OK", "Error"] {
+        assert!(compile(&format!("runs where outcome:{state}"), &opts(&[])).is_ok());
+    }
+    assert!(compile_err("runs where outcome:pending").contains("ok, error"));
     assert!(compile_err("runs where outcome:okay").contains("ok, error"));
 }
 

@@ -153,6 +153,7 @@ impl Operation for Status {
         } else if arguments.wait.is_some() {
             Policy {
                 bound: Bound::CallerOnly,
+                pin_scope: false,
                 lane: Lane::Interactive,
                 ..Policy::READ
             }

@@ -44,7 +44,7 @@ Item = MessageHeader{time, author, model?, annotations[], alternate?, id, inheri
 Footer = CitedAndLinked[], More(ReadyCall)?
 ```
 
-- A `Call` holds its result. Pairing happens once, in layout, by the stored call and result relation, never by serialization order; a result whose call is on another page is paired by reading the call's row by key.
+- A `Call` holds its result. Pairing happens once, in layout, by the stored call and result relation, never by serialization order; a result whose call is on another page is paired by reading the call's row by key. If a transcript range omits the call, the pair appears at the selected result, using the recorded call header. The input stays with the call's position.
 - Copied messages are resolved within the selected message's physical session before the prefix relation is expanded; unrelated session edges add no per-message graph walk. Copied members keep their original source coordinates, and prefixes fixed at a branch point keep its bounds.
 - Every item carries its source reference (message and block), so the pager can cut between items and start again there. Pages carry no other state. A message header's reference is its `message:` reference; the containing-message and block fields are set only on block items.
 - A `ReadyCall` stores one complete typed request: operation, arguments, request ID, deadline, token budget, cursor, freshness and format. Each `next`, `previous` or other action carries it once. Clients send it directly; the operation table derives CLI lines, MCP calls and HTTP links only where those forms are shown. Every reading ends with ready calls.
