@@ -1,7 +1,7 @@
 //! Containers are completely decoded and checked into private encoded files
 //! before the first archive write. Payload memory is bounded by stream buffers.
 use super::*;
-use std::io::{Read, Seek};
+use std::io::Read;
 
 pub(super) struct Member {
     pub path: PathBuf,
