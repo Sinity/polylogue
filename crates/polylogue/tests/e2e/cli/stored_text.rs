@@ -315,6 +315,83 @@ fn indexed_tool_result_pages_reconstruct_the_pair_once() {
 }
 
 #[test]
+fn a_selected_result_owns_the_pair_when_the_call_is_outside_the_reading() {
+    let input = json!({"command":"synthetic command","detail":"call input"});
+    let output = "error: synthetic result λ🙂";
+    with_source(
+        &[
+            source_record(
+                "a1",
+                "assistant",
+                json!([{"type":"tool_use","id":"c1","name":"Bash","input":input}]),
+            ),
+            source_record(
+                "u1",
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"c1","is_error":true,"content":output}]),
+            ),
+        ],
+        |fixture, _| {
+            for (show, full) in [
+                ("tools:line,harness:full", false),
+                ("tools:full,harness:full", true),
+            ] {
+                let whole = page(fixture, &["--show", show]);
+                let range = page(fixture, &["--show", show, "--last", "1"]);
+                let result = cli(
+                    fixture,
+                    &[
+                        "--deadline",
+                        "none",
+                        "--json",
+                        "message:claude-code:u1",
+                        "read",
+                        "--show",
+                        show,
+                        "--budget",
+                        "100000",
+                    ],
+                );
+                assert!(result.status.success(), "{result:?}");
+                let single = read_page(json(&result));
+                for (page, expected_source) in [
+                    (whole, "block:claude-code:a1#0"),
+                    (range, "block:claude-code:u1#0"),
+                    (single, "block:claude-code:u1#0"),
+                ] {
+                    let calls: Vec<_> = page
+                        .document
+                        .items
+                        .iter()
+                        .filter_map(|item| match &item.kind {
+                            ItemKind::Call { call } => Some((&item.source, call)),
+                            _ => None,
+                        })
+                        .collect();
+                    let [(source, call)] = calls.as_slice() else {
+                        panic!("expected one pair in {expected_source}: {page:?}");
+                    };
+                    assert_eq!(source.reference, expected_source);
+                    assert_eq!(call.call_id.as_deref(), Some("c1"));
+                    assert_eq!(call.tool.value().map(String::as_str), Some("Bash"));
+                    assert_eq!(call.outcome.value().map(String::as_str), Some("error"));
+                    assert_eq!(call.error_line.as_deref(), Some(output));
+                    assert_eq!(call.output.as_deref(), full.then_some(output));
+                    assert_eq!(
+                        call.input.as_ref(),
+                        (full && expected_source.ends_with("a1#0")).then_some(&input)
+                    );
+                    assert_eq!(
+                        call.result_source.as_ref().unwrap().reference,
+                        "block:claude-code:u1#0"
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
 fn collapsed_tool_pairs_keep_selected_input_target() {
     with_source(
         &[

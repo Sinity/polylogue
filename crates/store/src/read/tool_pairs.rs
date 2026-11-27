@@ -220,7 +220,7 @@ impl Reader<'_> {
         message: &MessageId,
         original_block_ordinal: u64,
     ) -> Result<Option<ToolPair>> {
-        self.message_tool_pair_detail(message, original_block_ordinal, true)
+        self.message_tool_pair_detail(message, original_block_ordinal, true, true)
     }
 
     /// A collapsed view restores the recorded block header only. Remote
@@ -230,7 +230,17 @@ impl Reader<'_> {
         message: &MessageId,
         original_block_ordinal: u64,
     ) -> Result<Option<ToolPair>> {
-        self.message_tool_pair_detail(message, original_block_ordinal, false)
+        self.message_tool_pair_detail(message, original_block_ordinal, false, false)
+    }
+
+    /// A selected result with its earlier call's header. The call's input
+    /// remains unread when the call is outside the selected transcript.
+    pub fn message_tool_pair_result(
+        &self,
+        message: &MessageId,
+        original_block_ordinal: u64,
+    ) -> Result<Option<ToolPair>> {
+        self.message_tool_pair_detail(message, original_block_ordinal, false, true)
     }
 
     /// The result's emitted shape, without restoring output or structured
@@ -305,13 +315,14 @@ impl Reader<'_> {
         &self,
         message: &MessageId,
         ordinal: u64,
-        full: bool,
+        full_call: bool,
+        full_result: bool,
     ) -> Result<Option<ToolPair>> {
         self.check()?;
         let Some(fact) = self.tool_pair_fact(message, ordinal)? else {
             return Ok(None);
         };
-        let call = self.tool_pair_block(&fact.call, full)?;
+        let call = self.tool_pair_block(&fact.call, full_call)?;
         let Block::ToolCall { call_id, .. } = &call.block else {
             return Err(crate::StoreError::stored(
                 0,
@@ -327,7 +338,7 @@ impl Reader<'_> {
         let result = fact
             .result
             .as_ref()
-            .map(|result| self.tool_pair_block(result, full))
+            .map(|result| self.tool_pair_block(result, full_result))
             .transpose()?;
         if let Some(result) = &result {
             let Block::ToolResult { call_id, .. } = &result.block else {
@@ -364,7 +375,7 @@ impl Reader<'_> {
                     ..
                 }),
             ) if *reason != Some(ErrorReason::ExitCode(0)) => {
-                let output = if full {
+                let output = if full_result {
                     output.clone()
                 } else {
                     match crate::ordered_blocks::one(self.conn()?, result_fact.pk.0)? {
