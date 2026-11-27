@@ -431,7 +431,12 @@ fn live_initial_queries_page_through_the_real_http_api() {
         polylogue_testkit::claude_user("second", "s2", "second synthetic prompt"),
     )
     .unwrap();
-    r.w.wait_for(|s| s["store"]["sessions"].as_u64().is_some_and(|n| n >= 2) && s["busy"] == false);
+    r.w.wait_for(|s| {
+        s["store"]["sessions_physical"]
+            .as_u64()
+            .is_some_and(|n| n >= 2)
+            && s["busy"] == false
+    });
     rt().block_on(async {
         let mut cursor = None;
         let mut ids = Vec::new();

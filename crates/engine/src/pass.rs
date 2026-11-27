@@ -199,7 +199,7 @@ impl Engine {
         plan: &Plan,
         failure: polylogue_model::ChainFailure,
     ) -> Result<(), EngineError> {
-        let mut step = polylogue_store::ParseStep::failed(plan.parse_pos..plan.parse_pos, failure);
+        let mut step = polylogue_store::ParsePart::failed(plan.parse_pos..plan.parse_pos, failure);
         step.reset = false;
         step.parse_version = plan.origin.parse_version();
         step.prepare();

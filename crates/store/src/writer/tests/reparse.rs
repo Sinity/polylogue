@@ -317,7 +317,7 @@ fn replacing_each_chain_equals_a_fresh_build_and_plan_order_does_not_matter() {
     let reparsed = test_archive();
     write(&reparsed, fixture(false));
     for mut b in fixture(true) {
-        let mut reading = ChainParse::new().unwrap();
+        let mut reading = Replacement::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         reparsed
             .writer
@@ -369,9 +369,9 @@ fn retracting_the_winner_restores_complete_structured_payloads() {
             ),
         ],
     );
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading
-        .push(&mut ParseStep::new(
+        .push(&mut ParsePart::new(
             Output::default(),
             RecordCounts::default(),
             0..100,
@@ -487,7 +487,7 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     write(&w, fixture(false));
     let before = natural_rows(&w);
     let mut b = fixture(true).remove(0);
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     let mut later = b.parse[0].clone();
     reading.push(&mut b.parse[0]).unwrap();
     later.output.events.push(Event {
@@ -534,7 +534,7 @@ fn a_chain_reading_preserves_deep_structured_values() {
         data: nested,
     }];
     let mut b = batch("a", Route::Live, 0, vec![row(1, message.clone())], &["s"]);
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut b.parse[0]).unwrap();
     w.writer
         .replace_chain(b.input, 1, b.length, reading)
@@ -648,8 +648,8 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
         .unwrap()
         .query("SELECT pk FROM session WHERE id='claude-code:s'", &[])
         .unwrap();
-    let mut reading = ChainParse::new().unwrap();
-    let mut prefix = ParseStep::new(Output::default(), RecordCounts::default(), 0..0, false);
+    let mut reading = Replacement::new().unwrap();
+    let mut prefix = ParsePart::new(Output::default(), RecordCounts::default(), 0..0, false);
     prefix.parse_version = original.parse[0].parse_version.clone();
     reading.push(&mut prefix).unwrap();
     let mut replacement = original;
@@ -701,9 +701,9 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
     write(&w, [winner.clone()]);
     let moved = changed();
     assert!(moved > before);
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading
-        .push(&mut ParseStep::new(
+        .push(&mut ParsePart::new(
             Output::default(),
             RecordCounts::default(),
             0..100,
@@ -883,7 +883,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     );
     assert!(changed() > before);
     messages.parse[0].output.messages[0].offset = 50;
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut messages.parse[0]).unwrap();
     let before = changed();
     w.writer
@@ -898,9 +898,9 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
         ])
     );
     assert!(changed() > before);
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading
-        .push(&mut ParseStep::new(
+        .push(&mut ParsePart::new(
             Output::default(),
             RecordCounts::default(),
             0..100,
@@ -979,7 +979,10 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         status.search_pending,
         count("SELECT count(*) AS n FROM search_pending")
     );
-    assert_eq!(status.sessions, count("SELECT count(*) AS n FROM session"));
+    assert_eq!(
+        status.sessions_physical,
+        count("SELECT count(*) AS n FROM session WHERE stub = 0")
+    );
     assert_eq!(status.messages, count("SELECT count(*) AS n FROM message"));
     assert_eq!(
         status.documents,
@@ -1034,7 +1037,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     assert_totals_equal_a_recount(&w);
     // Re-parses retract each chain's rows and counts and write the new reading's.
     for mut b in fixture(true) {
-        let mut reading = ChainParse::new().unwrap();
+        let mut reading = Replacement::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
             .replace_chain(b.input, 1, b.length, reading)
@@ -1082,7 +1085,7 @@ fn no_unreferenced_versions_after_each_operation() {
         assert_eq!(unreferenced(&w), none);
     }
     for mut b in fixture(true) {
-        let mut reading = ChainParse::new().unwrap();
+        let mut reading = Replacement::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
             .replace_chain(b.input, 1, b.length, reading)

@@ -131,7 +131,7 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
             200
         );
     }
-    w.wait_for(|status| status["store"]["sessions"] == 3);
+    w.wait_for(|status| status["store"]["sessions_physical"] == 3);
     let refused = save_note(&host, selection().to_string().as_bytes());
     assert_eq!(refused.status, 409, "{}", refused.json());
     let data = notes(&host);

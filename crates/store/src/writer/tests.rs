@@ -35,7 +35,7 @@ mod written_text;
 fn write_test_rows(
     tx: &Transaction<'_>,
     batch: &Batch,
-    step: &ParseStep,
+    step: &ParsePart,
     chain: i64,
     counter: i64,
 ) -> Result<u64> {
@@ -241,7 +241,7 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
         blobs: vec![],
         length: start + 100,
         parse: vec![{
-            let mut step = ParseStep::new(
+            let mut step = ParsePart::new(
                 Output {
                     sessions: sessions
                         .iter()

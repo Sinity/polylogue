@@ -1030,6 +1030,16 @@ pub fn hidden(s: &str) -> String {
     )
 }
 
+/// The IDs of the hidden sessions, read from their annotations: the few
+/// sessions [`hidden`] holds for, without visiting every session.
+pub fn hidden_session_ids() -> String {
+    format!(
+        "SELECT substr(ht.ref, 9) FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
+         WHERE hn.kind = 'hidden' AND ht.ref LIKE 'session:%' AND {}",
+        current_annotation("hn")
+    )
+}
+
 /// The session and every session below it through structural links.
 pub fn descendants(s: &str) -> String {
     format!(

@@ -116,7 +116,7 @@ fn a_stale_step_is_refused_for_its_own_cause_not_the_bytes() {
     use polylogue_model::{Cause, Caused as _};
     let w = test_archive();
     let step = |range: std::ops::Range<u64>| {
-        let mut step = ParseStep::new(Output::default(), counts(0), range, false);
+        let mut step = ParsePart::new(Output::default(), counts(0), range, false);
         step.parse_version = "synthetic=1".into();
         step
     };

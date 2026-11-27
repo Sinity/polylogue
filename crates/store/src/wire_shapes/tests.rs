@@ -41,7 +41,7 @@ fn step(
     range: std::ops::Range<u64>,
     at_end: bool,
     shapes: Vec<WireShape>,
-) -> ParseStep {
+) -> ParsePart {
     let mut counts = RecordCounts {
         records: 1,
         used: BTreeMap::from([("message".into(), 1)]),
@@ -57,14 +57,14 @@ fn step(
             shape,
         );
     }
-    let mut step = ParseStep::new(Output::default(), counts, range, at_end);
+    let mut step = ParsePart::new(Output::default(), counts, range, at_end);
     step.parse_version = version.into();
     step
 }
 fn root() -> WireShape {
     shape("", "object", &["object"])
 }
-fn store(conn: &mut Connection, source: Source<'_>, step: &ParseStep) {
+fn store(conn: &mut Connection, source: Source<'_>, step: &ParsePart) {
     let tx = conn.transaction().unwrap();
     apply(&tx, source, step).unwrap();
     tx.commit().unwrap();
@@ -812,7 +812,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
     let before = report();
     let original_occurrence = at(&before, "").first.clone();
     let replacement = |tail_start, at_end| {
-        let mut reading = crate::writer::ChainParse::new().unwrap();
+        let mut reading = crate::writer::Replacement::new().unwrap();
         let mut first = step(
             "v1",
             0..2,

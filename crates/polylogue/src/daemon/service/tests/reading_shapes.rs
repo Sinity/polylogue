@@ -146,7 +146,9 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
     ]
     .concat();
     std::fs::write(dir.join("micro.jsonl"), micro).unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 8 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 8 && status["store"]["search_pending"] == 0
+    });
 }
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
@@ -685,7 +687,9 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
     ]
     .concat();
     std::fs::write(d.home.join(".claude/projects/-p/meter.jsonl"), session).unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 2 && status["store"]["search_pending"] == 0
+    });
     let page = read(
         &d,
         "session:claude-code:meter",

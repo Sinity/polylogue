@@ -94,7 +94,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                     .all(|result| matches!(result, Err(StoreError::Stopped))),
                 _ => {
                     let mut b = b;
-                    let mut reading = ChainParse::new().unwrap();
+                    let mut reading = Replacement::new().unwrap();
                     reading.push(&mut b.parse[0]).unwrap();
                     matches!(
                         sender.replace_chain(b.input, 1, b.length, reading),
@@ -191,7 +191,7 @@ fn stopping_still_commits_an_explicit_parse_failure() {
             &SOURCE_RECORD,
         )
         .unwrap();
-    let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
+    let mut step = ParsePart::new(Default::default(), Default::default(), 0..0, false);
     step.reset = false;
     step.parse_version = "synthetic=1".into();
     step.failure = Some(polylogue_model::ChainFailure::refused(
@@ -238,7 +238,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
                 &SOURCE_RECORD,
             )
             .unwrap();
-        let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        let mut step = ParsePart::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
         step.parse_version = "synthetic=1".into();
         step.failure = Some(polylogue_model::ChainFailure::refused(
