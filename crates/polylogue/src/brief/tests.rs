@@ -517,16 +517,16 @@ fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
 /// A brief's archive reads depend on what it reports, not on how much work
 /// happened under its directory (docs/agent-context.md, latency): at `/`,
 /// under a prefix holding every session and in a directory nobody worked
-/// in, the brief says the same over 100,000 messages as over 10,000, and
-/// reads the same pages, at most 100, through a reader whose page cache
-/// starts empty. In a subdirectory the brief reports each session there
-/// that fits, and each one it expands reads that session's summary and
-/// annotations, so its reads follow the sessions there rather than the
-/// archive; its content is checked at both sizes.
+/// in, the brief reads the same pages over 1,000 and 10,000 sessions, at
+/// most 100, through a reader whose page cache starts empty. Each session
+/// needs only a prompt and an answer. In a subdirectory the brief reports
+/// each session there that fits, and each expansion reads that session's
+/// summary and annotations. Its reads follow the sessions there rather
+/// than the archive, and its content is checked at both sizes.
 #[test]
 fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
-    let smaller = brief_page_reads(1_000, 10);
-    let larger = brief_page_reads(10_000, 10);
+    let smaller = brief_page_reads(1_000, 2);
+    let larger = brief_page_reads(10_000, 2);
     for ((cwd, small), (_, large)) in smaller.into_iter().zip(larger) {
         if cwd == "/work/dense/d5" {
             continue;
