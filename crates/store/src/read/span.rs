@@ -20,7 +20,7 @@ use std::ops::ControlFlow;
 /// The version identifies the original value; selected bytes cannot verify it.
 pub struct SpanSource<'reader, 'pool> {
     reader: &'reader Reader<'pool>,
-    container: Reference,
+    origin: TextSpanOrigin,
     version: TextSourceVersion,
     coverage: TextCoverage,
     committed: Option<u64>,
@@ -28,7 +28,15 @@ pub struct SpanSource<'reader, 'pool> {
 }
 impl SpanSource<'_, '_> {
     pub fn container(&self) -> &Reference {
-        &self.container
+        let Reference::Span { container, .. } = &self.origin.reference else {
+            unreachable!("a selected span has a span reference")
+        };
+        container
+    }
+    /// The original coordinates of the selected source. Tool-output aliases
+    /// are bound to their result block here before source evidence is stored.
+    pub fn origin(&self) -> &TextSpanOrigin {
+        &self.origin
     }
     pub fn version(&self) -> &TextSourceVersion {
         &self.version
@@ -58,7 +66,7 @@ impl SpanSource<'_, '_> {
         let mut cancelled = false;
         let mut selected = 0u64;
         self.reader.source_text_while(
-            &self.container,
+            self.container(),
             false,
             Some(&self.seek.start),
             &mut |piece, text| {
@@ -71,12 +79,14 @@ impl SpanSource<'_, '_> {
                 } else {
                     text.len() as u64
                 };
-                let start = usize::try_from(start).map_err(|_| stale(&self.container))?;
-                let end = usize::try_from(end).map_err(|_| stale(&self.container))?;
-                let text = text.get(start..end).ok_or_else(|| stale(&self.container))?;
+                let start = usize::try_from(start).map_err(|_| stale(self.container()))?;
+                let end = usize::try_from(end).map_err(|_| stale(self.container()))?;
+                let text = text
+                    .get(start..end)
+                    .ok_or_else(|| stale(self.container()))?;
                 selected = selected
                     .checked_add(text.len() as u64)
-                    .ok_or_else(|| stale(&self.container))?;
+                    .ok_or_else(|| stale(self.container()))?;
                 if !text.is_empty() && visit(text)?.is_break() {
                     cancelled = true;
                     return Ok(ControlFlow::Break(()));
@@ -93,7 +103,7 @@ impl SpanSource<'_, '_> {
             return Ok(ControlFlow::Break(()));
         }
         if !ended || selected != self.coverage.end - self.coverage.start {
-            return Err(stale(&self.container));
+            return Err(stale(self.container()));
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -114,6 +124,16 @@ impl<'pool> Reader<'pool> {
         } = span
         else {
             return Err(StoreError::internal("a span source needs a Span reference"));
+        };
+        let result;
+        let container = if let Reference::ToolCall(session, call) = container.as_ref() {
+            let Some(block) = super::tool_result_reference(self.conn()?, session, call)? else {
+                return Ok(None);
+            };
+            result = block;
+            &result
+        } else {
+            container.as_ref()
         };
         let Some((version, committed)) = self.span_identity(container)? else {
             return Ok(None);
@@ -170,7 +190,16 @@ impl<'pool> Reader<'pool> {
         };
         Ok(Some(SpanSource {
             reader: self,
-            container: container.as_ref().clone(),
+            origin: TextSpanOrigin {
+                reference: Reference::Span {
+                    container: Box::new(container.clone()),
+                    unit: *unit,
+                    start: *start,
+                    end: *end,
+                },
+                start: range.start,
+                end: range.end,
+            },
             version,
             coverage: TextCoverage {
                 start: range.start,
@@ -224,7 +253,7 @@ impl<'pool> Reader<'pool> {
         }
         Ok(SpanSource {
             reader: self,
-            container: container.as_ref().clone(),
+            origin: origin.clone(),
             version: version.clone(),
             coverage,
             committed,

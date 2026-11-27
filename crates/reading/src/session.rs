@@ -105,7 +105,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
             if let Reference::Span { container, .. } = &reference
                 && !matches!(
                     container.as_ref(),
-                    Reference::Message(_) | Reference::Block { .. }
+                    Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..)
                 )
             {
                 return Ok(None);

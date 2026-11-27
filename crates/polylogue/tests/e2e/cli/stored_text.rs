@@ -589,3 +589,132 @@ fn span_read_marks_item() {
         },
     );
 }
+
+#[test]
+fn tool_output_span_reads_and_traces_the_result_message() {
+    use polylogue_model::{
+        Reference,
+        read::{Card, ChainStep},
+    };
+
+    with_source(
+        &[
+            source_record(
+                "a1",
+                "assistant",
+                json!([{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"synthetic input"}}]),
+            ),
+            source_record(
+                "u1",
+                "user",
+                json!([
+                    {"type":"text","text":"separate body"},
+                    {"type":"tool_result","tool_use_id":"c1","content":"a💡z"}
+                ]),
+            ),
+        ],
+        |fixture, _| {
+            let target = "span:tool:claude-code:stored#c1#u16=1-3";
+            let output = cli(
+                fixture,
+                &[
+                    "--deadline",
+                    "none",
+                    "--json",
+                    target,
+                    "read",
+                    "--show",
+                    "tools:full,harness:full",
+                    "--budget",
+                    "100000",
+                ],
+            );
+            assert!(output.status.success(), "{output:?}");
+            let read = read_page(json(&output));
+            let headers: Vec<_> = read
+                .document
+                .items
+                .iter()
+                .filter(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+                .map(|item| item.source.reference.as_str())
+                .collect();
+            assert_eq!(headers, ["message:claude-code:u1"]);
+            let marks: Vec<_> = read
+                .document
+                .items
+                .iter()
+                .filter(|item| {
+                    matches!(
+                        item.kind,
+                        ItemKind::Indicator {
+                            indicator: IndicatorKind::Selected,
+                            ..
+                        }
+                    )
+                })
+                .collect();
+            let [mark] = marks.as_slice() else {
+                panic!("expected one selection mark: {read:?}");
+            };
+            assert_eq!(mark.source.reference, target);
+            assert_eq!(mark.source.block, Some(1));
+            assert_eq!(
+                mark.source.message.as_ref().unwrap().to_string(),
+                "claude-code:u1"
+            );
+            let calls: Vec<_> = read
+                .document
+                .items
+                .iter()
+                .filter_map(|item| match &item.kind {
+                    ItemKind::Call { call } => Some(call),
+                    _ => None,
+                })
+                .collect();
+            let [call] = calls.as_slice() else {
+                panic!("expected the call's result once: {read:?}");
+            };
+            assert_eq!(call.output.as_deref(), Some("a💡z"));
+            assert!(call.input.is_none());
+
+            let output = cli(
+                fixture,
+                &[
+                    "--deadline",
+                    "none",
+                    "--json",
+                    target,
+                    "read",
+                    "--view",
+                    "trace",
+                    "--budget",
+                    "100000",
+                ],
+            );
+            assert!(output.status.success(), "{output:?}");
+            let traced = read_page(json(&output));
+            let trace = traced
+                .document
+                .items
+                .iter()
+                .find_map(|item| match &item.kind {
+                    ItemKind::Card { card } => match card.as_ref() {
+                        Card::Trace(trace) => Some(trace),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("result record trace");
+            assert_eq!(trace.item, Reference::parse(target).unwrap());
+            let records: Vec<_> = trace
+                .chain
+                .iter()
+                .filter_map(|step| match step {
+                    ChainStep::Record { reference } => Some(reference.to_string()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(records, [target, "message:claude-code:u1"]);
+        },
+    );
+}

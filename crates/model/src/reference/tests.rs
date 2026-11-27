@@ -58,6 +58,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "span:message:codex:message#b=0-4",
         "span:document:claude-ai:document#u16=1-5",
         "span:block:codex:message#2#c=0-3",
+        "span:tool:codex:session#call#u16=1-3",
         "span:annotation:root@revision#u16=0-5",
         "span:alternate:root@revision#3#b=0-4",
     ] {
@@ -71,7 +72,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
 }
 #[test]
 fn malformed_references_are_typed_errors() {
-    const SPAN_CONTAINER: &str = "span container must be a message, document, block, exact annotation or exact alternate part";
+    const SPAN_CONTAINER: &str = "span container must be a message, document, block, tool call, exact annotation or exact alternate part";
     let invalid = |text: &str, why| ReferenceError::Invalid(text.into(), why);
     let incomplete = |text: &str| ReferenceError::Incomplete(text.into());
     for (text, expected) in [

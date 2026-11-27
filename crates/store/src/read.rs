@@ -46,6 +46,7 @@ mod tool_outcomes;
 mod tool_pairs;
 pub use behind_index::{BehindChain, ChainCensus, RevisionChains, StoredSource};
 pub use captured::{CapturedSession, StoredFile};
+pub(crate) use tool_pairs::tool_result_reference;
 mod order;
 mod record_seek;
 pub use record_seek::PhysicalRecordCounts;
