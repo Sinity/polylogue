@@ -28,22 +28,17 @@ fn the_journal_line_names_the_priority_and_the_daemon() {
 fn the_recent_records_keep_the_last_two_hundred_in_order() {
     let mut recent = Recent::default();
     for n in 0..KEPT + 25 {
-        let priority = if n % 2 == 0 {
-            Priority::Info
-        } else {
-            Priority::Warning
-        };
-        recent.push(record(n, priority));
+        recent.push(record(n, Priority::Info));
     }
     let kept = recent.last(usize::MAX);
     assert_eq!(kept.len(), KEPT);
-    assert_eq!(kept.first(), Some(&record(25, Priority::Warning)));
+    assert_eq!(kept.first(), Some(&record(25, Priority::Info)));
     assert_eq!(kept.last(), Some(&record(KEPT + 24, Priority::Info)));
     assert_eq!(
         recent.last(3),
         [
             record(KEPT + 22, Priority::Info),
-            record(KEPT + 23, Priority::Warning),
+            record(KEPT + 23, Priority::Info),
             record(KEPT + 24, Priority::Info),
         ]
     );
@@ -63,4 +58,22 @@ fn a_logged_message_is_kept_with_its_priority() {
             (Priority::Error, "synthetic failure")
         ]
     );
+}
+
+#[test]
+fn information_records_do_not_displace_warnings_or_errors() {
+    let mut recent = Recent::default();
+    recent.push(record(0, Priority::Warning));
+    recent.push(record(1, Priority::Error));
+    for n in 2..302 {
+        recent.push(record(n, Priority::Info));
+    }
+    let kept = recent.last(KEPT);
+    assert_eq!(kept.len(), KEPT);
+    assert_eq!(
+        &kept[..2],
+        &[record(0, Priority::Warning), record(1, Priority::Error)]
+    );
+    assert_eq!(kept[2], record(104, Priority::Info));
+    assert_eq!(kept[199], record(301, Priority::Info));
 }

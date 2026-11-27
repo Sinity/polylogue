@@ -410,7 +410,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     let (_dir, mut fixture) = derived_fixture();
     let first = fixture_query(&fixture, "sessions | sort by id", None, 1).unwrap();
     let page_cursor = first["next"].as_str().unwrap();
-    let change_cursor = first["read_at"]["cursor"].as_str().unwrap();
+    let change_cursor = first["read_position"]["cursor"].as_str().unwrap();
     assert!(fixture.derive().unwrap() > 0);
     assert_eq!(
         fixture_query(&fixture, "sessions | sort by id", Some(page_cursor), 1).unwrap()["rows"][0]
@@ -434,7 +434,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     );
     let current = fixture_query(&fixture, "sessions | sort by id", None, 100).unwrap();
     assert_eq!(current["rows"][0]["title"], "derived a");
-    let finished = changes["read_at"].clone();
+    let finished = changes["read_position"].clone();
     assert_eq!(fixture.derive().unwrap(), 0);
     let after = fixture_query(
         &fixture,
@@ -444,7 +444,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     )
     .unwrap();
     assert_eq!(after["count"], 0);
-    assert_eq!(after["read_at"], finished);
+    assert_eq!(after["read_position"], finished);
 }
 
 #[test]
@@ -464,7 +464,7 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         &fixture,
         &format!(
             "feed where after:{}",
-            first["read_at"]["cursor"].as_str().unwrap()
+            first["read_position"]["cursor"].as_str().unwrap()
         ),
         None,
         100,
@@ -475,12 +475,13 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
         "index availability did not edit session records"
     );
     assert!(
-        changes["read_at"]["index"].as_i64().unwrap() > first["read_at"]["index"].as_i64().unwrap()
+        changes["read_position"]["index"].as_i64().unwrap()
+            > first["read_position"]["index"].as_i64().unwrap()
     );
     assert_eq!(fixture.commit_search().unwrap(), 0);
     assert_eq!(
-        fixture_query(&fixture, "sessions", None, 100).unwrap()["read_at"],
-        changes["read_at"]
+        fixture_query(&fixture, "sessions", None, 100).unwrap()["read_position"],
+        changes["read_position"]
     );
 }
 

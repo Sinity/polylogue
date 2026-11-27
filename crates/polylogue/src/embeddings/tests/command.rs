@@ -86,7 +86,7 @@ fn embed_mixed_queries_keep_each_winning_rows_scope_and_kept_results_stay_exact(
     else {
         panic!("kept selection");
     };
-    let kept = saved.kept.result.as_str();
+    let kept = saved.saved_rows.result.as_str();
     daemon.restart();
     for (query, expected) in [
         (logical, 2),

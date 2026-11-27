@@ -74,18 +74,15 @@ impl Operation for StartSession {
         {
             return Ok(web_chat::start(call, provider, a)?.map(StartReply::WebChat));
         }
-        let pending = [
-            (a.submit, "--submit"),
-            (a.model.is_some(), "--model"),
-            (a.effort.is_some(), "--effort"),
-            (a.project.is_some(), "--project"),
-            (!a.attach.is_empty(), "--attach"),
+        let unbuilt = [
+            (a.submit, "--submit in a harness session"),
+            (a.model.is_some(), "--model in a harness session"),
+            (a.effort.is_some(), "--effort in a harness session"),
+            (a.project.is_some(), "--project in a harness session"),
+            (!a.attach.is_empty(), "--attach in a harness session"),
         ];
-        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("start {option} on a harness session is not built yet"),
-            ));
+        if let Some((_, use_)) = unbuilt.into_iter().find(|(used, _)| *used) {
+            return Err(crate::unbuilt::refusal("start", use_).into());
         }
         if a.harness.is_none() && a.role.is_none() {
             return Err(Reason::StartNeedsHarnessOrRole {}.into());
@@ -124,7 +121,7 @@ pub(super) fn author(
     ) {
         Ok(writes
             .archive()
-            .accept_delivery(request, None)?
+            .accept_delivery(request)?
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)??
             .outcome
@@ -145,20 +142,20 @@ fn outcome_event(
     d: &Daemon,
     invocation: &Invocation,
     delivery: &str,
-    what: DeliveryOutcome,
+    outcome: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
     let request = invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
-            what,
+            outcome,
             detail: Some(detail),
         },
     );
     writer(d)?
         .archive()
-        .accept_delivery(request, None)
+        .accept_delivery(request)
         .map(|_| ())
         .map_err(Failure::from)
 }
@@ -506,6 +503,7 @@ pub(crate) fn send(
                 text: pack.clone(),
                 refs: vec![format!("annotation:{message}")],
                 left_out: Vec::new(),
+                prepared_position: None,
             }),
         )?;
         let chosen = channel(
@@ -805,6 +803,7 @@ pub(crate) fn answer(
             text: body.to_string(),
             refs: vec![reference.clone()],
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     if let Some((first, _)) = earlier {
@@ -944,6 +943,7 @@ pub(crate) fn interrupt(
             text: json!({"interrupt": true}).to_string(),
             refs: Vec::new(),
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     let (what, detail, answer) = match channel(
@@ -1215,6 +1215,7 @@ fn start_session(
             text: first,
             refs: new.refs,
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     outcome_event(

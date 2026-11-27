@@ -68,24 +68,26 @@ fn empty_live_inputs_keep_observations_and_later_appends_without_empty_extents()
         w.count("SELECT count(*) AS n FROM a.extent WHERE length=0"),
         0
     );
+    // Emptied, the file holds no byte that differs from its chain: the
+    // chain seen back holding nothing (docs/archive.md, observations).
     fs::write(w.file("empty.jsonl"), "").unwrap();
     assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.observation WHERE class='rewritten' AND length=0"),
+        w.count("SELECT count(*) AS n FROM a.observation WHERE class='back' AND revision IS NULL AND chain=1 AND length=0"),
         1
     );
-    assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.revision WHERE chain=3 AND length=0"),
-        1
-    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
     drop(e);
     drop(lock);
     let (mut e, _lock) = w.engine(64 << 20);
     assert_eq!(e.run_pass().unwrap().inputs_changed, 0);
     let later = user("u2", "empty", "message after truncation");
     w.append("empty.jsonl", &later);
+    // The bytes written after it differ from the chain's: a new chain.
     assert!(e.run_pass().unwrap().errors.is_empty());
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 4);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 3);
+    let rewritten = w.count("SELECT max(chain) AS n FROM a.revision");
+    assert_ne!(rewritten, 1);
     assert_eq!(
         w.count("SELECT count(*) AS n FROM a.extent WHERE length=0"),
         0
@@ -106,7 +108,7 @@ fn empty_live_inputs_keep_observations_and_later_appends_without_empty_extents()
     );
     assert_eq!(
         reader
-            .stored_chain(&input.input_id, 3, later.len() as u64)
+            .stored_chain(&input.input_id, rewritten, later.len() as u64)
             .unwrap()
             .read_range(&store, 0, later.len() as u64)
             .unwrap(),

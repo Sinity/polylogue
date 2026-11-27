@@ -24,7 +24,7 @@ pub(crate) fn query_outcome(
         notes,
         ..
     } = answer;
-    value.read_at_mut().freshness = Some(freshness.clone());
+    value.read_position_mut().freshness = Some(freshness.clone());
     let mut notes = notes;
     notes.extend(freshness.notes().into_iter().map(str::to_owned));
     let degraded = !freshness.up_to_date() || outcome == crate::daemon::query::Outcome::Incomplete;
@@ -163,7 +163,7 @@ pub(crate) fn context(
         .map_or_else(Vec::new, |writes| writes.archive().pending_deliveries());
     let pending_refs: Vec<_> = pending_deliveries
         .iter()
-        .filter_map(|pending| match (&pending.request.write, ask.recipient()) {
+        .filter_map(|pending| match (&pending.write, ask.recipient()) {
             (
                 UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery),
                 Some(recipient),
@@ -210,7 +210,7 @@ pub(crate) fn context(
             &reader,
             provider.as_ref().ok().and_then(Option::as_ref),
         );
-        let prepared_at = reader
+        let prepared_position = reader
             .change_position()
             .map_err(|e| Box::new(store_error(&e)))?
             .archive;
@@ -240,7 +240,7 @@ pub(crate) fn context(
             }
             _ => Box::new(store_error(&e)),
         })?;
-        Ok((prepared, prepared_at))
+        Ok((prepared, prepared_position))
     };
     let prepared = match &brief_limit {
         Some(limit) => limit.scope(prepare),
@@ -251,7 +251,7 @@ pub(crate) fn context(
     // selection changed under it, answers with nothing on every surface. A
     // store failure is reported, never read as an empty advisory.
     let silent = advisory_silence;
-    let (prepared, prepared_at) = match prepared {
+    let (prepared, prepared_position) = match prepared {
         Ok(prepared) => prepared,
         Err(answer)
             if is_advisory
@@ -303,6 +303,7 @@ pub(crate) fn context(
             text: prepared.text.clone(),
             refs: prepared.refs.clone(),
             left_out: prepared.left_out.clone(),
+            prepared_position: Some(prepared_position),
         });
         let writes = match writer(d) {
             Ok(writes) => writes,
@@ -324,7 +325,7 @@ pub(crate) fn context(
                 .expect("advisory cooldown held")
                 .insert(session.to_string(), operation.clock.now.as_millisecond());
         }
-        if let Err(error) = writes.archive().accept_delivery(request, Some(prepared_at)) {
+        if let Err(error) = writes.archive().accept_delivery(request) {
             if let Some(recent) = &mut cooldown {
                 recent.remove(&ask.recipient().expect("advisory recipient").to_string());
             }
@@ -352,13 +353,12 @@ pub(crate) fn delivery_event(
     };
     if let UserWrite::DeliveryEvent {
         delivery,
-        what: polylogue_model::DeliveryOutcome::NotSent,
+        outcome: polylogue_model::DeliveryOutcome::NotSent,
         detail,
     } = &write
         && detail.as_deref() == Some("timeout")
     {
-        let pending = writes.archive().pending_deliveries().iter().any(|pending| {
-            let request = &pending.request;
+        let pending = writes.archive().pending_deliveries().iter().any(|request| {
             request.id == *delivery && matches!(request.write, UserWrite::Deliver(_))
         });
         if !pending {
@@ -375,7 +375,7 @@ pub(crate) fn delivery_event(
     }
     match writes
         .archive()
-        .accept_delivery(invocation.request(request_id.clone(), write), None)
+        .accept_delivery(invocation.request(request_id.clone(), write))
     {
         Ok(_) => crate::protocol::written(
             serde_json::json!({ "id": request_id, "queued": true }),
@@ -612,9 +612,9 @@ pub(crate) fn query_targets_in(
                 .extend(operation.cursor_versions());
             let run = QueryRun {
                 id: polylogue_reading::operation::new_run_id(),
-                question: Some(selection.question_id()),
+                query_id: Some(selection.question_id()),
                 at: operation.ran_at,
-                read_at: reader.change_position()?,
+                read_position: reader.change_position()?,
                 machine: operation.machine.clone(),
                 authorship: operation.authorship.clone(),
                 binding: RunBinding::Original {

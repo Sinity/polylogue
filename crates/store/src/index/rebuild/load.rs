@@ -117,9 +117,11 @@ impl Rebuild {
         self.stage(RebuildStage::LoadingParses);
         let table = Table::new(
             "parse_text".into(),
-            ["input_pk", "chain", "document", "item", "idx", "text_id"]
-                .map(String::from)
-                .to_vec(),
+            [
+                "input_pk", "chain", "document", "item", "position", "text_id",
+            ]
+            .map(String::from)
+            .to_vec(),
             "",
         );
         let mut input = None;
@@ -169,9 +171,9 @@ impl Rebuild {
                     // Installing an export's assets before the load may
                     // have named an input already.
                     t.prepare_cached(
-                        "INSERT INTO input_ref(id,format,route) VALUES (?1,?2,?3)
-                         ON CONFLICT(id) DO UPDATE SET format=excluded.format,route=excluded.route
-                         WHERE format IS NOT excluded.format OR route IS NOT excluded.route",
+                        "INSERT INTO input_ref(id,origin,route) VALUES (?1,?2,?3)
+                         ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,route=excluded.route
+                         WHERE origin IS NOT excluded.origin OR route IS NOT excluded.route",
                     )?
                     .execute(params![key_input(rest)?, row[0], row[1]])?;
                 }

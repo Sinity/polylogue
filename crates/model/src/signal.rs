@@ -78,7 +78,8 @@ pub struct EventRecord {
     /// Original order within this delivery, retained through historical restore.
     pub position: u64,
     pub request: String,
-    pub ordinal: u64,
+    /// Order within the request that wrote it.
+    pub request_position: u64,
     pub at: Timestamp,
     pub event: Event,
 }

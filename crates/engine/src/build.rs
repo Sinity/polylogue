@@ -16,7 +16,7 @@ use crossbeam_channel::{Receiver, Select, Sender, TryRecvError, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::index::rebuild::{Rebuild, RebuildStage, RebuildWorker, StageRecord};
-use polylogue_store::writer::ChainSink as _;
+use polylogue_store::parse::ParseSink as _;
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -234,7 +234,7 @@ impl Prepare {
                     if !complete {
                         return Err(EngineError::Stopped);
                     }
-                    open.finish()?;
+                    Box::new(open).end()?;
                     Ok(())
                 });
             drop(admitted);

@@ -50,7 +50,7 @@ describe("the popup", () => {
     const stopped = await open(() => state({ status: { host: "ok", daemon: "stopped" } }));
     expect(stopped.text("polylogue-state")).toBe("The daemon did not answer");
     const missing = await open(() => state({ status: { host: "missing", daemon: "unknown" } }));
-    expect(missing.text("polylogue-detail")).toBe("Run: polylogue install chrome --extension-id x");
+    expect(missing.text("polylogue-detail")).toBe("Run: polylogue install chrome");
   });
 
   it("lists five problems and counts the rest", async () => {
@@ -87,4 +87,13 @@ describe("the popup", () => {
     expect(text("page-detail")).toBe("Extension context invalidated.");
     expect(window.document.getElementById("capture").disabled).toBe(false);
   });
+});
+
+it("shows the daemon's reader refusal sentence", async () => {
+  const message = "the reader is not running; start it with `polylogue web`";
+  const { window, text } = await open((request) => request.type === "polylogue.reader"
+    ? { error: "reader_unavailable", message } : state());
+  window.document.getElementById("reader").click();
+  await until(() => text("page-detail") === message, "the reader refusal");
+  expect(text("page-detail")).toBe(message);
 });

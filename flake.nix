@@ -50,6 +50,7 @@
       checks.${system} = build.checks // {
         modules = import ./nix/checks/modules.nix {
           inherit pkgs nixpkgs;
+          inherit (build.packages) polylogue-extension;
           homeManager = home-manager;
           inherit (self) homeModules nixosModules;
         };
@@ -66,6 +67,13 @@
       nixosModules.polylogue = import ./nix/module.nix {
         packageFor = target: self.packages.${target};
       };
+      lib.browserHostManifest =
+        pkgs:
+        (import ./nix/lib/deployment.nix {
+          inherit pkgs;
+          inherit (pkgs) lib;
+          packageFor = target: self.packages.${target};
+        }).browserHostManifest;
       formatter.${system} = pkgs.nixfmt-tree;
       apps.${system} = {
         polylogue = {

@@ -50,12 +50,12 @@ pub(crate) mod readings;
 pub(crate) mod rows;
 mod search;
 pub(crate) mod shown;
-pub use chain::{ChainParse, ChainSink};
+pub use chain::Replacement;
 
 use crate::archive::writer::captured::stored_reading_chain;
 use crate::encoding::{PreparedDocument, PreparedMessage, block_text, unpack_block};
 pub use batch::{
-    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParsePart,
     WriteReport,
 };
 use search::*;
@@ -75,7 +75,13 @@ enum Msg {
     /// Close the index connection, install the rebuild that is ready and
     /// open the installed index ([`crate::index::rebuild`]).
     Install(SyncSender<Result<()>>),
-    ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
+    ReplaceChain(
+        InputKey,
+        i64,
+        u64,
+        Box<Replacement>,
+        SyncSender<Result<u64>>,
+    ),
     Stop,
     /// The archive committed: what follows from it in the index is applied.
     Wake,
@@ -452,7 +458,7 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainParse,
+        reading: Replacement,
     ) -> Result<u64> {
         self.queue_chain(input, chain, length, reading)?
             .recv()
@@ -473,8 +479,22 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainParse,
+        reading: Replacement,
     ) -> Result<Receiver<Result<u64>>> {
+        let (reply, wait) = sync_channel(1);
+        self.send_chain(input, chain, length, reading, reply)?;
+        Ok(wait)
+    }
+
+    /// Queues a chain's replacement; `reply` answers once it committed.
+    pub(crate) fn send_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        mut reading: Replacement,
+        reply: SyncSender<Result<u64>>,
+    ) -> Result<()> {
         reading.finish()?;
         reading.check(&input.id, chain)?;
         // Bytes the reading decoded (inline images) are stored first: the
@@ -484,7 +504,6 @@ impl WriterSender {
                 result?;
             }
         }
-        let (reply, wait) = sync_channel(1);
         if self
             .0
             .send(Msg::ReplaceChain(
@@ -498,7 +517,7 @@ impl WriterSender {
         {
             return Err(StoreError::WriterGone);
         }
-        Ok(wait)
+        Ok(())
     }
 
     /// Accepts one completed discovery walk; it is visible once its index

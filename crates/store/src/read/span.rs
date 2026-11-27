@@ -233,10 +233,10 @@ impl<'pool> Reader<'pool> {
     }
     fn require_span_field(&self, container: &Reference, body: SourceTextBody) -> Result<()> {
         let kind: Option<String> = match container {
-            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.scalar_optional("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()])?,
+            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.scalar_optional("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.source_position,cast(b.position AS TEXT))=?2", params![id.to_string(), body.block.to_string()])?,
             Reference::Document(id) => {
                 let Ok(ordinal) = i64::try_from(body.block) else { return Err(stale(container)) };
-                self.conn()?.scalar_optional("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.idx=?2", params![id.to_string(), ordinal])?
+                self.conn()?.scalar_optional("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.position=?2", params![id.to_string(), ordinal])?
             }
             _ => return Err(stale(container)),
         };

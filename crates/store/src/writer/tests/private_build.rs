@@ -101,10 +101,10 @@ pub(in crate::writer) fn runs(
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     run.finish().unwrap().into_iter().collect()
 }
@@ -136,10 +136,10 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     crate::fixture::rebuild_from_runs(&archive, &writer.sender(), run.finish().unwrap()).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
@@ -194,10 +194,10 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let runs: Vec<_> = run.finish().unwrap().into_iter().collect();
     // Held once assembly has ended, the rebuild's progress holds the
@@ -502,10 +502,10 @@ fn private_build_crash_child() {
     let mut open = second
         .begin(&sender, &batch.input, chains[1], batch.length)
         .unwrap();
-    for step in &mut batch.parse {
-        crate::writer::ChainSink::step(&mut open, step).unwrap();
+    for step in std::mem::take(&mut batch.parse) {
+        crate::parse::ParseSink::part(&mut open, step).unwrap();
     }
-    open.finish().unwrap();
+    crate::parse::ParseSink::end(Box::new(open)).unwrap();
     runs.extend(second.finish().unwrap());
     crate::fixture::rebuild_from_runs(&archive, &writer.sender(), runs).unwrap();
     panic!("the configured durability boundary was not reached");
@@ -1039,4 +1039,26 @@ fn commits_during_a_rebuild_reach_the_index_after_its_install_and_one_round() {
             .unwrap();
         assert_eq!(found, 1, "current: {current}");
     }
+}
+
+/// A rebuild's chain dropped without its end leaves nothing of it in the
+/// worker's runs.
+#[test]
+fn a_rebuild_chain_dropped_without_its_end_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let chains = due_a_build(dir.path(), &["dropped"]);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let mut run = crate::index::rebuild::RebuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    let mut batch = one_message("dropped", "dropped-m", "dropped text");
+    let sender = writer.sender();
+    let mut open = run
+        .begin(&sender, &batch.input, chains[0], batch.length)
+        .unwrap();
+    for step in std::mem::take(&mut batch.parse) {
+        crate::parse::ParseSink::part(&mut open, step).unwrap();
+    }
+    drop(open);
+    crate::fixture::rebuild_from_runs(&archive, &sender, run.finish().unwrap()).unwrap();
+    assert_eq!(messages(&serving(&archive)), 0);
 }

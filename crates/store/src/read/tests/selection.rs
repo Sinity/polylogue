@@ -168,7 +168,7 @@ fn an_unused_slot_on_a_rotated_generation_refuses_while_idle_connections_refresh
     let current = pool.reader().unwrap().change_position().unwrap();
     rotate_observed_state(&fixture.archive);
     let refreshed = pool.reader().unwrap().change_position().unwrap();
-    assert_ne!(current.generation, refreshed.generation);
+    assert_ne!(current.index_instance, refreshed.index_instance);
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn a_started_reader_is_cancelled_when_its_generation_rotates() {
     ));
     drop(reader);
     let current = pool.reader().unwrap().change_position().unwrap();
-    assert_ne!(current.generation, old.generation);
+    assert_ne!(current.index_instance, old.index_instance);
 }
 
 #[test]

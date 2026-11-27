@@ -188,7 +188,7 @@ record!(Condition {
 record!(Method {inputs:Vec<String>,conditions:Vec<Condition>,steps:Vec<String>,expected:String,stop:Vec<String>});
 record!(SavedQuery {text:String,hash:BlobHash,denominator:Option<String>});
 record!(Page {title:String,layout:Layout,template:Option<String>});
-record!(Slot {section:String,pos:serde_json::Number,mode:SlotMode,heading:Option<String>,query:Option<String>,caption:Option<String>,x:Option<serde_json::Number>,y:Option<serde_json::Number>,w:Option<serde_json::Number>,h:Option<serde_json::Number>});
+record!(Slot {section:String,position:serde_json::Number,mode:SlotMode,heading:Option<String>,query:Option<String>,caption:Option<String>,x:Option<serde_json::Number>,y:Option<serde_json::Number>,w:Option<serde_json::Number>,h:Option<serde_json::Number>});
 record!(Role {
     instructions: String,
     harness: Origin
@@ -786,8 +786,9 @@ pub fn decode(
             ValueShape::Setting => Value::Setting(Box::new(parse(required()?)?)),
             ValueShape::Seen => {
                 let seen: Structured<Seen> = parse(required()?)?;
-                crate::ChangePosition::parse(&seen.fields.position.at)
-                    .ok_or_else(|| "seen position needs GENERATION:INDEX:ARCHIVE".to_string())?;
+                crate::ChangePosition::parse(&seen.fields.position.at).ok_or_else(|| {
+                    "seen position needs INDEX_INSTANCE:INDEX:ARCHIVE".to_string()
+                })?;
                 if let Some(item) = &seen.fields.position.item {
                     Reference::parse(item).map_err(|error| error.to_string())?;
                 }

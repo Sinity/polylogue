@@ -473,7 +473,7 @@ impl ExportParser for AiStudio {
                 sink.out.links.push(Link {
                     kind: LinkKind::Fork,
                     copies_prefix: false,
-                    how: None,
+                    reason: None,
                     parent,
                     child: sid.clone(),
                     branch_point: None,

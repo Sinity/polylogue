@@ -71,7 +71,7 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     );
     edit(
         &fixture.archive.index_db(),
-        "INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
+        "INSERT INTO input_ref(id,origin) VALUES('waiting','synthetic');
         INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting)
         SELECT pk,1,'v1','parsed',4,6 FROM input_ref WHERE id='waiting';",
     );

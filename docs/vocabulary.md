@@ -235,20 +235,33 @@ generated page of the thing they belong to, or on the area page that owns them.
   word in prose and tool input and output.
 - **field selection**: a transform or default that changes which fields a row
   shows, keeping its row identity.
-- **question**: `query:<hash>`, the identity of a query's normal form. (The note kind `question`, `note --as question`, is a different thing: an open question someone wrote.)
-- **run**: one evaluation of a query (`run:<id>`): its question, read
-  position, author and count; it holds no rows.
-- **saved query**: a question saved under a name, re-run each time it is used
+- **query ID**: `query:<hash>`, the identity of a query's normal form, under
+  the key `query_id` in every reply and stored record; `query` is the text of
+  the query. (The note kind `question`, `note --as question`, is a different
+  thing: an open question someone wrote. The replay context the shared query
+  language defines keeps its own key `question`.)
+- **run**: one evaluation of a query (`run:<id>`): its query ID, read
+  position (`read_position`), author and count; it holds no rows.
+- **read position**: where a read stood, `INDEX_INSTANCE:INDEX:ARCHIVE`: the
+  index instance and the index and archive write counters it saw
+  (`read_position`, with the keys `index_instance`, `index`, `archive`).
+- **index instance**: the identity of one built index; a cursor or position
+  of another index instance is stale (`index_instance`).
+- **access fingerprint**: the digest of what a caller may read, recorded with
+  an execution so its replay reads under the same access
+  (`access_fingerprint`; the version key `access`).
+- **saved query**: a query saved under a name, re-run each time it is used
   (`query:NAME`, or the name as the first word); a **shipped saved query**
   comes with Polylogue.
-- **kept result**: the rows of one run, stored and never re-run
-  (`result:<id>`, `result:NAME`).
+- **saved rows**: the rows of one run, stored and never re-run
+  (`result:<id>`, `result:NAME`), under the key `saved_rows` in a Save's
+  report and an effect.
 - **watch**: a saved query that tells you when rows start matching
   (`save NAME --watch`).
 - **figure**: a saved measure query with a declared denominator query.
 - **finding**: an annotation that rests on a result or query.
-- **pre-registration**: a claim or finding whose `--check` names a question
-  before that question's first run (saving does not pre-register).
+- **pre-registration**: a claim or finding whose `--check` names a query
+  before that query's first run (saving does not pre-register).
 - **page size** and **cursor**: replies come in pages; a cursor continues from
   the last row shown. A page of rows is never the reply's limit.
 - **deadline**: how long an operation may run before it stops and names a
@@ -437,13 +450,19 @@ generated page of the thing they belong to, or on the area page that owns them.
   "Takeover" and "recall" are words help and completion use for two forms of
   `brief`.
 - **left-out list**: the closing section of a brief: what is whole,
-  shortened, expandable or left out, with the line that reads each.
+  shortened, expandable or left out, with the line that reads each; each
+  entry is an `item` with its `reason`.
 - **delivery**: the record that a brief, message or notice was handed to a
-  session, with its outcome; **used** when the recipient later refers to it.
+  session, with its outcome (each event's `outcome`); **used** when the recipient later refers to it.
 - **advisory**: a one-line pointer shown before a prompt touches a judged
   target.
 - **skill file**: `help --all`, the full reference of every operation,
   installed with the hooks and carried as the brief's first section.
+- **capabilities**: `help capabilities`, every operation's argument and
+  answer schemas, with the arguments the MCP tool list leaves out.
+- **unbuilt**: `help unbuilt`, the list of options and uses that are
+  designed and not built yet, each with the page that designs it; using one
+  is refused `not_built`.
 - **live state**: whether a session is `working`, `waiting`, `idle`,
   `stale`, `ended` or `unknown`.
 - **send**: deliver text to sessions. **answer**: reply to what a session is
@@ -543,8 +562,6 @@ generated page of the thing they belong to, or on the area page that owns them.
   in the footer.
 - **row number**: `@3`, row 3 of the last list printed on this terminal.
 - **completion**: what Tab offers at the cursor, with descriptions.
-- **catalog file**: the completion data the daemon publishes, so completion
-  works without asking it.
 - **scope index**: the daemon's in-memory map of main sessions by the working
   directories they recorded, with repository, activity, stored message count,
   live facts and task; it answers which sessions are under a directory, live
@@ -652,3 +669,11 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `--since` on the change feed | `--after` |
 | `no_parser_yet`, `partial` (parse states) | `no_parser`; a chain whose earlier bytes are missing has no state of its own |
 | stopped attempt (a failure bound to the executable) | a failed chain state, tried again only when its bytes or parse version change |
+| question (a query's identity), `question` (key) | query ID, `query_id`; the query's text is `query` |
+| generation (of an index), `generation` (key) | index instance, `index_instance` |
+| `read_at` (a read position) | `read_position` |
+| `scope_fingerprint`, version key `scope` | `access_fingerprint`, `access` |
+| `kept_results`, `kept` (keys) | `saved_rows` |
+| `what` (a delivery event's or a left-out entry's key) | `outcome`, `item` |
+| `ordinal` (a signal event's key) | `request_position` |
+| `pos` (a slot's key) | `position`; the query unit `slots` keeps its column `pos` |

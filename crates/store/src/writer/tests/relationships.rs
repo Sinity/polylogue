@@ -23,7 +23,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
         child: sid("child"),
         kind: LinkKind::Continuation,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
@@ -36,7 +36,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     let before = relationship_version(&w);
     assert_ne!(before, empty);
     let mut replacement = original.clone();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut replacement.parse[0]).unwrap();
     w.writer
         .replace_chain(replacement.input, stored.chain, replacement.length, reading)
@@ -49,7 +49,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     );
     let mut removed = original;
     removed.parse[0].output.links.clear();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut removed.parse[0]).unwrap();
     w.writer
         .replace_chain(removed.input, stored.chain, removed.length, reading)
@@ -64,7 +64,7 @@ fn relation(parent: &str, child: &str) -> polylogue_model::Link {
         child: sid(child),
         kind: LinkKind::Continuation,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
@@ -156,7 +156,7 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
         ["claude-code:a", "claude-code:b"]
     );
     partial.parse[0].output.links.clear();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut partial.parse[0]).unwrap();
     w.writer
         .replace_chain(partial.input, stored.chain, partial.length, reading)
@@ -165,6 +165,6 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
     // The anchored statement of root -> a remains; the relations and their
     // order are the coordinates', not the order the rows were stored in.
     assert_eq!(child_relations(&w, "root"), links);
-    // The statements behind the relation changed, and with them its cursor.
-    assert_ne!(relationship_version(&w), before);
+    // The remaining statement gives the same visible relation in the same place.
+    assert_eq!(relationship_version(&w), before);
 }

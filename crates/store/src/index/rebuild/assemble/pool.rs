@@ -62,7 +62,7 @@ pub(super) struct Shared {
     /// The build file, whose content groups composition reads.
     pub build: std::path::PathBuf,
     pub counter: i64,
-    /// The rows a session's links are read from (`link`, `prefix_copy`),
+    /// The rows a session's links are read from (`link_statement`, `session_link`, `shared_prefix`),
     /// as the build file holds them once links are composed.
     pub links: Vec<(String, Vec<Vec<Value>>)>,
 }
@@ -88,7 +88,7 @@ impl Shared {
             .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
             .collect::<rusqlite::Result<_>>()?;
         let mut links = Vec::new();
-        for table in ["link", "prefix_copy"] {
+        for table in ["link_statement", "session_link", "shared_prefix"] {
             let mut statement = index.prepare(&format!("SELECT * FROM {table}"))?;
             let columns = statement.column_count();
             let rows = statement

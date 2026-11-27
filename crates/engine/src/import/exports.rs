@@ -4,7 +4,7 @@ use polylogue_model::batch::{ExportCursor, ExportDelivery, ExportDeliverySource}
 use polylogue_model::{BlobHash, Output, RecordCounts};
 use polylogue_sources::chain_names::{Formed, NoEarlierRows, settle};
 use polylogue_sources::export::{self, ExportParser, ExportState};
-use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
+use polylogue_store::{Batch, ParsePart, export_items::ExportItems};
 
 struct Counted<F, R> {
     open: F,
@@ -448,7 +448,7 @@ impl Engine {
 /// Export items parsed but not yet queued for the writer.
 #[derive(Default)]
 struct ExportBatch {
-    steps: Vec<ParseStep>,
+    steps: Vec<ParsePart>,
     blobs: Vec<polylogue_store::NewBlob>,
     files: Vec<polylogue_store::staging::PreparedBytes>,
     /// Bytes of the export the batch's items were read from.
@@ -487,8 +487,8 @@ impl ExportStep {
         self,
         plan: &Plan,
         blobs: &Arc<polylogue_store::blobs::Blobs>,
-    ) -> Result<(ParseStep, Option<ExportCursor>), EngineError> {
-        let mut step = ParseStep::new(
+    ) -> Result<(ParsePart, Option<ExportCursor>), EngineError> {
+        let mut step = ParsePart::new(
             self.output,
             self.counts,
             0..if self.done { plan.size } else { 0 },

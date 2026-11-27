@@ -64,23 +64,101 @@ fn a_changed_remote_rewrites_the_lookup_file() {
 }
 
 #[test]
-fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    if !here.ancestors().any(|dir| dir.join(".git").exists()) {
-        return; // a build outside a checkout (the Nix package)
+fn a_temporary_repository_has_exact_roots_remote_and_path() {
+    // Run Git and the lookup with the same isolated configuration, without
+    // changing the environment of other tests in this process.
+    if std::env::var_os("POLYLOGUE_REPO_TEST").is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "repo_lookup::tests::a_temporary_repository_has_exact_roots_remote_and_path",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("HOME", home.path())
+            .env("TMPDIR", home.path())
+            .env("POLYLOGUE_REPO_TEST", "1")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Example")
+            .env("GIT_AUTHOR_EMAIL", "example@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Example")
+            .env("GIT_COMMITTER_EMAIL", "example@example.invalid")
+            .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .find(|line| line.starts_with("test repo_lookup::")),
+            Some(
+                "test repo_lookup::tests::a_temporary_repository_has_exact_roots_remote_and_path ... ok"
+            )
+        );
+        return;
     }
-    let repo = repository_of(here).expect("the crate is built from a checkout");
-    let l = read(&repo, &mut Cache::default()).unwrap();
-    // A shallow clone (cloud sessions, CI) does not hold the root commit, and
-    // the lookup reports none rather than the shallow boundary.
-    if git(&repo, &["rev-parse", "--is-shallow-repository"]) == "true" {
-        assert!(l.root_commits.is_empty());
-    } else {
-        assert!(!l.root_commits.is_empty(), "a full clone has a root commit");
-        assert!(l.root_commits.iter().all(|root| root.len() == 40));
-    }
-    if let Some(remote) = l.remote {
-        assert!(!remote.contains('@') || !remote.contains("://"), "{remote}");
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(repo.join("src/deep")).unwrap();
+    git(
+        &repo,
+        &["init", "--object-format=sha1", "--initial-branch=main"],
+    );
+    git(&repo, &["commit", "--allow-empty", "-m", "root"]);
+    // With the author, committer and dates above:
+    // git init --object-format=sha1 --initial-branch=main
+    // git -c commit.gpgsign=false commit --allow-empty -m root
+    // git rev-parse HEAD
+    let root = "640243abd56538d9a7fe8eeb4c9da595db4d7e4e";
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@example.invalid:team/project.git",
+        ],
+    );
+    let out = temp.path().join("lookups");
+    let mut cache = Cache::default();
+    for remote in [
+        "git@example.invalid:team/project.git",
+        "https://example.invalid/team/project.git",
+    ] {
+        git(&repo, &["remote", "set-url", "origin", remote]);
+        assert_eq!(repository_of(&repo.join("src/deep")), Some(repo.clone()));
+        assert_eq!(
+            read(&repo, &mut cache),
+            Some(Lookup {
+                remote: Some(remote.into()),
+                root_commits: vec![root.into()]
+            })
+        );
+        assert_eq!(
+            refresh([repo.join("src/deep")], &out, &mut cache, "t1").unwrap(),
+            1
+        );
+        let files = fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
+        assert_eq!(
+            document,
+            serde_json::json!({"path":repo, "remote":remote, "root_commits":[root], "read_at":"t1"})
+        );
     }
 }
 

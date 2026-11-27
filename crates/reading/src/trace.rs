@@ -112,7 +112,7 @@ pub(super) fn page(
                 snapshot,
                 header,
                 ReadFraming::Query {
-                    question: compiled.selection.question_id(),
+                    query_id: compiled.selection.question_id(),
                 },
                 digest,
                 None,
@@ -135,7 +135,7 @@ pub(super) fn stream(
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
-) -> Result<ReadComplete, Error> {
+) -> Result<ReadFooter, Error> {
     let (reading, record, _) = prepare(reader, request)?;
     prepared(
         reader,

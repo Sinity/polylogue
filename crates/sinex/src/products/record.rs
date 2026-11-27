@@ -32,7 +32,7 @@ impl Reading {
         input: &polylogue_store::InputKey,
         chain: i64,
         source_length: Option<u64>,
-        step: &polylogue_store::ParseStep,
+        step: &polylogue_store::ParsePart,
     ) -> Self {
         Self {
             source_length,
@@ -362,7 +362,7 @@ pub fn parse(
     input: &polylogue_store::InputKey,
     chain: i64,
     source_length: Option<u64>,
-    step: &polylogue_store::ParseStep,
+    step: &polylogue_store::ParsePart,
 ) -> Result<Vec<Product>> {
     if step.delivery.is_some() && source_length.is_none() {
         return Err(Error::invalid(

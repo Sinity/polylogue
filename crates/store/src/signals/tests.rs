@@ -194,7 +194,7 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
         vec![EventRecord {
             position: 1,
             request: "next".into(),
-            ordinal: 0,
+            request_position: 0,
             at: Timestamp::from_unix_ms(100).unwrap(),
             event: Event::Outlet {
                 receipt: DeliveryReceipt {
@@ -243,7 +243,7 @@ fn imported_effect_with_receipts_beyond_the_request_is_refused() {
     assert!(super::validate(&q).is_ok());
     let mut extra = q.clone();
     let mut second = extra.effect.signal_events[0].clone();
-    second.ordinal += 1;
+    second.request_position += 1;
     second.position += 1;
     extra.effect.signal_events.push(second);
     assert!(super::validate(&extra).is_err());

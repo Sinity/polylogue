@@ -51,8 +51,9 @@ function refused(answer) {
  * file is given with its bytes (`body`, a Blob), as stored bytes named by
  * their hash (`blob`), or as not fetched with the reason (`error`).
  */
-export async function captureBody({ provider, conversation, url, raw = null, session = null, temporary = false, files = [], reason, version, now = new Date() }) {
+export async function captureBody({ provider, conversation, url, raw = null, session = null, temporary = false, files = [], reason, version, revision, now = new Date() }) {
   const provenance = { captured_at: now.toISOString(), source_url: url, extension_version: version, reason };
+  if (revision) provenance.extension_revision = revision;
   const head = { polylogue_capture_kind: KIND, schema_version: 1, provenance };
   // File bytes go in as Blob parts at a marker the JSON text cannot
   // otherwise hold.
@@ -202,7 +203,7 @@ export class Capturer {
 
   /** The capture state of a conversation, as the host answers it. */
   async held(provider, conversation) {
-    return captureState.ofArchiveAnswer(provider, await this.host.conversations(provider, [conversation]))[0];
+    return captureState.ofArchiveAnswer(provider, await captureState.conversations(this.host, provider, [conversation]))[0];
   }
 
   /**
@@ -251,15 +252,15 @@ export class Capturer {
       }
     }
 
-    const version = this.chrome.runtime.getManifest().version;
+    const { version, version_name: revision } = this.chrome.runtime.getManifest();
     // Later file delivery must not make this conversation's text look newer.
-    const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version, now: capturedAt };
+    const base = { provider, conversation, url: info.url, raw, session: info.session, temporary: info.temporary, reason, version, revision, now: capturedAt };
     const files = [];
     const missing = [];
     if (raw) {
       let read;
       try {
-        read = await this.host.captureFiles(await captureBody(base));
+        read = await captureState.captureFiles(this.host, await captureBody(base));
       } catch (error) {
         // The raw conversation must reach the outbox even when the host
         // cannot list its files. Try discovery again on the next capture.

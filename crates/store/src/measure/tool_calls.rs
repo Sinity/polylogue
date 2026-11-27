@@ -153,7 +153,7 @@ pub fn process(reader: &Reader<'_>, selection: &Selection, top: usize) -> Result
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
          JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
          WHERE {cond}
-         ORDER BY m.session_pk, m.session_order, m.id, b.idx"
+         ORDER BY m.session_pk, m.session_order, m.id, b.position"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         <(String, String, String, String, Option<i64>)>::try_from(r)

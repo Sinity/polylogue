@@ -86,7 +86,7 @@ fn each_state_the_writer_stores_reads_back_as_the_same_value() {
         }
     );
     // The parser fails at the third record: the two before it stay.
-    let mut failed = crate::ParseStep::failed(
+    let mut failed = crate::ParsePart::failed(
         8..8,
         ChainFailure {
             kind: ChainFailureKind::Malformed,

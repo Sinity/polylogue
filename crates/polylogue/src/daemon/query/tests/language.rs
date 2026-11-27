@@ -367,8 +367,11 @@ fn turns_count_every_human_prompt_once() {
     assert!(!rows(&scoped).is_empty(), "{scoped}");
 }
 
+/// A cursor carries its order values as text, so every sort key whose
+/// values are bytes is declared as one, which a continuation binds back as
+/// bytes.
 #[test]
-fn no_sort_key_holds_bytes() {
+fn every_sort_key_holding_bytes_is_declared_as_bytes() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let reader = pool.reader().unwrap();
@@ -394,9 +397,14 @@ fn no_sort_key_holds_bytes() {
             let bytes = program
                 .order
                 .iter()
+                .filter(|key| !key.bytes)
                 .map(|key| format!("typeof(\"{}\") = 'blob'", key.column))
                 .collect::<Vec<_>>()
                 .join(" OR ");
+            if bytes.is_empty() {
+                checked += 1;
+                continue;
+            }
             let mut params = values(&program.params);
             // The page's row limit.
             params.push(SqlValue::Int(i64::MAX));
@@ -408,7 +416,7 @@ fn no_sort_key_holds_bytes() {
                             program.statements.page(
                                 &program.order,
                                 program.params.len(),
-                                false,
+                                None,
                                 false,
                                 polylogue_store::query::PageColumns::All,
                             )

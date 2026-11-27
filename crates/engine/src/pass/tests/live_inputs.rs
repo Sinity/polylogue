@@ -163,7 +163,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
             let reader = reads.reader()?;
             let database = reader
                 .query(
-                    "SELECT hex(hash) AS hash FROM tool_row WHERE tbl='threads'",
+                    "SELECT hex(hash) AS hash FROM tool_row WHERE table_name='threads'",
                     &[],
                 )?
                 .iter()

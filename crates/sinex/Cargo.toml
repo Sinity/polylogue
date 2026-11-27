@@ -11,8 +11,8 @@ schemars.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
 polylogue-model.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "bb088ea604326a0aaf50e2807f63b370cd8355d1" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "bb088ea604326a0aaf50e2807f63b370cd8355d1" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "e42b04e4636f2440681729db75d537d5f98c15af" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "e42b04e4636f2440681729db75d537d5f98c15af" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -20,7 +20,7 @@ workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 crossbeam-channel.workspace = true
-sinex-query = { git = "https://github.com/Sinity/sinex", rev = "bb088ea604326a0aaf50e2807f63b370cd8355d1" }
+sinex-query = { git = "https://github.com/Sinity/sinex", rev = "e42b04e4636f2440681729db75d537d5f98c15af" }
 jsonschema = { version = "0.42", default-features = false }
 polylogue-store = { workspace = true, features = ["fixture"] }
 

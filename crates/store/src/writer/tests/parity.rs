@@ -300,7 +300,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
                 output.links.push(Link {
                     kind: LinkKind::Spawn,
                     copies_prefix: false,
-                    how: None,
+                    reason: None,
                     parent,
                     child: sid(&session_name(*child)),
                     branch_point: None,
@@ -327,7 +327,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
     }
     output.sessions = sessions.into_values().collect();
     let records = (to - from) as u64;
-    let mut step = ParseStep::new(
+    let mut step = ParsePart::new(
         output,
         counts(records),
         from as u64 * RECORD..to as u64 * RECORD,
@@ -572,10 +572,10 @@ fn build_from_record(
         let mut open = runs[i % 2]
             .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let paths = runs
         .into_iter()
@@ -853,7 +853,7 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    const LINKS: &str = "SELECT parent_id || ' > ' || child_id FROM link";
+    const LINKS: &str = "SELECT parent_id || ' > ' || child_id FROM session_link";
     const SESSIONS: &str = "SELECT id FROM session ORDER BY id";
     assert_eq!(rows(LINKS), ["claude-code:s0 > claude-code:s1"]);
     assert_eq!(rows(SESSIONS), ["claude-code:s0", "claude-code:s1"]);

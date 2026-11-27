@@ -746,7 +746,7 @@ fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
         let r = reads.reader().unwrap();
         let title = r
             .query(
-                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:s1'",
                 &[],
             )
             .unwrap();
@@ -768,11 +768,11 @@ fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
         assert!(rebuilt.bytes_read > 0);
     }
     // The three messages share one timestamp, so docs/sessions.md orders
-    // them by input ID, then position in the input; the shared message is
-    // placed by the earliest of its two readings.
+    // them by a digest of the input's ID, then position in the input; the
+    // shared message is placed by the earliest of its two readings.
     let reads = w.reads();
     let r = reads.reader().unwrap();
-    let input_of = |native: &str| -> String {
+    let input_of = |native: &str| -> Vec<u8> {
         let rows = r
             .query(
                 &format!(
@@ -782,7 +782,8 @@ fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
                 &[],
             )
             .unwrap();
-        rows[0]["id"].as_str().unwrap().to_owned()
+        let id = rows[0]["id"].as_str().unwrap().to_owned();
+        blake3::hash(id.as_bytes()).as_bytes()[..16].to_vec()
     };
     let (in_a, in_z) = (input_of("first"), input_of("last"));
     let mut placed = vec![

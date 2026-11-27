@@ -35,7 +35,7 @@ fn seal(daemon: &test_daemon::TestDaemon) -> CursorSeal {
     let reader = daemon.daemon.reads.reader().unwrap();
     CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     }
 }
 fn refused_with(response: command_surface::Answer<BytePage>, code: &str) {
@@ -201,7 +201,7 @@ fn a_forged_attachment_cursor_is_refused() {
     // as plain JSON, and with one payload byte changed.
     let other_key = CursorSeal {
         key: [9; 32],
-        generation: seal.generation.clone(),
+        index_instance: seal.index_instance.clone(),
     };
     let (payload, mac) = issued.split_once('.').unwrap();
     let mut changed = payload.as_bytes().to_vec();

@@ -31,6 +31,7 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
             text: text.into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         }),
     )
     .unwrap();
@@ -501,6 +502,7 @@ fn resume_with_missing_directory_is_refused_by_name() {
                 text: "rebase".into(),
                 refs: vec![],
                 left_out: vec![],
+                prepared_position: None,
             }),
         )
         .unwrap();

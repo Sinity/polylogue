@@ -96,7 +96,7 @@ pub struct StepsAnswer {
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
     /// The selection's query text, when it is a query
-    pub question: Option<String>,
+    pub query: Option<String>,
     pub count: u64,
     /// The rows were named one by one rather than matched by a query
     pub named: bool,
@@ -146,7 +146,7 @@ pub enum StepAnswer {
     /// One checked range of an attachment's bytes.
     Attachment(Box<crate::daemon::attachment::BytePage>),
     /// The read's records were delivered before the next step began.
-    Streamed(Box<polylogue_model::read::ReadComplete>),
+    Streamed(Box<polylogue_model::read::ReadFooter>),
     /// The follow's events were delivered through these final marks.
     Followed(Box<super::follow::Marks>),
     Picked(Vec<String>),

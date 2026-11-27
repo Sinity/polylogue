@@ -77,19 +77,18 @@ pub(crate) enum Destination {
     Pager,
     File(PathBuf),
     Dir(PathBuf),
-    Clipboard,
-    Browser,
 }
 impl Destination {
-    fn parse(text: &str) -> Self {
-        match text {
+    fn parse(text: &str) -> Result<Self, Refusal> {
+        if let Some(unbuilt) = crate::unbuilt::listed("polylogue", &format!("--to {text}")) {
+            return Err(Refusal::new(Code::NotBuilt, unbuilt.failure().message));
+        }
+        Ok(match text {
             "stdout" => Self::Stdout,
             "pager" => Self::Pager,
-            "clipboard" => Self::Clipboard,
-            "browser" => Self::Browser,
             _ if text.ends_with('/') => Self::Dir(text.into()),
             _ => Self::File(text.into()),
-        }
+        })
     }
 }
 #[derive(Debug)]
@@ -116,32 +115,11 @@ impl Refusal {
         self
     }
 }
+/// The saved query names a first word can be: the authored ones the daemon
+/// confirmed for this line, then the shipped ones.
 #[derive(Default)]
-pub(crate) struct FirstWordCatalog {
-    pub saved: Vec<String>,
-    pub shipped: Vec<String>,
-}
-impl FirstWordCatalog {
-    pub fn load(paths: &crate::config::Paths, archive: &std::path::Path) -> Self {
-        let saved = polylogue_store::completion::CatalogReader::open(
-            &paths.completion_catalog(archive),
-            &crate::runtime_dir::archive_key(archive),
-        )
-        .ok()
-        .flatten()
-        .and_then(|reader| reader.saved_names("").ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|item| item.name)
-        .collect();
-        Self {
-            saved,
-            shipped: polylogue_model::saved_queries::SHIPPED_QUERIES
-                .iter()
-                .map(|query| query.name.to_owned())
-                .collect(),
-        }
-    }
+pub(crate) struct SavedNames {
+    pub authored: Vec<String>,
 }
 pub(crate) fn shell_line(words: &[String]) -> String {
     std::iter::once("polylogue".to_owned())
@@ -149,15 +127,20 @@ pub(crate) fn shell_line(words: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-impl SelectionRules for FirstWordCatalog {
+impl SelectionRules for SavedNames {
     type Additional = std::convert::Infallible;
     fn is_command(&self, word: &str) -> bool {
         matches!(word, "--help" | "-h") || crate::commands::is_cli_command(word)
     }
     fn saved_name(&self, word: &str) -> Option<String> {
-        self.saved
+        self.authored
             .iter()
-            .chain(&self.shipped)
+            .map(String::as_str)
+            .chain(
+                polylogue_model::saved_queries::SHIPPED_QUERIES
+                    .iter()
+                    .map(|query| query.name),
+            )
             .any(|name| name == word)
             .then(|| word.into())
     }
@@ -252,17 +235,66 @@ fn listing_option(
                 .collect()
         }
         "--why" => listing.why = flag_value(word, assigned)?,
-        "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)),
+        "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)?),
         "--cursor" => listing.cursor = Some(value(args, index, assigned)?),
         "--budget" => listing.budget = Some(value(args, index, assigned)?),
         _ => return Ok(false),
     }
     Ok(true)
 }
+/// Skips the line and listing options before the selection.
+fn leading_options(
+    args: &[String],
+    index: &mut usize,
+    line: &mut LineOptions,
+    listing: &mut ListingOptions,
+) -> Result<(), Refusal> {
+    while *index < args.len()
+        && (line_option(args, index, line)? || listing_option(args, index, listing)?)
+    {
+        *index += 1;
+    }
+    Ok(())
+}
+/// Whether the words name a command, read as the line parser reads its
+/// first word but without parsing the rest of the line.
+pub(crate) fn names_command(args: &[String]) -> bool {
+    let mut index = 0;
+    if leading_options(
+        args,
+        &mut index,
+        &mut LineOptions::default(),
+        &mut ListingOptions::default(),
+    )
+    .is_err()
+        || args.get(index).is_some_and(|word| word == "--")
+    {
+        return false;
+    }
+    command_surface::line::classify_first(
+        args.get(index).map(String::as_str),
+        &SavedNames::default(),
+        &crate::daemon::verbs::declarations(),
+    ) == FirstWord::Command
+}
+impl ParsedLine {
+    /// A first word read as a search word that is shaped like a saved query
+    /// name: only the daemon knows whether one is saved under it.
+    pub(crate) fn possible_saved_name(&self) -> Option<&str> {
+        match (&self.first, &self.selection) {
+            (FirstWord::SearchWord, Some(SelectionWord::Text(word)))
+                if polylogue_model::annotation::policy::valid_saved_name(word) =>
+            {
+                Some(word)
+            }
+            _ => None,
+        }
+    }
+}
 /// Parses without reading stdin or contacting the daemon.
 pub(crate) fn parse(
     args: &[String],
-    catalog: &FirstWordCatalog,
+    saved: &SavedNames,
     terminal: bool,
 ) -> Result<ParsedLine, Refusal> {
     let declarations = crate::daemon::verbs::declarations();
@@ -274,12 +306,7 @@ pub(crate) fn parse(
         line: LineOptions::default(),
     };
     let mut index = 0;
-    while index < args.len()
-        && (line_option(args, &mut index, &mut parsed.line)?
-            || listing_option(args, &mut index, &mut parsed.listing)?)
-    {
-        index += 1;
-    }
+    leading_options(args, &mut index, &mut parsed.line, &mut parsed.listing)?;
     let selection_index = index;
     let literal_selection = args.get(index).is_some_and(|word| word == "--");
     if literal_selection {
@@ -293,7 +320,7 @@ pub(crate) fn parse(
     } else {
         command_surface::line::classify_first(
             args.get(index).map(String::as_str),
-            catalog,
+            saved,
             &declarations,
         )
     };
@@ -392,17 +419,22 @@ pub(crate) fn parse(
                 }
                 let (word, assigned) = split_option(&args[*index]);
                 if word == "--to" && matches!(verb, "read" | "brief") {
-                    to = Some(Destination::parse(&value(args, index, assigned)?));
+                    to = Some(Destination::parse(&value(args, index, assigned)?)?);
                     return Ok(true);
                 }
                 Ok(false)
             })
             .map_err(|error| match error {
                 SplitError::Local(error) => error,
-                SplitError::UnknownOption { index } => Refusal::new(
-                    Code::BadRequest,
-                    format!("{}: unknown option {}", declaration.verb(), args[index]),
-                ),
+                SplitError::UnknownOption { index } => {
+                    match crate::unbuilt::option(declaration.verb(), &args[index]) {
+                        Some(unbuilt) => Refusal::new(Code::NotBuilt, unbuilt.message),
+                        None => Refusal::new(
+                            Code::BadRequest,
+                            format!("{}: unknown option {}", declaration.verb(), args[index]),
+                        ),
+                    }
+                }
                 SplitError::MissingValue { .. } => {
                     Refusal::new(Code::BadRequest, "option needs a value")
                 }

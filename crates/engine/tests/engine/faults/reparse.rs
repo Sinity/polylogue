@@ -14,9 +14,9 @@ fn committed_continuation(
     let reads = w.reads();
     let reader = reads.reader().unwrap();
     (
-        reader.query("SELECT p.chain,CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status,p.parsed_to AS parsed_upto,p.parser_version AS parse_version,hex(p.resume) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code' ORDER BY p.chain", &[]).unwrap(),
-        reader.query("SELECT s.chain,s.response_key,s.source_start,s.source_start+s.source_length AS source_end,hex(s.hash) AS version FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.format='claude-code' AND s.response_key IS NOT NULL ORDER BY s.chain,s.response_key", &[]).unwrap(),
-        reader.query("SELECT a.chain,a.name,a.target FROM message_alias a JOIN input_ref i ON i.pk=a.input_pk WHERE i.format='claude-code' ORDER BY a.chain,a.name", &[]).unwrap(),
+        reader.query("SELECT p.chain,CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status,p.parsed_to AS parsed_upto,p.parser_version AS parse_version,hex(p.resume) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin='claude-code' ORDER BY p.chain", &[]).unwrap(),
+        reader.query("SELECT s.chain,s.response_key,s.source_start,s.source_start+s.source_length AS source_end,hex(s.hash) AS version FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.origin='claude-code' AND s.response_key IS NOT NULL ORDER BY s.chain,s.response_key", &[]).unwrap(),
+        reader.query("SELECT a.chain,a.name,a.target FROM message_alias a JOIN input_ref i ON i.pk=a.input_pk WHERE i.origin='claude-code' ORDER BY a.chain,a.name", &[]).unwrap(),
     )
 }
 
@@ -99,7 +99,7 @@ fn rejected_replacement_keeps_the_committed_reading() {
                 .unwrap(),
             messages
         );
-        let rows=w.reads().reader().unwrap().query("SELECT parser_version AS parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",&[]).unwrap();
+        let rows=w.reads().reader().unwrap().query("SELECT parser_version AS parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin='claude-code'",&[]).unwrap();
         assert_eq!(
             rows[0]["parse_version"],
             by_name("claude-code").unwrap().parse_version()

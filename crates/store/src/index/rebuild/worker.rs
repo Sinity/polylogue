@@ -6,8 +6,9 @@
 //! clears the scratch. The keys of the stream's records decide the order the
 //! rebuild loads and assembles them in ([`super::load`], [`super::assemble`]).
 use crate::index::file::Paths;
+use crate::parse::{ParsePart, ParseSink};
 use crate::sorted_runs::Sorter;
-use crate::writer::{InputKey, ParseStep, WriterSender};
+use crate::writer::{InputKey, WriterSender};
 use crate::{Archive, Result, StoreError};
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
@@ -546,8 +547,9 @@ pub struct OpenChain<'w> {
     out: Out<'w>,
 }
 
-impl crate::writer::chain::ChainSink for OpenChain<'_> {
-    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+impl ParseSink for OpenChain<'_> {
+    fn part(&mut self, mut part: ParsePart) -> Result<()> {
+        let step = &mut part;
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -604,6 +606,10 @@ impl crate::writer::chain::ChainSink for OpenChain<'_> {
         }
         Ok(())
     }
+
+    fn end(self: Box<Self>) -> Result<()> {
+        (*self).finish()
+    }
 }
 
 impl OpenChain<'_> {
@@ -642,7 +648,7 @@ pub(super) fn move_out(
 ) -> Result<()> {
     let mut value = Vec::new();
     let (format, route): (String, String) = tx.query_row(
-        "SELECT format,route FROM input_ref WHERE id=?1",
+        "SELECT origin,route FROM input_ref WHERE id=?1",
         [input],
         |r| <(String, String)>::try_from(r),
     )?;
@@ -723,11 +729,11 @@ pub(super) fn move_out(
         // A message's text rows also carry the key of its reading in the
         // composition stream, which the load gives each its text key under.
         let mut statement = tx.prepare_cached(
-            "SELECT p.chain,p.document,p.item,p.idx,t.hash,m.session_id FROM parse_text p
+            "SELECT p.chain,p.document,p.item,p.position,t.hash,m.session_id FROM parse_text p
              JOIN text t ON t.id=p.text_id
              LEFT JOIN message_parse m ON p.document=0 AND m.input_pk=p.input_pk AND m.chain=p.chain
                  AND m.message_id=p.item
-             ORDER BY p.document,p.item,p.idx",
+             ORDER BY p.document,p.item,p.position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -834,10 +840,10 @@ pub(super) fn compose_records(
         let mut reader = crate::content::Reader::default();
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,r.record_position,
-                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,r.record_position,
+                 r.order_time,r.route,r.state,r.id_kind='content',r.hash,
                  r.content_group,r.content_start,r.content_length,r.layout
-             FROM message_parse r ORDER BY r.seq,r.record_position",
+             FROM message_parse r ORDER BY r.position,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -899,7 +905,7 @@ pub(super) fn compose_records(
     {
         let mut statement = tx.prepare_cached(
             "SELECT event_id,session_id,route,hash,content_group,content_start,content_length,data_length,
-                 seq,source_start,source_start+source_length,after_message_id
+                 position,source_start,source_start+source_length,after_message_id
              FROM event_parse WHERE session_id IS NOT NULL",
         )?;
         let mut rows = statement.query([])?;

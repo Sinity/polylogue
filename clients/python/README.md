@@ -56,7 +56,7 @@ for line in client.feed(previous_position):
 
 Save a position only after applying the earlier lines in that batch. An error
 or interrupted iterator leaves the previous position in force; a new index
-generation asks the consumer to replace its local view. Breaking out early
+instance asks the consumer to replace its local view. Breaking out early
 requires closing the iterator (for example with `contextlib.closing`).
 
 Contract tests run through the repository's `check` operation: a real daemon
@@ -68,3 +68,5 @@ and CLI over a temporary archive are compared with the Python client.
 ends the whole line. A failed step raises `Refused` after the preceding events
 have been delivered. Its `answer` retains the complete failed-step report.
 Closing the iterator terminates and reaps the CLI process.
+
+`status` returns one text path and count summary per watched root in `store.capture_coverage`. Call `client.call("status", "--details")` for pattern entries and unread field details. `client.call("status", "--log")` also includes grouped `slow_statements`; `--wait D --after-changes N` waits beyond an earlier reply's `changes` count.

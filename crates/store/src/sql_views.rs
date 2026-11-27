@@ -1,8 +1,9 @@
 //! The views `polylogue dev sql` offers outside programs. The tables are
 //! internal and change with the owning index format; these views keep their names
-//! and columns. A change that would alter a view's columns adds the next
-//! version beside it (`v2_sessions`), so a program written against one
-//! version keeps working. They are temporary views of each read connection,
+//! and columns from index format 23 on. Before that their columns were renamed
+//! once, in place, with the stored names they show. A later change that would
+//! alter a view's columns adds the next version beside it (`v2_sessions`), so
+//! a program written against one version keeps working. They are temporary views of each read connection,
 //! because a view stored in `index.db` cannot read the attached
 //! `archive.db`, where notes live.
 
@@ -15,14 +16,14 @@ pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_sessions",
         "SELECT s.id, s.origin, s.kind, {title} AS title, \
-         s.cwd, s.repo, s.branch, s.harness, s.started_at, s.last_activity_at \
-         FROM main.session s WHERE s.stub = 0",
+         s.cwd, s.repo, s.branch, s.harness, s.started_at, s.last_active_at \
+         FROM main.session s WHERE s.has_transcript = 1",
     ),
     (
         "v1_messages",
         "SELECT m.id, s.id AS session, m.role, m.written_by, m.model, m.at, \
          (SELECT group_concat(pl_text_at(g.body, t.start, t.length), char(10)) FROM \
-            (SELECT b.text_id FROM main.block b WHERE b.message_pk = m.pk AND b.kind = 'text' ORDER BY b.idx) bt \
+            (SELECT b.text_id FROM main.block b WHERE b.message_pk = m.pk AND b.kind = 'text' ORDER BY b.position) bt \
             JOIN main.text t ON t.id = bt.text_id JOIN main.content_group g ON g.id = t.group_id) AS text, \
          m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, \
          m.cost_nusd, m.duplicate_of, m.on_active_path \
@@ -36,8 +37,8 @@ pub const VIEWS: &[(&str, &str)] = &[
     ),
     (
         "v1_links",
-        "SELECT l.parent_id AS parent, l.child_id AS child, l.kind, l.how \
-         FROM main.link l",
+        "SELECT l.parent_id AS parent, l.child_id AS child, l.kind, l.reason \
+         FROM main.session_link l",
     ),
     (
         "v1_annotations",

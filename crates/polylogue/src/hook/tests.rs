@@ -168,7 +168,11 @@ fn context_uses_the_configured_archive_socket_and_clock() {
     peer.join().unwrap();
     assert_eq!(
         reply,
-        Some(("context-1".into(), "configured archive".into()))
+        Some(HookContext {
+            deliveries: "context-1".into(),
+            text: "configured archive".into(),
+            session_start: true
+        })
     );
 }
 
@@ -781,7 +785,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
             outcome["arguments"]["delivery"],
             format!("{}-1", prepare["request_id"].as_str().unwrap())
         );
-        assert_eq!(outcome["arguments"]["what"], "not_sent");
+        assert_eq!(outcome["arguments"]["outcome"], "not_sent");
         assert_eq!(outcome["arguments"]["detail"], "timeout");
         write!(
             stream,
@@ -867,7 +871,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
         if timed_out {
             assert!(result.is_none(), "optional timeout must emit no notice");
         } else {
-            assert_eq!(result.unwrap().1, "one pointer");
+            assert_eq!(result.unwrap().text, "one pointer");
         }
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -950,7 +954,14 @@ fn an_elapsed_hook_deadline_sends_no_request_or_delivery() {
         &startup,
         until,
     );
-    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+    assert_eq!(
+        result,
+        Some(HookContext {
+            deliveries: String::new(),
+            text: TIMEOUT_NOTICE.into(),
+            session_start: false
+        })
+    );
     assert!(claim(&startup, &SessionId::parse("codex:turn-1").unwrap(), until).is_none());
     permission(
         &startup,
@@ -974,7 +985,14 @@ fn expired_multi_session_context_emits_one_unreferenced_notice() {
         &startup,
         Instant::now(),
     );
-    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+    assert_eq!(
+        result,
+        Some(HookContext {
+            deliveries: String::new(),
+            text: TIMEOUT_NOTICE.into(),
+            session_start: false
+        })
+    );
 }
 
 /// docs/agent-context.md: three or more pasted sessions inject one index,
@@ -1074,4 +1092,298 @@ fn a_hook_that_cannot_reach_the_daemon_names_the_cause() {
         "{cause}"
     );
     answering.join().unwrap();
+}
+
+#[test]
+fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_start() {
+    use crate::daemon::{server::Server, service::ArchiveMode};
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let startup = Startup::for_test(archive.config(), &archive.root);
+    let session = polylogue_testkit::session(1);
+    let payload =
+        json!({"session_id":session.native(), "cwd":"/home/op/morrow", "source":"startup"});
+    assert_eq!(
+        run_event(
+            Harness::ClaudeCode,
+            "SessionStart",
+            payload.clone(),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, _| panic!("no context to emit")
+        ),
+        ExitCode::SUCCESS
+    );
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let mut server = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
+    let status = crate::protocol::into_value(crate::test_daemon::call(
+        &runtime.daemon,
+        "status",
+        json!({"wait":"5s"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        status["session_starts_without_context"],
+        json!({
+            "since":"2026-10-07T10:00:00Z", "causes":{"daemon_unreachable":1}
+        })
+    );
+    let rows = crate::protocol::into_value(crate::test_answers::listing(crate::test_daemon::call(
+        &runtime.daemon,
+        "rows",
+        json!({"selection":"events where kind:hook_session_context", "fields":["data", "session"]}),
+    )))
+    .unwrap();
+    assert_eq!(rows["count"], 1, "{rows}");
+    assert_eq!(rows["rows"][0]["session"], session.to_string());
+    let data = &rows["rows"][0]["data"];
+    assert_eq!(data["outcome"], "not_given");
+    assert_eq!(data["cause"], "daemon_unreachable");
+    assert_eq!(data["cwd"], "/home/op/morrow");
+    assert!(
+        data["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("the daemon is not running (")
+    );
+    for (reference, expected) in [
+        (
+            "claude-code:absent",
+            "session claude-code:absent is not in the archive (yet)",
+        ),
+        (
+            "https://chatgpt.com/c/absent",
+            "session chatgpt:absent is not in the archive (yet); capture it with `polylogue import chatgpt`",
+        ),
+    ] {
+        let reply = respond(
+            Harness::ClaudeCode,
+            "UserPromptSubmit",
+            &json!({"session_id":session.native(), "prompt":reference}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+        )
+        .unwrap();
+        assert_eq!(reply.text, expected);
+    }
+    let mut text = String::new();
+    assert_eq!(
+        run_event(
+            Harness::Hermes,
+            "pre_llm_call",
+            json!({"session_id":"starting", "extra":{"is_first_turn":true,"user_message":"claude-code:absent"}}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, context| {
+                text = context.into();
+                true
+            }
+        ),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(
+        text,
+        "session claude-code:absent is not in the archive (yet)"
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let path = spool.join(format!("{}.ndjson", std::os::unix::process::parent_id()));
+    let text = std::fs::read_to_string(path).unwrap();
+    let starts: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["provider"] == "hermes" && line["event"] == "SessionContext")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0]["payload"],
+        json!({"outcome":"not_given", "cause":"directory", "detail":"the hook payload names no working directory"})
+    );
+    assert_eq!(
+        context(
+            &startup,
+            Ask::SessionStart {
+                cwd: "/home/op/morrow".into(),
+                session: Some(session.clone()),
+                source: StartSource::Startup,
+            },
+            Some(1),
+            Instant::now() + CONTEXT_BUDGET
+        ),
+        None
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let path = spool.join(format!("{}.ndjson", std::os::unix::process::parent_id()));
+    let text = std::fs::read_to_string(path).unwrap();
+    let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(last["event"], "SessionContext");
+    assert_eq!(last["payload"]["outcome"], "not_given");
+    assert_eq!(last["payload"]["cause"], "refusal");
+    let mut config = archive.config();
+    config.clock = polylogue_model::WallClock::fixed("2026-10-07T10:00:01Z".parse().unwrap());
+    let startup = Startup::for_test(config, &archive.root);
+    let mut text = String::new();
+    assert_eq!(
+        run_event(
+            Harness::ClaudeCode,
+            "SessionStart",
+            payload.clone(),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, context| {
+                text = context.into();
+                true
+            }
+        ),
+        ExitCode::SUCCESS
+    );
+    assert!(
+        text.contains("Polylogue brief for /home/op/morrow"),
+        "{text}"
+    );
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
+    let status = crate::protocol::into_value(crate::test_daemon::call(
+        &runtime.daemon,
+        "status",
+        json!({"wait":"5s"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        status["session_starts_without_context"],
+        json!({"since":null, "causes":{}})
+    );
+    runtime.shutdown().unwrap();
+    let mut config = archive.config();
+    config.clock =
+        polylogue_model::WallClock::fixed("2026-10-07T10:00:01.000000001Z".parse().unwrap());
+    let startup = Startup::for_test(config, &archive.root);
+    let mut text = String::new();
+    assert_eq!(
+        run_event(
+            Harness::ClaudeCode,
+            "SessionStart",
+            payload,
+            &startup,
+            Instant::now(),
+            |_, _, context| {
+                text = context.into();
+                true
+            }
+        ),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(text, TIMEOUT_NOTICE);
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
+    let status = crate::protocol::into_value(crate::test_daemon::call(
+        &runtime.daemon,
+        "status",
+        json!({"wait":"5s"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        status["session_starts_without_context"],
+        json!({"since":"2026-10-07T10:00:01.000000001Z", "causes":{"timeout":1}})
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_session_start_names_a_wrong_archive_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(
+        crate::test_daemon::engine_config(dir.path().join("home")),
+        &dir.path().join("absent"),
+    );
+    assert_eq!(
+        respond(
+            Harness::Codex,
+            "SessionStart",
+            &json!({"session_id":"s1", "cwd":"/home/op/morrow"}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET
+        ),
+        None
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let path = spool.join(format!("{}.ndjson", std::os::unix::process::parent_id()));
+    let text = std::fs::read_to_string(path).unwrap();
+    let record: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(record["event"], "SessionContext");
+    assert_eq!(record["payload"]["cause"], "archive_path");
+    assert_eq!(
+        record["payload"]["detail"],
+        format!(
+            "no archive at {}; check the archive path",
+            startup.config.archive.display()
+        )
+    );
+}
+
+#[test]
+fn a_failed_spool_write_leaves_the_harness_running() {
+    use crate::daemon::{server::Server, service::ArchiveMode};
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let mut server = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
+    let startup = Startup::for_test(
+        crate::test_daemon::engine_config(archive.dir.path().join("blocked-home")),
+        &archive.root,
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    std::fs::create_dir_all(spool.parent().unwrap()).unwrap();
+    std::fs::write(&spool, "synthetic unwritable spool").unwrap();
+    assert_eq!(
+        run_event(
+            Harness::Codex,
+            "SessionStart",
+            json!({"session_id":"s1", "cwd":"/home/op/morrow"}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, _| panic!("no context to emit after a failed spool write")
+        ),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(
+        std::fs::read_to_string(spool).unwrap(),
+        "synthetic unwritable spool"
+    );
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
 }

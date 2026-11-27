@@ -83,7 +83,7 @@ fn structural_comparison_does_not_read_bodies_usage_or_parents() {
         .unwrap()
         .authorizer(Some(|context: AuthContext<'_>| match context.action {
             AuthAction::Read {
-                table_name: "message" | "block" | "tool_call" | "link" | "text",
+                table_name: "message" | "block" | "tool_call" | "session_link" | "text",
                 ..
             } => Authorization::Deny,
             _ => Authorization::Allow,

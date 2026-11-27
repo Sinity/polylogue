@@ -63,7 +63,7 @@ impl ChangeSummary {
                 Ok(Before {
                     session: row.get(0)?,
                     parent: row.get(1)?,
-                    key: Key::message(&row.get::<_, String>(2)?, &row.get::<_, String>(3)?),
+                    key: Key::message(&row.get::<_, Vec<u8>>(2)?, &row.get::<_, String>(3)?),
                 })
             })
             .optional()?;
@@ -92,7 +92,7 @@ impl ChangeSummary {
         let before = conn
             .prepare_cached("SELECT session_pk, session_order, id FROM event WHERE pk = ?1")?
             .query_row([pk], |row| {
-                <(Option<i64>, Option<String>, String)>::try_from(row)
+                <(Option<i64>, Option<Vec<u8>>, String)>::try_from(row)
             })
             .optional()?
             .and_then(|(session, order, id)| Some((session?, Key::event(order.as_deref()?, &id))));
@@ -136,7 +136,7 @@ impl ChangeSummary {
     /// Records a link by its row before it changes or is deleted.
     pub(crate) fn link(&self, conn: &Connection, pk: i64) -> Result<()> {
         let child: Option<String> = conn
-            .prepare_cached("SELECT child_id FROM link WHERE pk = ?1")?
+            .prepare_cached("SELECT child_id FROM link_statement WHERE pk = ?1")?
             .query_row([pk], |row| row.get(0))
             .optional()?;
         if let Some(child) = child {
@@ -198,7 +198,7 @@ impl ChangeSummary {
         )?;
         let mut parent = conn.prepare_cached(
             "SELECT p.session_order, p.id,
-                    (SELECT count(*) FROM (SELECT 1 FROM message c
+                    (SELECT count(*) FROM (SELECT 1 FROM message c INDEXED BY message_parent
                                            WHERE c.session_pk = ?1 AND c.parent_id = ?2
                                              AND c.duplicate_of IS NULL LIMIT 2))
              FROM message p WHERE p.id = ?2 AND p.session_pk = ?1",
@@ -206,7 +206,7 @@ impl ChangeSummary {
         let mut parent_of = |session: i64, id: &str, existed: bool| -> Result<Option<Key>> {
             Ok(parent
                 .query_row(params![session, id], |row| {
-                    <(String, String, i64)>::try_from(row)
+                    <(Vec<u8>, String, i64)>::try_from(row)
                 })
                 .optional()?
                 .filter(|(_, _, replies)| existed || *replies > 1)
@@ -223,7 +223,7 @@ impl ChangeSummary {
             }
             if let Some((session, order, id, parent)) = message_now
                 .query_row([pk], |row| {
-                    <(i64, String, String, Option<String>)>::try_from(row)
+                    <(i64, Vec<u8>, String, Option<String>)>::try_from(row)
                 })
                 .optional()?
             {
@@ -243,7 +243,7 @@ impl ChangeSummary {
             }
             if let Some((Some(session), Some(order), id)) = event_now
                 .query_row([pk], |row| {
-                    <(Option<i64>, Option<String>, String)>::try_from(row)
+                    <(Option<i64>, Option<Vec<u8>>, String)>::try_from(row)
                 })
                 .optional()?
             {

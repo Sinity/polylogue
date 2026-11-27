@@ -175,7 +175,7 @@ impl Fixture {
         )?;
         let archive_conn = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(
-            "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",
+            "INSERT INTO input_ref(id,origin) VALUES ('fixture','fixture')",
             [],
         )?;
         let input_pk = index.last_insert_rowid();
@@ -244,8 +244,10 @@ impl Fixture {
             serde_json::to_value(s.title.map(|_| polylogue_model::TitleSource::Generated))?;
         self.index.execute(
             "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, record_repo,
-                 started_at, last_activity_at, changed, started_time, title_source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1, ?11, ?12)",
+                 started_at, last_active_at, changed, started_time, title_source,
+                 started_precision, last_active_precision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1, ?11, ?12,
+                 iif(?9 IS NULL, NULL, 'instant'), iif(?10 IS NULL, NULL, 'instant'))",
             params![
                 s.id,
                 origin,
@@ -278,9 +280,11 @@ impl Fixture {
             .validate(at)
             .map_err(polylogue_model::bundle::BundleError::Time)?;
         let bytes = crate::encoding::time_bytes(at, accuracy)?;
+        let time = crate::encoding::TimeColumns::of(at, accuracy);
         self.index.execute(
-            "UPDATE session SET started_at=?2, started_time=?3, changed=changed+1 WHERE pk=?1",
-            params![session_pk, at.map(|time| time.unix_ms()), bytes],
+            "UPDATE session SET started_at=?2, started_time=?3, started_until=?4, started_precision=?5,
+                 changed=changed+1 WHERE pk=?1",
+            params![session_pk, time.at, bytes, time.until, time.precision_name()],
         )?;
         Ok(())
     }
@@ -296,13 +300,36 @@ impl Fixture {
             .validate(at)
             .map_err(polylogue_model::bundle::BundleError::Time)?;
         let bytes = crate::encoding::time_bytes(at, accuracy)?;
+        let time = crate::encoding::TimeColumns::of(at, accuracy);
         self.index.execute(
-            "UPDATE message SET at=?2, at_time=?3 WHERE pk=?1",
-            params![message_pk, at.map(|time| time.unix_ms()), bytes],
+            "UPDATE message SET at=?2, at_time=?3, at_until=?4, at_precision=?5 WHERE pk=?1",
+            params![
+                message_pk,
+                time.at,
+                bytes,
+                time.until,
+                time.precision_name()
+            ],
         )?;
+        // As the session summary does: the latest of its messages' times.
+        let session: i64 = self
+            .index
+            .scalar("SELECT session_pk FROM message WHERE pk=?1", [message_pk])?;
+        let mut latest = crate::summary::session::Latest::default();
+        let mut times = self.index.prepare(
+            "SELECT at, at_until, at_precision FROM message WHERE session_pk=?1 AND at IS NOT NULL",
+        )?;
+        let rows = times.query_map([session], |r| <(i64, Option<i64>, String)>::try_from(r))?;
+        for row in rows {
+            let (at, until, precision) = row?;
+            latest.add(at, until, &precision);
+        }
+        drop(times);
+        let (last, until, precision) = latest.columns();
         self.index.execute(
-            "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
-            [message_pk],
+            "UPDATE session SET changed=changed+1, last_active_at=?2, last_active_until=?3,
+                 last_active_precision=?4 WHERE pk=?1",
+            params![session, last, until, precision],
         )?;
         crate::summary::lines::write_fixture_lines(
             &self.index,
@@ -312,17 +339,18 @@ impl Fixture {
     }
 
     /// The sequence a fixture message's stored session order holds: the
-    /// sixteen digits before its record position.
+    /// eight bytes before its record position.
     pub fn message_order(&self, message_pk: i64) -> Result<i64> {
-        let order: String = self.index.scalar(
+        let order: Vec<u8> = self.index.scalar(
             "SELECT session_order FROM message WHERE pk=?1",
             [message_pk],
         )?;
         let seq = order
             .len()
-            .checked_sub(32)
-            .and_then(|start| order.get(start..start + 16))
-            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+            .checked_sub(16)
+            .and_then(|start| order.get(start..start + 8))
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+            .map(u64::from_be_bytes)
             .ok_or_else(|| crate::StoreError::internal("a session order without a sequence"))?;
         Ok((seq ^ (1 << 63)) as i64)
     }
@@ -389,7 +417,7 @@ impl Fixture {
     ) -> Result<i64> {
         let piece = crate::content::store_piece(&self.index, &serde_json::to_vec(&body)?, None)?;
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+            "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                  content_start, content_length)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -414,15 +442,21 @@ impl Fixture {
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, input_pk, session_order, role, written_by, prompt_kind,
-                 model, at, cost_nusd, on_active_path, words, at_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 model, at, cost_nusd, on_active_path, words, at_time, at_precision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, iif(?9 IS NULL, NULL, 'instant'))",
             params![
                 m.id,
                 session_pk,
                 self.input_pk,
                 crate::encoding::session_order(None, "fixture", self.seq, 0),
-                m.role,
-                m.written_by,
+                // Facts that leave the role or the author unstated store
+                // what the writer stores for them.
+                if m.role.is_empty() { "user" } else { m.role },
+                if m.written_by.is_empty() {
+                    "unknown"
+                } else {
+                    m.written_by
+                },
                 m.prompt_kind,
                 m.model,
                 m.at,
@@ -475,7 +509,7 @@ impl Fixture {
     /// result block when `output` is given.
     pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: CallFacts<'_>) -> Result<i64> {
         let idx: i64 = self.index.scalar(
-            "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
+            "SELECT COALESCE(max(position), -1) + 1 FROM block WHERE message_pk = ?1",
             [message_pk],
         )?;
         let call = self.block(
@@ -502,7 +536,7 @@ impl Fixture {
             None => None,
         };
         self.index.execute(
-            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_message_id, result_idx, at, tool,
+            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_message_id, result_position, at, tool,
                  action, command, command_norm, path, outcome, exit_code)
              VALUES (?1, ?2, ?3, (SELECT id FROM message WHERE pk=?4), ?12, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
             params![
@@ -512,7 +546,7 @@ impl Fixture {
                 result.map(|_| message_pk),
                 t.at,
                 t.tool,
-                t.action,
+                (!t.action.is_empty()).then_some(t.action),
                 t.command,
                 t.path,
                 if t.outcome.is_empty() {
@@ -567,16 +601,16 @@ impl Fixture {
         {
             let mut session = tx.prepare(
                 "INSERT INTO session(id, origin, native_id, kind, cwd, cwd_json, started_at,
-                     last_activity_at, changed, started_time)
-                 VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, 1, ?7)",
+                     last_active_at, changed, started_time, started_precision, last_active_precision)
+                 VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, 1, ?7, 'instant', 'instant')",
             )?;
             let mut message = tx.prepare(
                 "INSERT INTO message(id, session_pk, input_pk, session_order, role,
-                     written_by, prompt_kind, at, on_active_path, words)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3)",
+                     written_by, prompt_kind, at, on_active_path, words, at_precision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3, 'instant')",
             )?;
             let mut block = tx.prepare(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+                "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                      content_start, content_length)
                  VALUES (?1, ?2, 0, 'text', ?3, ?4, ?5, ?6)",
             )?;
@@ -647,11 +681,23 @@ impl Fixture {
         Ok(pks)
     }
 
-    pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
+    pub fn link(
+        &mut self,
+        parent: &str,
+        child: &str,
+        kind: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, kind, how, evidence, input_pk)
-             VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
-            params![parent, child, kind, how, self.input_pk],
+            "INSERT INTO link_statement(parent_id, child_id, kind, reason, copies_prefix, evidence, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 0, 'fixture', ?5)",
+            params![parent, child, kind, reason, self.input_pk],
+        )?;
+        // As assembly resolves a relation with one statement.
+        self.index.execute(
+            "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, evidence, source_chain, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 0, 'fixture', 0, ?5)",
+            params![parent, child, kind, reason, self.input_pk],
         )?;
         // As the writer does: a lineage link marks its child and below.
         if crate::lineage::is_lineage(kind) {
@@ -667,9 +713,15 @@ impl Fixture {
     /// A link whose child repeats its parent's prefix.
     pub fn copying_link(&mut self, parent: &str, child: &str, kind: &str) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, kind, copies_prefix, evidence, input_pk)
-             VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
-            params![parent, child, kind, self.input_pk],
+            "INSERT INTO link_statement(parent_id, child_id, kind, reason, copies_prefix, evidence, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 1, 'fixture', ?5)",
+            params![parent, child, kind, None::<&str>, self.input_pk],
+        )?;
+        // As assembly resolves a relation with one statement.
+        self.index.execute(
+            "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, evidence, source_chain, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 1, 'fixture', 0, ?5)",
+            params![parent, child, kind, None::<&str>, self.input_pk],
         )?;
         if crate::lineage::is_lineage(kind) {
             crate::lineage::mark_due(&self.index, child)?;
@@ -690,7 +742,7 @@ impl Fixture {
         counted_only: bool,
     ) -> Result<()> {
         self.index.execute(
-            "INSERT INTO unused(input_pk, chain, format, what, count, counted_only)
+            "INSERT INTO unused(input_pk, chain, origin, item, count, counted_only)
              VALUES (?1, 1, ?2, ?3, ?4, ?5)",
             params![self.input_pk, format, what, count, i64::from(counted_only)],
         )?;
@@ -727,15 +779,16 @@ impl Fixture {
         })?;
         let piece = crate::content::store_piece(&self.index, &fields, Some(b"{}"))?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,source_chain,content_group,content_start,
-                 content_length,data_length,session_order) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10,?11)",
+            "INSERT INTO event(id,session_pk,position,kind,at,input_pk,source_chain,content_group,content_start,
+                 content_length,data_length,session_order,at_precision)
+                 VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10,?11,iif(?5 IS NULL, NULL, 'instant'))",
             params![id, session_pk, self.seq, kind, at, self.input_pk, piece.group, piece.start,
                 piece.length, piece.data_length,
                 crate::encoding::session_order(at, "fixture", self.seq, 0)],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
         self.index.execute(
-            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,kind,at,hash,
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,position,kind,at,hash,
                 imported_sources,content_group,content_start,content_length,data_length)
             SELECT ?2,1,?1,s.id,'live',?4,?5,?6,?3,'[]',?8,?9,?10,?11 FROM session s WHERE s.pk=?7",
             params![
@@ -1030,9 +1083,9 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
     )?;
     crate::source::views(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
-        FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
+        FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE origin=?1)",[origin])?;
     crate::archive::bump_counter(&tx)?;
     tx.commit()?;
     Ok(size)

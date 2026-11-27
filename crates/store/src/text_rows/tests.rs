@@ -244,7 +244,7 @@ fn a_text_is_one_row_and_a_removed_texts_key_is_never_given_again() {
 /// composition writes it.
 fn block(conn: &Connection, pk: i64, kind: &str, text: i64) {
     conn.execute(
-        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length)
+        "INSERT INTO block(pk,message_pk,session_pk,position,kind,text_id,content_group,content_start,content_length)
          VALUES (?1,1,1,?1,?2,?3,0,0,0)",
         params![pk, kind, text],
     )
@@ -296,7 +296,7 @@ fn search_membership_follows_the_blocks_that_hold_a_text() {
     assert_eq!((group(&conn), entries(&conn)), ("1:".into(), (1, 0)));
     // A document block holds it for the prose index after its last prose block.
     conn.execute(
-        "INSERT INTO document_block(document_pk,idx,kind,body,text_id) VALUES (1,0,'text',x'00',?1)",
+        "INSERT INTO document_block(document_pk,position,kind,body,text_id) VALUES (1,0,'text',x'00',?1)",
         [id],
     )
     .unwrap();
