@@ -45,8 +45,6 @@ const DECLARED_POINTS: &[&str] = &[
     "tool_database.comparison_commit",
     "vectors.read",
     "write.archive_commit",
-    "write.copy_reading",
-    "write.copy_table",
     "write.coverage",
     "write.index_commit",
     "write.input",

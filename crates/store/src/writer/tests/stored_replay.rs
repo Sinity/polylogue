@@ -49,6 +49,52 @@ fn queued_stored_reading_changes_only_the_index() {
     );
 }
 
+/// An older reading can arrive after both chains were captured but before
+/// the newer chain's reading. Publish the older records until the newer
+/// reading commits in their place.
+#[test]
+fn a_replayed_chain_keeps_records_until_the_newer_reading_commits() {
+    let w = test_archive();
+    let mut record = row(
+        0,
+        text_message("message", "session", Role::User, "Shared record", None),
+    );
+    record.end = 100;
+    let older = batch("rewrite", Route::Live, 0, vec![record], &["session"]);
+    let mut newer = older.clone();
+    newer.change = Change::Rewritten;
+    let older = w.commit_source(older, &SOURCE_RECORD).unwrap();
+    // Pass through a separate chain so the archive stores the repeated
+    // bytes as a new chain rather than observing its existing latest one.
+    let mut middle = batch("rewrite", Route::Live, 0, Vec::new(), &[]);
+    middle.change = Change::Rewritten;
+    w.commit_source(middle, &[b'x'; 100]).unwrap();
+    let newer = w.commit_source(newer, &SOURCE_RECORD).unwrap();
+    let chain = |batch: &Batch| match batch.change {
+        Change::Reparse { chain } => chain,
+        _ => panic!("a stored reading names its chain"),
+    };
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let holders = || {
+        assert!(w.writer.flush_rows().unwrap().errors.is_empty());
+        reads
+            .reader()
+            .unwrap()
+            .query("SELECT chain FROM message_parse ORDER BY chain", &[])
+            .unwrap()
+    };
+    w.store_reading(older.clone(), None).unwrap();
+    assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&older)})]);
+
+    w.store_reading(newer.clone(), None).unwrap();
+    assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&newer)})]);
+
+    // Another replay of the older reading also leaves the record with the
+    // newer chain, now genuinely present in the index.
+    w.store_reading(older, None).unwrap();
+    assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&newer)})]);
+}
+
 #[cfg(feature = "faults")]
 #[test]
 fn stored_reading_index_failure_keeps_source_and_can_retry() {

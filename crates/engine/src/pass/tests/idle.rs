@@ -15,11 +15,13 @@ fn stored_home(behind: bool) -> ClaudeHome {
     }
     if behind {
         let (archive, _lock) = Archive::open_or_create(&home.root).unwrap();
+        // The first version is repeated whole by the third and has no parse
+        // (docs/archive.md, readings).
         assert_eq!(
             polylogue_store::fixture::older_reading(&archive, "claude-code")
                 .unwrap()
                 .0,
-            3
+            2
         );
     }
     home

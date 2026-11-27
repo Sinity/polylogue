@@ -993,15 +993,39 @@ fn notes_withdrawn(a: &Aliases) -> String {
 
 pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 
-/// When Polylogue first had message `m`'s bytes: the earliest time a
-/// revision long enough to cover its records was read, over every chain
-/// whose records hold a version of it.
+/// When Polylogue first had this byte-framed record, over all revisions
+/// long enough to hold it. The chain and any others that agree through the
+/// record's end form a connected part of the agreement tree.
+pub fn record_first_seen(input: &str, route: &str, chain: &str, start: &str, end: &str) -> String {
+    format!(
+        "(WITH RECURSIVE held(chain) AS (SELECT {chain} \
+           UNION SELECT hc.begins_like FROM held JOIN source_chain hc \
+             ON hc.input = {input} AND hc.number = held.chain \
+             WHERE {route} NOT IN ('copy', 'export') AND {end} > {start} \
+               AND hc.begins_like IS NOT NULL AND hc.agrees_to >= {end} \
+           UNION SELECT hc.number FROM held JOIN source_chain hc \
+             ON hc.input = {input} AND hc.begins_like = held.chain \
+             WHERE {route} NOT IN ('copy', 'export') AND {end} > {start} \
+               AND hc.agrees_to >= {end}) \
+         SELECT min(hr.seen_at) FROM held CROSS JOIN source_revision hr \
+         WHERE hr.input = {input} AND hr.chain = held.chain \
+           AND hr.length > {start} AND hr.length >= {end})"
+    )
+}
+
+/// When Polylogue first had message `m`'s bytes: the earliest over every
+/// reading that holds a version of it.
 pub fn first_seen_of(m: &str) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM assembled_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
-         WHERE fs.message_pk = {m}.pk)"
+        "(SELECT min({seen}) FROM assembled_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+         WHERE fs.message_pk = {m}.pk)",
+        seen = record_first_seen(
+            "fi.id",
+            "fi.route",
+            "fs.chain",
+            "fs.source_start",
+            "fs.source_start + fs.source_length"
+        )
     )
 }
 
@@ -1024,23 +1048,32 @@ fn message_first_seen(a: &Aliases) -> String {
 
 fn session_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM message fm JOIN assembled_message_parse fs ON fs.message_pk = fm.pk \
-         JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
-         WHERE fm.session_pk = {}.pk)",
-        a.s
+        "(SELECT min({seen}) FROM message fm JOIN assembled_message_parse fs ON fs.message_pk = fm.pk \
+         JOIN input_ref fi ON fi.pk = fs.input_pk WHERE fm.session_pk = {}.pk)",
+        a.s,
+        seen = record_first_seen(
+            "fi.id",
+            "fi.route",
+            "fs.chain",
+            "fs.source_start",
+            "fs.source_start + fs.source_length"
+        )
     )
 }
 
-/// An event's first observation, as for a message, over its one chain.
+/// An event's first observation, as for a message, over its chain and the
+/// chains that hold its record.
 pub fn event_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM input_ref fi \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
-         AND fr.length > {r}.source_start AND fr.length >= coalesce({r}.source_end, {r}.source_start) \
-         WHERE fi.pk = {r}.input_pk)",
-        r = a.row
+        "(SELECT {seen} FROM input_ref fi WHERE fi.pk = {r}.input_pk)",
+        r = a.row,
+        seen = record_first_seen(
+            "fi.id",
+            "fi.route",
+            &format!("{}.source_chain", a.row),
+            &format!("{}.source_start", a.row),
+            &format!("coalesce({r}.source_end, {r}.source_start)", r = a.row)
+        )
     )
 }
 

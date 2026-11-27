@@ -53,6 +53,7 @@ fn write_test_rows(
             chain,
             source_commit: &fixture_commit(),
             replacement: false,
+            rebuilding: false,
             changes: &changes,
         },
         &mut touched,

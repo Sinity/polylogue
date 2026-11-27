@@ -342,6 +342,10 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
         ),
     );
     let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    // The archive beside the index, as the writer's connection has it.
+    let uri = format!("file:{}?mode=ro", w.archive.archive_db().display());
+    index.execute("ATTACH DATABASE ?1 AS a", [uri]).unwrap();
+    crate::source::views(&index).unwrap();
     // Immediate: the writer may still be applying search entries, and a
     // deferred transaction that read before its commit could not write.
     let tx = index
@@ -363,4 +367,57 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
+}
+
+/// A message an older chain first states within the bytes a newer chain
+/// shares with it, and that a later statement of the older chain adds
+/// blocks to, leaves with its first statement: the newer chain shows only
+/// what it states (docs/archive.md, readings).
+#[test]
+fn a_merge_after_the_agreement_leaves_with_the_older_chains_first_statement() {
+    let w = test_archive();
+    let message = original();
+    let id = message.id.clone();
+    let statement = |offset: u64, ordinals: &[u64]| {
+        let (part, selection) = selected(&message, ordinals);
+        let mut row = row(offset, part);
+        row.end = offset + 10;
+        (row, selection)
+    };
+    // Stores `bytes` as a chain of the input and writes `rows` as its parse.
+    let store = |change: Change, bytes: &[u8], rows: Vec<(MessageRow, ShownBlocks)>| {
+        let mut batch = batch("merged", Route::Live, 0, vec![], &["s"]);
+        batch.length = bytes.len() as u64;
+        batch.change = change;
+        let step = &mut batch.parse[0];
+        step.counts = counts(rows.len() as u64);
+        step.parsed_upto = bytes.len() as u64;
+        for (n, (row, selection)) in rows.into_iter().enumerate() {
+            step.output.messages.push(row);
+            step.output.block_selections.insert(n, selection);
+        }
+        step.prepare();
+        let prepared = w.archive.prepare_bytes(bytes).unwrap();
+        let mut captured = batch.clone();
+        captured.parse.clear();
+        let stored = w.writer.store_bytes(prepared, captured).unwrap();
+        batch.input.id = stored.input;
+        batch.change = Change::Reparse {
+            chain: stored.chain,
+        };
+        batch.observation = None;
+        w.writer.send(batch).unwrap();
+        let report = w.writer.flush_rows().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    };
+    store(
+        Change::First,
+        &[b'a'; 40],
+        vec![statement(0, &[0, 1]), statement(20, &[2, 3])],
+    );
+    assert_eq!(current(&w, &id).1.block_ordinals, [0, 1, 2, 3]);
+    // The rewrite agrees with the first chain through byte 15.
+    let rewrite = [[b'a'; 15].as_slice(), &[b'b'; 25]].concat();
+    store(Change::Rewritten, &rewrite, vec![statement(0, &[0, 1])]);
+    assert_eq!(current(&w, &id).1.block_ordinals, [0, 1]);
 }

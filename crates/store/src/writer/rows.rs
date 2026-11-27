@@ -20,6 +20,8 @@ pub(super) struct StepWrite<'a> {
     /// The first step of a complete replacement replaces the chain's wire
     /// shapes rather than adding to them.
     pub replacement: bool,
+    /// A rebuild writes independent readings before installing the index.
+    pub rebuilding: bool,
     pub changes: &'a ChangeSummary,
 }
 
@@ -120,6 +122,19 @@ pub(super) fn write_step(
             ])?;
         }
     }
+    super::repeated::follow(
+        tx,
+        w.changes,
+        &b.input,
+        input_pk,
+        chain,
+        super::repeated::Seen {
+            from: if p.reset { 0 } else { previous.seen_to() },
+            next: &next,
+            rebuilding: w.rebuilding,
+        },
+        touched,
+    )?;
     Ok(())
 }
 

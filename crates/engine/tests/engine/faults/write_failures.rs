@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{ClaudeHome, claude_assistant, claude_user};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::sync::Arc;
@@ -218,4 +218,67 @@ fn status_is_correct_after_a_writer_killed_mid_transaction() {
     assert_eq!(figures(&after), (2, 2, 2, 0, 0));
     assert_eq!(after.parse_states.get("done"), Some(&2));
     assert_eq!(w.texts("second"), ["second body"]);
+}
+
+/// A file read once, then rewritten so that it repeats the first version's
+/// first records and differs after them: the pass that reads the rewrite
+/// trims the older version in its index transaction.
+fn rewritten(w: &ClaudeHome) {
+    let first = claude_user("one", "same", "shared first prompt")
+        + &claude_assistant("two", "same", "first answer");
+    w.append("same.jsonl", &first);
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert_eq!(engine.run_pass().unwrap().errors, []);
+    drop(engine);
+    fs::write(
+        w.file("same.jsonl"),
+        claude_user("one", "same", "shared first prompt")
+            + &claude_assistant("three", "same", "edited answer"),
+    )
+    .unwrap();
+}
+
+/// The process is killed at `point` while it reads the rewrite; a restart
+/// ends with the index tables a rebuild of the same archive holds, which
+/// are those of an uninterrupted run (docs/architecture.md, durability).
+fn killed_and_restarted(point: &str) {
+    fault::clear();
+    let w = ClaudeHome::new();
+    rewritten(&w);
+    interrupt_write(&w, point, false);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, [], "{point}");
+    }
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM parse_state"),
+        2,
+        "{point}"
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM message_parse WHERE message_id='claude-code:one'"),
+        1,
+        "{point}: only the newer reading holds the shared record"
+    );
+    let restarted = crate::tables::dump(&w);
+    polylogue_testkit::delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, [], "{point}");
+    }
+    let differ = crate::tables::differences(&restarted, &crate::tables::dump(&w));
+    assert!(differ.is_empty(), "{point}: {differ}");
+}
+
+#[test]
+fn a_kill_between_the_archive_commit_and_the_index_commit_ends_as_a_rebuild() {
+    killed_and_restarted("capture.after_commit");
+}
+
+/// The transaction that gives the rewrite its rows also takes the older
+/// version's shared records from it; a kill before it commits leaves both
+/// as they were.
+#[test]
+fn a_kill_inside_the_index_transaction_that_trims_ends_as_a_rebuild() {
+    killed_and_restarted("write.index_commit");
 }

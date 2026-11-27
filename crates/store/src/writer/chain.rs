@@ -276,6 +276,7 @@ impl Inner {
             ReadingWrite {
                 register: &self.archive,
                 changes: &changes,
+                rebuilding: false,
             },
             &input,
             chain,
@@ -300,6 +301,7 @@ pub(super) struct ReadingWrite<'a> {
     /// Answers which attachment bytes the archive holds.
     pub register: &'a Connection,
     pub changes: &'a crate::change_summary::ChangeSummary,
+    pub rebuilding: bool,
 }
 
 impl crate::parse::ParseSink for Replacement {
@@ -400,6 +402,7 @@ impl ChainSteps {
                 chain: self.chain,
                 source_commit: &source_commit,
                 replacement,
+                rebuilding: w.rebuilding,
                 changes: w.changes,
             },
             touched,

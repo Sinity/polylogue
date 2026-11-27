@@ -772,6 +772,7 @@ impl crate::parse::ParseSink for OpenChain<'_> {
         let w = super::chain::ReadingWrite {
             register: self.register,
             changes: &self.changes,
+            rebuilding: true,
         };
         self.steps
             .write(&self.tx, &w, step, &mut super::readings::Touched::default())?;
