@@ -157,7 +157,10 @@ fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
         (
             format!("{revisions} WHERE r.commit_seq <= ?2"),
             format!("{observations} WHERE o.commit_seq <= ?2"),
-            crate::source::database_original_from("c.input", "observations"),
+            crate::source::database_original_from(
+                "c.input",
+                "(SELECT * FROM source_observation WHERE commit_seq <= ?2)",
+            ),
         )
     } else {
         (
