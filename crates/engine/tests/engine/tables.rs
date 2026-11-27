@@ -96,7 +96,12 @@ pub(crate) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 "(SELECT g.body FROM content_group g WHERE g.id=t.content_group) AS content_group"
                     .to_owned()
             } else if table == "wire_parse" && name == "state" {
-                format!("json_remove(t.state,{}) AS state", READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(","))
+                // Each archive copy assigns its own observation ID to the
+                // appended bytes. The committed range and time still agree.
+                format!(
+                    "json_remove(t.state,{},'$.completed.observation') AS state",
+                    READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(",")
+                )
             } else { format!("t.\"{name}\"") }
         }).collect::<Vec<_>>().join(",");
         let mut statement = conn
