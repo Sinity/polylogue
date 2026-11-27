@@ -77,11 +77,10 @@ pub(super) fn session_read(request: &ReadRequest) -> Option<&SessionRead> {
 /// remains independently unread even when a later part has already been read.
 pub(super) fn bind_seen(
     reader: &Reader<'_>,
-    request: &ReadRequest,
+    mut request: ReadRequest,
     operation: &crate::operation::Context,
     composed: &Composed,
 ) -> Result<ReadRequest, Error> {
-    let mut request = request.clone();
     if request.cursor.is_none()
         && let crate::ReadStart::Bound(bound) = &mut request.start
         && bound.logical

@@ -311,6 +311,11 @@ impl ReadOptions {
             _ => OUTPUT_LINES,
         }
     }
+    /// An explicit start rather than the reader's saved mark.
+    pub fn from_position(&self) -> Option<&str> {
+        self.from.as_deref().filter(|start| *start != "seen")
+    }
+
     /// The parent's copied prefix.
     pub fn inherited(&self) -> bool {
         self.shown(ShowKind::Inherited, false)

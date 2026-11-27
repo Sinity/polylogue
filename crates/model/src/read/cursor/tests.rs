@@ -191,6 +191,7 @@ fn a_session_lower_bound_round_trips_and_an_ordinary_cursor_stores_none() {
         after: Some("block:test:one:m1#0".into()),
         window_end: None,
         until: None,
+        from_position: None,
     });
     assert_eq!(PageCursor::open(&bound.seal(&key), &key).unwrap(), bound);
     // The lower bound is inside the sealed payload: changing it is refused.
@@ -218,6 +219,7 @@ fn composed_session_bounds_survive_sealing_without_changing_physical_defaults() 
         parts: vec![],
         window_end: None,
         until: None,
+        from_position: None,
     };
     let value = serde_json::to_value(&physical).unwrap();
     assert!(value.get("logical").is_none());

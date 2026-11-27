@@ -162,13 +162,31 @@ pub struct SessionRead {
     pub window_end: Option<(SessionId, EntryKey)>,
     /// The accepted end of an explicit range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until: Option<SessionEnd>,
+    pub until: Option<SessionBoundary>,
+    /// The accepted beginning named by a message or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_position: Option<SessionBoundary>,
+}
+
+impl SessionRead {
+    pub fn beginning(session: SessionId, logical: bool) -> Self {
+        Self {
+            session,
+            from_seen: false,
+            after: None,
+            logical,
+            parts: Vec::new(),
+            window_end: None,
+            until: None,
+            from_position: None,
+        }
+    }
 }
 
 /// A boundary in the transcript of one physical owner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SessionEnd {
+pub struct SessionBoundary {
     pub owner: SessionId,
     pub entry: EntryKey,
     /// When the named time is beyond the last entry, retain that entry.

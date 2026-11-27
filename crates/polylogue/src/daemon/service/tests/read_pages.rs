@@ -757,6 +757,35 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
         ),
         format!("{parent}{child}")
     );
+    let source = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        300,
+        None,
+    );
+    let from = source
+        .document
+        .items
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+        .unwrap()
+        .source
+        .reference
+        .clone();
+    let mut read = polylogue_reading::ReadRequest::new(
+        "session:claude-code:child",
+        ReadOptions {
+            from: Some(from),
+            ..Default::default()
+        },
+    );
+    read.budget = polylogue_model::read::ReadBudget::Unlimited;
+    let ranged = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+    let mut text = Text::default();
+    text.page(&ranged);
+    assert_eq!(text.value, format!("{parent}{child}"));
 }
 
 #[test]
@@ -1077,7 +1106,7 @@ fn middle_page_start_does_not_visit_prefix() {
 }
 
 #[test]
-fn until_uses_exclusive_compactions_messages_and_times() {
+fn session_ranges_use_message_time_and_compaction_boundaries() {
     let d = test_daemon::start("placeholder");
     let target = "session:claude-code:range";
     let message = |id: &str, second: u32, text: &str| {
@@ -1104,11 +1133,12 @@ fn until_uses_exclusive_compactions_messages_and_times() {
     .concat();
     std::fs::write(&path, &source).unwrap();
     d.wait_for(|status| status["store"]["messages"] == 4);
-    let read = |until: Option<String>, budget| {
+    let read = |from: Option<String>, until: Option<String>, budget| {
         let mut read = polylogue_reading::ReadRequest::new(
             target,
             ReadOptions {
                 view: View::Dialogue,
+                from,
                 until,
                 ..Default::default()
             },
@@ -1116,7 +1146,7 @@ fn until_uses_exclusive_compactions_messages_and_times() {
         read.budget = budget;
         crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon))
     };
-    let all = read(None, polylogue_model::read::ReadBudget::Unlimited);
+    let all = read(None, None, polylogue_model::read::ReadBudget::Unlimited);
     let last = all
         .document
         .items
@@ -1134,12 +1164,28 @@ fn until_uses_exclusive_compactions_messages_and_times() {
     ] {
         let mut text = Text::default();
         text.page(&read(
+            None,
             Some(until.into()),
             polylogue_model::read::ReadBudget::Unlimited,
         ));
         assert_eq!(text.value, expected, "end before {until}");
     }
+    for (from, until, expected) in [
+        ("2026-03-01T10:00:02Z", None, "betagamma"),
+        ("2s", Some(last.as_str()), "beta"),
+        (last.as_str(), None, "gamma"),
+        (last.as_str(), Some("2s"), ""),
+    ] {
+        let mut text = Text::default();
+        text.page(&read(
+            Some(from.into()),
+            until.map(str::to_owned),
+            polylogue_model::read::ReadBudget::Unlimited,
+        ));
+        assert_eq!(text.value, expected, "start at {from}, end at {until:?}");
+    }
     let first = read(
+        None,
         Some("compaction".into()),
         polylogue_model::read::ReadBudget::Tokens(8),
     );
@@ -1158,6 +1204,7 @@ fn until_uses_exclusive_compactions_messages_and_times() {
     assert_eq!(text.value, "alpha");
     let mut latest = Text::default();
     latest.page(&read(
+        None,
         Some("compaction".into()),
         polylogue_model::read::ReadBudget::Unlimited,
     ));
