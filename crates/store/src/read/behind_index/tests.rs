@@ -502,3 +502,85 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
         assert_eq!(source("fallback").format, "claude-export");
     }
 }
+
+#[test]
+fn a_cut_excludes_later_bytes_and_observations_on_every_input_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive.execute_batch(
+        "INSERT INTO input VALUES ('a','native'),('b','native'),('c','native'),('unrelated','native');
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES
+           ('a',1,'first',1,10,1),('a',2,'appended',1,20,2),
+           ('b',1,'first',1,30,1),('b',2,'rewritten',2,40,3),
+           ('c',1,'first',1,50,4),('unrelated',1,'first',1,1,1);
+         INSERT INTO observation(id,input,machine,path_bytes,class,details_json,
+                                 polylogue_version,seen_at,commit_seq) VALUES
+           ('0-original','b','m',CAST('/home/op/original' AS BLOB),'first',NULL,'test',1,1),
+           ('1-import','b','m',CAST('/home/op/later' AS BLOB),'imported',
+             '{\"import_format\":\"codex-rollout\"}','test',3,3);"
+    ).unwrap();
+    let versions = versions(&["native", "codex-rollout"]);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (input, length, path) in [("a", 10, None), ("b", 30, Some("/home/op/original"))] {
+        assert_eq!(
+            reader
+                .chains_behind_index_at(
+                    &versions,
+                    RevisionChains::All,
+                    Some(&[input.into()]),
+                    Some(Position(1))
+                )
+                .unwrap(),
+            [expected(
+                input,
+                1,
+                length,
+                true,
+                ("native", path),
+                false,
+                None
+            )],
+        );
+    }
+    assert_eq!(
+        reader
+            .count_chains_behind_index_at(&versions, "c", Some(Position(1)))
+            .unwrap(),
+        (2, 40),
+    );
+    let after = reader
+        .changed_input_ids(Position(1), Position(3), None, 1)
+        .unwrap();
+    assert_eq!(after, ["a"]);
+    let rest = reader
+        .changed_input_ids(Position(1), Position(3), Some(&after[0]), 10)
+        .unwrap();
+    assert_eq!(rest, ["b"]);
+    assert_eq!(
+        reader
+            .chains_behind_index_at(
+                &versions,
+                RevisionChains::Newest,
+                Some(&rest),
+                Some(Position(3))
+            )
+            .unwrap(),
+        [expected(
+            "b",
+            2,
+            40,
+            true,
+            ("codex-rollout", Some("/home/op/later")),
+            false,
+            None
+        )],
+    );
+    assert_eq!(
+        reader
+            .changed_input_ids(Position(3), Position(4), None, 5)
+            .unwrap(),
+        ["c"]
+    );
+}
