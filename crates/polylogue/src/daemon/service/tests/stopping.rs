@@ -103,6 +103,12 @@ fn stop_during_a_pass_keeps_committed_rows() {
 
 #[test]
 fn stop_during_index_rebuild_keeps_stored_bytes() {
+    for point in ["index.build.prepare", "index.deferred"] {
+        stop_at_rebuild_stage(point);
+    }
+}
+
+fn stop_at_rebuild_stage(point: &str) {
     let records: String = (0..48)
         .map(|n| {
             polylogue_testkit::claude_user(&format!("rebuild-{n}"), "rebuild", "stored source")
@@ -122,7 +128,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
     let mut config = original.config.clone();
     config.reads_sources = false;
     fault::clear();
-    fault::arm("index.build.prepare", "", Action::Hold, 0, 1);
+    fault::arm(point, "", Action::Hold, 0, 1);
     let mut runtime = crate::daemon::service::start(
         crate::config::Config::for_test(&config, &root),
         config.clone(),
@@ -133,7 +139,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
     .unwrap();
     assert!(
         fault::wait_held_within(std::time::Duration::from_secs(30)),
-        "no thread reached the held point"
+        "no thread reached {point}"
     );
     let mut idle = runtime.idle();
     runtime.stop_accepting();

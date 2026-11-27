@@ -2025,11 +2025,9 @@ impl Engine {
         if !self.archive.index_files()?.serves() {
             let mut storing = Vec::with_capacity(plans.len());
             for mut plan in plans {
-                plan.storing_only = true;
                 if matches!(plan.source, pool::Bytes::File) {
+                    plan.storing_only = true;
                     storing.push(plan);
-                } else {
-                    self.finish_plan(plan);
                 }
             }
             plans = storing;
@@ -2069,6 +2067,10 @@ impl Engine {
             let Some(mut plan) = self.admit(plan, pass)? else {
                 continue;
             };
+            if plan.storing_only {
+                pooled.push(plan);
+                continue;
+            }
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
@@ -2093,7 +2095,7 @@ impl Engine {
                 replacements.push(plan);
                 continue;
             }
-            if let Some(parser) = export_parser(&plan).filter(|_| !plan.storing_only) {
+            if let Some(parser) = export_parser(&plan) {
                 let later = later_paths(&plan, &plans);
                 self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
                 if self.yielding() {

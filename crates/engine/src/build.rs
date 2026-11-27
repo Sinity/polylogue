@@ -12,7 +12,7 @@
 //! bring the installed rebuild forward from the archive position it covers.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
-use crossbeam_channel::{Receiver, Select, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Select, Sender, TryRecvError, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::index::rebuild::{Rebuild, RebuildStage, RebuildWorker, StageRecord};
@@ -301,7 +301,7 @@ impl Engine {
         let prepared = std::thread::scope(|scope| {
             // Each worker holds a sender it never sends on: the channel
             // disconnects when the last worker ends.
-            let (running, finished) = crossbeam_channel::bounded::<()>(0);
+            let (running, finished) = crossbeam_channel::bounded::<std::convert::Infallible>(0);
             let prepare = &prepare;
             let handles: Vec<_> = (0..workers)
                 .map(|n| {
@@ -315,14 +315,12 @@ impl Engine {
                 })
                 .collect::<std::io::Result<_>>()?;
             drop(running);
-            let mut result = self.plan_build(prepare, plans_tx, through, &mut pass);
-            while result.is_ok() {
-                match self.wait_answering(&finished, &mut pass) {
-                    Ok(true) => break,
-                    Ok(false) => {}
-                    Err(error) => result = Err(error),
-                }
-            }
+            let mut result = self
+                .plan_build(prepare, plans_tx, through, &mut pass)
+                .and_then(|()| {
+                    self.receive_while_answering(&finished, &mut pass)
+                        .map(|_| ())
+                });
             if result.is_err() {
                 prepare.settings.yielding.store(true, Ordering::Release);
             }
@@ -355,25 +353,26 @@ impl Engine {
         let (done, finished) = crossbeam_channel::bounded(1);
         let writer = self.writer.sender();
         let runs = runs.into_iter().map(|(_, path)| path).collect();
-        let handle = std::thread::Builder::new()
-            .name("polylogue-rebuild".into())
-            .spawn(move || {
-                let built =
-                    polylogue_model::caught(|| rebuild.finish(runs, parsed, workers, &writer))
-                        .unwrap_or_else(|panic| Err(polylogue_store::StoreError::internal(panic)));
-                let _ = done.send(built);
+        let stop = self.archive.stop().clone();
+        let built = std::thread::scope(|scope| {
+            // The worker must end before the engine can release the archive.
+            std::thread::Builder::new()
+                .name("polylogue-rebuild".into())
+                .spawn_scoped(scope, move || {
+                    let built = polylogue_model::caught(|| {
+                        polylogue_store::cancellation::under(&stop, || {
+                            rebuild.finish(runs, parsed, workers, &writer)
+                        })
+                    })
+                    .unwrap_or_else(|panic| Err(polylogue_store::StoreError::internal(panic)));
+                    let _ = done.send(built);
+                })?;
+            let answer = self.receive_while_answering(&finished, &mut pass)?;
+            let answer = answer.ok_or_else(|| {
+                polylogue_store::StoreError::internal("the rebuild ended without an answer")
             })?;
-        let built = loop {
-            if let Ok(built) = finished.try_recv() {
-                break built;
-            }
-            if self.wait_answering(&finished, &mut pass)? && finished.is_empty() {
-                break Err(polylogue_store::StoreError::internal(
-                    "the rebuild ended without an answer",
-                ));
-            }
-        };
-        let _ = handle.join();
+            Ok::<_, EngineError>(answer?)
+        });
         // Positions read before the rebuild named the build file's empty
         // index; the next pass reads them from the installed one, or, when
         // the rebuild failed, from the build file made again.
@@ -386,14 +385,13 @@ impl Engine {
         Ok((pass, records))
     }
 
-    /// Blocks until `work` has a message or has disconnected, answering
-    /// each request that arrives meanwhile. True once `work` has
-    /// disconnected with nothing left on it.
-    fn wait_answering<T>(
+    /// Receives a message from `work`, answering each request that arrives
+    /// meanwhile. An empty answer means the sender has disconnected.
+    fn receive_while_answering<T>(
         &mut self,
         work: &Receiver<T>,
         pass: &mut Pass,
-    ) -> Result<bool, EngineError> {
+    ) -> Result<Option<T>, EngineError> {
         loop {
             let requests = self.waiting_requests();
             let mut select = Select::new();
@@ -402,11 +400,11 @@ impl Engine {
                 select.recv(requests);
             }
             if select.ready() == ready {
-                return Ok(work.is_empty()
-                    && matches!(
-                        work.try_recv(),
-                        Err(crossbeam_channel::TryRecvError::Disconnected)
-                    ));
+                match work.try_recv() {
+                    Ok(answer) => return Ok(Some(answer)),
+                    Err(TryRecvError::Disconnected) => return Ok(None),
+                    Err(TryRecvError::Empty) => continue,
+                }
             }
             self.answer_waiting(pass)?;
         }
@@ -433,6 +431,9 @@ impl Engine {
                 break;
             };
             if matches!(message, LoopMsg::Stop) {
+                if !self.archive.stop().is_cancelled() {
+                    self.archive.stop().cancel();
+                }
                 if let Some(requests) = &mut self.requests {
                     requests.pending = Some(message);
                 }
