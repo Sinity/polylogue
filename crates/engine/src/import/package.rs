@@ -78,15 +78,24 @@ pub(super) fn stage(
         &mut Expansion::default(),
         &mut members,
     )?;
+    let kept = polylogue_sources::origin::by_name(KEPT);
+    // Keep the original of any container with an accepted descendant.
+    for index in (0..members.len()).rev() {
+        if members[index].origin.is_some()
+            && let Some((parent, _)) = members[index].parent
+        {
+            members[parent].origin = kept;
+        }
+    }
     // A repeated container shares the route of its first, expanded copy.
-    let kept: std::collections::HashSet<_> = members
+    let kept_hashes: std::collections::HashSet<_> = members
         .iter()
         .filter(|member| member.container && member.origin.is_some())
         .map(|member| member.bytes.hash())
         .collect();
     for member in members.iter_mut().filter(|member| member.container) {
-        if member.origin.is_none() && kept.contains(&member.bytes.hash()) {
-            member.origin = polylogue_sources::origin::by_name(KEPT);
+        if member.origin.is_none() && kept_hashes.contains(&member.bytes.hash()) {
+            member.origin = kept;
         }
     }
     super::bundle::preflight(&mut members)?;
@@ -242,7 +251,6 @@ fn expand(
     drop(file);
     let index = out.len();
     let root = PathBuf::from(format!("{}!", path.display()));
-    member.origin = polylogue_sources::origin::by_name(KEPT);
     out.push(member);
     let kind = container.kind();
     let mut pending = Vec::new();
