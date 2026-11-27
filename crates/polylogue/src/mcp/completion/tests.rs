@@ -38,7 +38,7 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     let (_, direct, failed) = runtime()
         .unwrap()
         .block_on(run(
-            archive,
+            &Target::Archive(archive.clone()),
             command_surface::RunnableRequest::new(
                 "internal complete",
                 json!({"text":"live: | measure count","position":5}),

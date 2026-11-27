@@ -2,6 +2,25 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
+fn unread_status_figures_keep_their_wire_milestones() {
+    use crate::protocol::status::{AnswersFrom, NotReadSince};
+    for (since, wire) in [
+        (
+            NotReadSince::Start,
+            r#"{"kind":"not_read_yet","since":"start"}"#,
+        ),
+        (
+            NotReadSince::Install,
+            r#"{"kind":"not_read_yet","since":"install"}"#,
+        ),
+    ] {
+        let value = AnswersFrom::NotReadYet { since };
+        assert_eq!(serde_json::to_string(&value).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<AnswersFrom>(wire).unwrap(), value);
+    }
+}
+
+#[test]
 fn selection_forms_keep_their_wire_bytes() {
     use crate::protocol::line::SelectionForm;
     let wire = r#"["none","query","reference","references","kept_result"]"#;

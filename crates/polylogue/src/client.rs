@@ -7,7 +7,7 @@ use polylogue_store::Archive;
 use serde_json::Value;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -252,7 +252,7 @@ impl<'a> Exchange<'a> {
     /// Connects to `socket` at once, without waiting for a daemon that is
     /// still starting, and takes the one answer.
     pub(crate) fn call(&self, socket: &Path) -> io::Result<Answer<Value>> {
-        let connection = UnixStream::connect(socket)?;
+        let connection = crate::socket::connect(socket)?;
         self.on(connection, refuse_events)
             .map(|answer| answer.expect("a call without events runs to its answer"))
     }
@@ -271,15 +271,16 @@ impl<'a> Exchange<'a> {
             self.on(connection, refuse_events)
                 .map(|answer| answer.expect("a call without events runs to its answer"))
         });
-        match answer {
-            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                Ok(Answer::error(crate::protocol::failure(
-                    polylogue_model::Code::DeadlineExceeded,
-                    error.to_string(),
-                )))
-            }
-            answer => answer,
-        }
+        answer_with_deadline(answer)
+    }
+}
+
+fn answer_with_deadline(answer: io::Result<Answer<Value>>) -> io::Result<Answer<Value>> {
+    match answer {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(Answer::error(
+            crate::protocol::failure(polylogue_model::Code::DeadlineExceeded, error.to_string()),
+        )),
+        answer => answer,
     }
 }
 
@@ -377,12 +378,7 @@ pub fn call(
     socket: &Path,
     request: &command_surface::RunnableRequest,
 ) -> io::Result<Answer<Value>> {
-    match Exchange::new(request).call(socket) {
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(Answer::error(
-            crate::protocol::failure(polylogue_model::Code::DeadlineExceeded, error.to_string()),
-        )),
-        answer => answer,
-    }
+    answer_with_deadline(Exchange::new(request).call(socket))
 }
 
 /// A hook uses the existing daemon only; its budget covers the entire exchange.
@@ -398,10 +394,16 @@ pub(crate) fn call_with_budget(
     .call(socket)
 }
 
-/// A ready call from async code, the MCP server's: the exchange runs on a
-/// blocking thread, and the token's cancellation hangs up its connection.
-pub(crate) async fn call_ready_as_bounded(
-    archive: &Archive,
+/// The archive's own transport, or the runtime socket used by managed MCP.
+#[derive(Clone)]
+pub(crate) enum Target {
+    Archive(Archive),
+    Socket(PathBuf),
+}
+
+/// Runs the exchange on a blocking thread and hangs it up on cancellation.
+pub(crate) async fn call_as_bounded(
+    target: &Target,
     request: &command_surface::RunnableRequest,
     cancelled: &tokio_util::sync::CancellationToken,
     caller: command_surface::CallerEvidence,
@@ -409,16 +411,19 @@ pub(crate) async fn call_ready_as_bounded(
 ) -> io::Result<Answer<Value>> {
     let hang_up = std::sync::Arc::new(HangUp::default());
     let mut work = tokio::task::spawn_blocking({
-        let (archive, request, hang_up) = (archive.clone(), request.clone(), hang_up.clone());
+        let (target, request, hang_up) = (target.clone(), request.clone(), hang_up.clone());
         move || {
-            Exchange {
+            let exchange = Exchange {
                 caller,
                 parent_deadline_ms,
                 budget: connection_deadline(&request, parent_deadline_ms),
                 hang_up: Some(&hang_up),
                 ..Exchange::new(&request)
+            };
+            match target {
+                Target::Archive(archive) => exchange.call_ready(&archive),
+                Target::Socket(path) => answer_with_deadline(exchange.call(&path)),
             }
-            .call_ready(&archive)
         }
     });
     tokio::select! {

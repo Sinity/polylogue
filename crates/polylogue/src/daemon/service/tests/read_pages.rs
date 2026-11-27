@@ -1,7 +1,7 @@
 use super::*;
 use command_surface::RunnableRequest as ResumeArguments;
 use polylogue_model::read::{
-    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
+    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, ValueState, View,
 };
 
 fn request(
@@ -782,6 +782,95 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
         ),
         "latest human prompt λ🙂"
     );
+}
+
+#[test]
+fn first_and_last_select_messages_and_report_the_exact_omission() {
+    let d = test_daemon::start("placeholder");
+    add_selected_session(
+        &d,
+        &[
+            ("m1", "alpha"),
+            ("m2", "beta"),
+            ("m3", "gamma"),
+            ("m4", "delta"),
+        ],
+    );
+    for (first, last, expected, omitted) in [
+        (Some(1), Some(1), "alphadelta", 2),
+        (Some(2), None, "alphabeta", 2),
+        (None, Some(2), "gammadelta", 2),
+        (Some(3), Some(3), "alphabetagammadelta", 0),
+        (Some(0), Some(0), "", 4),
+    ] {
+        let mut read = polylogue_reading::ReadRequest::new(
+            "session:claude-code:s2",
+            ReadOptions {
+                view: View::Dialogue,
+                first,
+                last,
+                ..Default::default()
+            },
+        );
+        read.budget = polylogue_model::read::ReadBudget::Unlimited;
+        let page = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+        let mut text = Text::default();
+        text.page(&page);
+        assert_eq!(text.value, expected);
+        let counts: Vec<_> = page
+            .document
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Omission {
+                    count: ValueState::Value { value },
+                    why,
+                    ..
+                } if why == "outside the requested message window" => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts, if omitted == 0 { vec![] } else { vec![omitted] });
+    }
+}
+
+#[test]
+fn tail_pages_keep_their_original_end_after_an_append() {
+    let d = test_daemon::start("placeholder");
+    add_selected_session(
+        &d,
+        &[
+            ("m1", "alpha"),
+            ("m2", "beta"),
+            ("m3", "gamma"),
+            ("m4", "delta"),
+        ],
+    );
+    let target = "session:claude-code:s2";
+    let mut read = polylogue_reading::ReadRequest::new(
+        target,
+        ReadOptions {
+            view: View::Dialogue,
+            last: Some(2),
+            ..Default::default()
+        },
+    );
+    read.budget = polylogue_model::read::ReadBudget::Tokens(8);
+    let opening = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+    let mut cursor = Some(next(&opening).expect("the tail takes multiple pages"));
+    let path = d.home.join(".claude/projects/-p/s2.jsonl");
+    let mut source = std::fs::read_to_string(&path).unwrap();
+    source.push_str(&polylogue_testkit::claude_user("m5", "s2", "epsilon"));
+    std::fs::write(path, source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 6 && status["store"]["search_pending"] == 0);
+    let mut text = Text::default();
+    text.page(&opening);
+    while let Some(current) = cursor {
+        let continued = page(&d.daemon, target, false, View::Dialogue, 8, Some(&current));
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    assert_eq!(text.value, "gammadelta");
 }
 
 #[test]

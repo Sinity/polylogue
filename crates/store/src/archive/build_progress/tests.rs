@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn build_count_units_keep_their_status_words_and_wire_names() {
+    let wire = r#"["bytes","files","records","indexes","sessions"]"#;
+    assert_eq!(serde_json::to_string(&CountUnit::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<CountUnit>>(wire).unwrap(),
+        CountUnit::ALL
+    );
+    assert_eq!(
+        CountUnit::ALL.map(CountUnit::word),
+        ["bytes", "files", "records", "indexes", "sessions"]
+    );
+}
+
 const MB: u64 = 1_000_000;
 
 fn bytes(done: u64) -> StepCount {

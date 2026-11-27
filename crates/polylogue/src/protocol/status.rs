@@ -131,13 +131,14 @@ pub enum AnswersFrom {
     NotReadYet { since: NotReadSince },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum NotReadSince {
-    /// The daemon started.
-    Start,
-    /// A built index was installed.
-    Install,
+polylogue_model::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum NotReadSince {
+        /// The daemon started.
+        Start => "start",
+        /// A built index was installed.
+        Install => "install",
+    }
 }
 
 impl AnswersFrom {
