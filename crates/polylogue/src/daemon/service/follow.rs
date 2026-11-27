@@ -3,8 +3,7 @@
 //! each committed index change (the live clock commits transitions that
 //! come from time alone), reads the selection again and looks again only at
 //! the selected sessions whose rows or live state changed since its last
-//! look, and ends before the request's deadline with the marks the client
-//! sends back.
+//! look. A deadline that passes ends the request with a timeout.
 use super::{Failure, accepting};
 use crate::daemon::handler::Call;
 use crate::protocol::follow::{Line, Marks, step};
@@ -13,7 +12,7 @@ use polylogue_model::SessionId;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Time kept before the deadline to send the marks.
+/// Time kept before the deadline to send a waiting listing's reply.
 pub(super) const REPLY_MARGIN: Duration = Duration::from_millis(500);
 
 pub(crate) fn run(
@@ -88,10 +87,11 @@ pub(crate) fn run(
         .map_err(Failure::io)?;
         let left = limit
             .as_ref()
-            .and_then(polylogue_store::read::limit::ReadLimit::remaining)
-            .map(|left| left.saturating_sub(REPLY_MARGIN));
+            .and_then(polylogue_store::read::limit::ReadLimit::remaining);
         if left.is_some_and(|left| left.is_zero()) {
-            return Ok(marks);
+            return Err(Failure::store(
+                &polylogue_store::StoreError::ReadDeadlineExceeded,
+            ));
         }
         if commits.is_none() && left.is_none() {
             return Ok(marks);

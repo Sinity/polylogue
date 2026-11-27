@@ -83,7 +83,7 @@ pub(crate) fn prepare_with(
     let previous = after
         .map(|s| {
             ChangePosition::parse(s).ok_or_else(|| {
-                Failure::bad_request("after takes a position INDEX_INSTANCE:INDEX:ARCHIVE")
+                Failure::bad_value("after takes a position INDEX_INSTANCE:INDEX:ARCHIVE")
             })
         })
         .transpose()?;
