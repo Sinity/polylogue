@@ -14,11 +14,6 @@ const L5: &str = "claude-code:7f3a2c10-0105-4000-8000-000000000105";
 /// Facts that do not hold yet. Delete an entry when its assertion starts to match.
 const GAPS: &[(&str, &str, &str)] = &[
     (
-        L1,
-        "spawn tree cost",
-        "L1 tree cost includes its fork; FACTS.md includes only spawn descendants",
-    ),
-    (
         L5,
         "own messages",
         "L5 counts forkedFrom copies as own messages; FACTS.md assigns them to L1",
@@ -173,9 +168,16 @@ fn parents_set_lineage_matches_morrow_facts() {
         here: None,
         seen_marks_of: None,
         saved: Default::default(),
-        fields: ["id", "messages", "cost", "tree_cost", "cost_complete"]
-            .map(str::to_owned)
-            .to_vec(),
+        fields: [
+            "id",
+            "messages",
+            "cost",
+            "tree_cost",
+            "subagent_cost",
+            "cost_complete",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
         kept: Default::default(),
         provider_catalog: None,
     };
@@ -243,7 +245,7 @@ fn parents_set_lineage_matches_morrow_facts() {
                 link.child.to_string(),
                 link.kind.as_str().to_owned(),
                 link.call_id,
-                link.how.map(|how| how.as_str().to_owned()),
+                link.reason.map(|reason| reason.as_str().to_owned()),
             ));
         }
     }
@@ -324,6 +326,12 @@ fn parents_set_lineage_matches_morrow_facts() {
             "spawn tree cost",
             row["tree_cost"].as_i64(),
             Some(tree_cost),
+        );
+        assert_fact(
+            id,
+            "subagent cost",
+            row["subagent_cost"].as_i64(),
+            Some(tree_cost - costs[*id]),
         );
     }
 }

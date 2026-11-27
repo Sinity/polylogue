@@ -1389,11 +1389,11 @@ impl Inner {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
-        let changes = crate::change_summary::ChangeSummary::start(&itx)?;
-        let mut touched = readings::Touched::default();
-        let mut batches = 0u64;
-        for (b, chain) in indexed.iter().zip(chains) {
-            if reads {
+        let batches = indexed.len() as u64;
+        let messages = if reads {
+            let changes = crate::change_summary::ChangeSummary::start(&itx)?;
+            let mut touched = readings::Touched::default();
+            for (b, chain) in indexed.iter().zip(chains) {
                 for p in &b.parse {
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,
@@ -1415,9 +1415,10 @@ impl Inner {
                     )?;
                 }
             }
-            batches += 1;
-        }
-        let messages = rows::finish(&itx, touched, &changes, counter)?;
+            rows::finish(&itx, touched, &changes, counter)?
+        } else {
+            0
+        };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits

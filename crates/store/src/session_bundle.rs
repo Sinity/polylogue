@@ -17,12 +17,12 @@ row! {
         source_input: String,
         source_chain: i64,
         source_version: String,
-        sequence: String,
         position: String,
+        record_position: String,
         parent_id: String,
     }
     statements {
-        const OF_MESSAGE = "SELECT DISTINCT child_id,source_input,source_chain,source_version,sequence,position,parent_id FROM prefix_member WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,sequence,position";
+        const OF_MESSAGE = "SELECT DISTINCT child_id,source_input,source_chain,source_version,position,record_position,parent_id FROM shared_prefix_message WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,position,record_position";
     }
 }
 
@@ -32,12 +32,12 @@ row! {
         source_input: String,
         source_chain: i64,
         parser_version: String,
-        seq: u64,
+        position: u64,
         record_position: u64,
         parent_id: String,
     }
     statements {
-        const OF_MESSAGE = "SELECT DISTINCT p.child_id,ir.id AS source_input,s.chain AS source_chain,ps.parser_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)";
+        const OF_MESSAGE = "SELECT DISTINCT p.child_id,ir.id AS source_input,s.chain AS source_chain,ps.parser_version,s.position,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)";
     }
 }
 
@@ -67,11 +67,11 @@ row! {
             s.id AS session_id,e.after_message_id,i.id AS input,e.source_chain
             FROM event e LEFT JOIN session s ON s.pk=e.session_pk
             JOIN input_ref i ON i.pk=e.input_pk
-            WHERE e.session_pk=?1 ORDER BY e.seq,e.id";
+            WHERE e.session_pk=?1 ORDER BY e.position,e.id";
         const RELOCATED = "SELECT e.content_group,e.content_start,e.content_length,e.data_length,
             s.id AS session_id,e.after_message_id,'' AS input,0 AS source_chain
             FROM event e LEFT JOIN session s ON s.pk=e.session_pk
-            WHERE e.session_pk=?1 AND e.kind='relocated' ORDER BY e.seq DESC, e.id DESC LIMIT 1";
+            WHERE e.session_pk=?1 AND e.kind='relocated' ORDER BY e.position DESC, e.id DESC LIMIT 1";
     }
 }
 
@@ -100,7 +100,7 @@ impl BundleEvent {
 row! {
     struct BundleLink {
         kind: String,
-        how: Option<String>,
+        reason: Option<String>,
         parent_id: SessionId,
         child_id: SessionId,
         branch_point: Option<MessageId>,
@@ -109,9 +109,10 @@ row! {
         copies_prefix: bool,
     }
     statements {
-        const OF_SESSION = "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence, copies_prefix
-             FROM session_link WHERE parent_id = ?1 OR child_id = ?1
-             ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call LIMIT -1 OFFSET ?2";
+        const OF_SESSION = "SELECT kind, reason, parent_id, child_id, branch_point, spawning_call, evidence,
+                 copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix x WHERE x.parent_id = l.parent_id AND x.child_id = l.child_id) AS copies_prefix
+             FROM session_link l WHERE parent_id = ?1 OR child_id = ?1
+             ORDER BY parent_id, child_id, kind, reason, branch_point, spawning_call LIMIT -1 OFFSET ?2";
     }
 }
 
@@ -139,8 +140,8 @@ impl Reader<'_> {
                  source_input: input,
                  source_chain: chain,
                  source_version: parse_version,
-                 sequence,
                  position,
+                 record_position,
                  parent_id: parent,
              }| {
                 let coordinate = |s: String| {
@@ -157,7 +158,7 @@ impl Reader<'_> {
                         chain,
                         parse_version,
                     },
-                    position: [coordinate(sequence)?, coordinate(position)?],
+                    position: [coordinate(position)?, coordinate(record_position)?],
                 });
                 Ok(ControlFlow::Continue(()))
             },
@@ -179,8 +180,8 @@ impl Reader<'_> {
                  source_input: input,
                  source_chain: chain,
                  parser_version: parse_version,
-                 seq: sequence,
-                 record_position: position,
+                 position,
+                 record_position,
                  parent_id: parent,
              }| {
                 result.push(CopiedFor {
@@ -193,7 +194,7 @@ impl Reader<'_> {
                         chain,
                         parse_version,
                     },
-                    position: [sequence, position],
+                    position: [position, record_position],
                 });
                 Ok(ControlFlow::Continue(()))
             },
@@ -281,7 +282,7 @@ impl Reader<'_> {
             rusqlite::params![id.to_string(), ordinal],
             |BundleLink {
                  kind,
-                 how,
+                 reason,
                  parent_id: parent,
                  child_id: child,
                  branch_point,
@@ -292,17 +293,20 @@ impl Reader<'_> {
                 let kind = LinkKind::from_name(&kind).ok_or_else(|| {
                     crate::StoreError::stored(0, format!("unknown link kind {kind}"))
                 })?;
-                let how = how
-                    .map(|how| {
-                        polylogue_model::ReferenceReason::from_name(&how).ok_or_else(|| {
-                            crate::StoreError::stored(0, format!("unknown reference reason {how}"))
+                let reason = reason
+                    .map(|reason| {
+                        polylogue_model::ReferenceReason::from_name(&reason).ok_or_else(|| {
+                            crate::StoreError::stored(
+                                0,
+                                format!("unknown reference reason {reason}"),
+                            )
                         })
                     })
                     .transpose()?;
                 let link = Link {
                     kind,
                     copies_prefix,
-                    how,
+                    reason,
                     parent,
                     child,
                     branch_point,

@@ -43,7 +43,7 @@ pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
         let conn = reader.conn().unwrap();
         let mut statement = conn
             .prepare(
-                "SELECT unit IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY seq",
+                "SELECT source_key IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY position",
             )
             .unwrap();
         statement
@@ -232,7 +232,7 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
         );
         if change == 5 {
             assert_eq!(
-                reader.query("SELECT seq FROM event", &[]).unwrap()[0]["seq"],
+                reader.query("SELECT position FROM event", &[]).unwrap()[0]["position"],
                 9
             );
         }
@@ -250,8 +250,10 @@ fn identical_lower_priority_messages_leave_items_unchanged() {
             row(n as u64 / 3, m)
         })
         .collect();
+    // The shown place comes from the input that sorts first.
+    let main = input_sorting_before("z-extra", "a-main");
     w.store_reading(
-        batch("a-main", Route::Live, 0, messages.clone(), &["s"]),
+        batch(&main, Route::Live, 0, messages.clone(), &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -340,8 +342,10 @@ fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
 fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     let w = test_archive();
     let rows = vec![row(10, message("anchor", Role::User, "anchor"))];
+    // The shown place comes from the input that sorts first.
+    let first = input_sorting_before("z-main", "a-order");
     w.store_reading(
-        batch("a-order", Route::Capture, 0, rows.clone(), &["s"]),
+        batch(&first, Route::Capture, 0, rows.clone(), &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
@@ -370,8 +374,8 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT seq FROM event", &[])
-            .unwrap()[0]["seq"],
+            .query("SELECT position FROM event", &[])
+            .unwrap()[0]["position"],
         9
     );
     main.parse[0].order_from = Some(1);
@@ -383,8 +387,8 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT seq FROM event", &[])
-            .unwrap()[0]["seq"],
+            .query("SELECT position FROM event", &[])
+            .unwrap()[0]["position"],
         1
     );
     assert_matches_rows(&w, "s");
@@ -397,8 +401,9 @@ fn removing_a_redundant_source_invalidates_derivations() {
         id_kind: polylogue_model::IdKind::Content,
         ..row(10, message("shared", Role::User, "same prompt"))
     };
+    let main = input_sorting_before("z-copy", "a-main");
     for (input, route, sessions) in [
-        ("a-main", Route::Live, &["s"][..]),
+        (main.as_str(), Route::Live, &["s"][..]),
         ("z-copy", Route::Capture, &[][..]),
     ] {
         w.store_reading(
@@ -603,7 +608,7 @@ fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
         child: sid("child"),
         kind: polylogue_model::LinkKind::Fork,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: Some(MessageId::parse("claude-code:p1").unwrap()),
         call_id: None,
         evidence: "fixture".into(),

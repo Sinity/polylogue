@@ -36,7 +36,7 @@ fn whole_documents_cite_the_stored_bytes_and_preserve_reading_order_on_rebuild()
         assert_eq!(messages[1].parent.as_ref(), Some(&messages[0].id));
         let rows = r
             .query(
-                "SELECT m.source_start,m.source_end,s.seq AS source_order FROM message m JOIN message_parse s ON s.message_id=m.id AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.seq",
+                "SELECT m.source_start,m.source_end,s.position AS source_order FROM message m JOIN message_parse s ON s.message_id=m.id AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.position",
                 &[],
             )
             .unwrap();

@@ -82,10 +82,10 @@ impl RowComparison {
         }
         for (table, key, hash) in &self.rows {
             if let Some(hash) = hash {
-                conn.prepare_cached("INSERT INTO tool_row(input_pk,tbl,key,hash) VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,tbl,key) DO UPDATE SET hash=excluded.hash")?.execute(params![input_pk,table,key,hash])?;
+                conn.prepare_cached("INSERT INTO tool_row(input_pk,table_name,key,hash) VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,table_name,key) DO UPDATE SET hash=excluded.hash")?.execute(params![input_pk,table,key,hash])?;
             } else {
                 conn.prepare_cached(
-                    "DELETE FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND key=?3",
+                    "DELETE FROM tool_row WHERE input_pk=?1 AND table_name=?2 AND key=?3",
                 )?
                 .execute(params![input_pk, table, key])?;
             }
@@ -120,13 +120,13 @@ impl Catalog {
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
         conn.execute_batch(
-            "CREATE TEMP TABLE seen(tbl TEXT,key TEXT,PRIMARY KEY(tbl,key)) WITHOUT ROWID;
-             CREATE TEMP TABLE known(tbl TEXT,key TEXT,hash BLOB,PRIMARY KEY(tbl,key)) WITHOUT ROWID;
+            "CREATE TEMP TABLE seen(table_name TEXT,key TEXT,PRIMARY KEY(table_name,key)) WITHOUT ROWID;
+             CREATE TEMP TABLE known(table_name TEXT,key TEXT,hash BLOB,PRIMARY KEY(table_name,key)) WITHOUT ROWID;
              BEGIN;",
         )?;
         let schema = recorded_schema(&conn, input)?;
         conn.execute(
-            "INSERT INTO temp.known(tbl,key,hash) SELECT r.tbl,r.key,r.hash FROM tool_row r JOIN input_ref i ON i.pk=r.input_pk WHERE i.id=?1",
+            "INSERT INTO temp.known(table_name,key,hash) SELECT r.table_name,r.key,r.hash FROM tool_row r JOIN input_ref i ON i.pk=r.input_pk WHERE i.id=?1",
             [input],
         )?;
         conn.execute_batch("COMMIT")?;
@@ -139,7 +139,7 @@ impl Catalog {
             .execute(params![table, key])?;
         let old: Option<Vec<u8>> = self
             .conn
-            .prepare_cached("SELECT hash FROM temp.known WHERE tbl=?1 AND key=?2")?
+            .prepare_cached("SELECT hash FROM temp.known WHERE table_name=?1 AND key=?2")?
             .query_row(params![table, key], |r| r.get::<_, Option<Vec<u8>>>(0))
             .optional()?
             .flatten();
@@ -150,7 +150,7 @@ impl Catalog {
         table: &str,
         visit: &mut dyn FnMut(Value) -> Result<(), DatabaseError>,
     ) -> Result<(), DatabaseError> {
-        let mut stmt = self.conn.prepare("SELECT key FROM temp.known k WHERE tbl=?1 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.tbl=k.tbl AND s.key=k.key) ORDER BY key").map_err(crate::StoreError::from)?;
+        let mut stmt = self.conn.prepare("SELECT key FROM temp.known k WHERE table_name=?1 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.table_name=k.table_name AND s.key=k.key) ORDER BY key").map_err(crate::StoreError::from)?;
         let mut rows = stmt.query([table]).map_err(crate::StoreError::from)?;
         while let Some(row) = rows.next().map_err(crate::StoreError::from)? {
             let key: String = row.get(0).map_err(crate::StoreError::from)?;
@@ -165,7 +165,7 @@ impl Catalog {
     ) -> Result<(), DatabaseError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT tbl FROM temp.known ORDER BY tbl")
+            .prepare("SELECT DISTINCT table_name FROM temp.known ORDER BY table_name")
             .map_err(crate::StoreError::from)?;
         let names = stmt
             .query_map([], |r| r.get::<_, String>(0))

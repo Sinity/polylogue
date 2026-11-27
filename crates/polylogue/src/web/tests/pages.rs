@@ -137,7 +137,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let position = frames.last().unwrap()["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
-            "UPDATE meta SET value=?1 WHERE key='generation'",
+            "UPDATE meta SET value=?1 WHERE key='index_instance'",
             [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
@@ -211,13 +211,13 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
                     from,
                     to,
                     relation,
-                    how,
+                    reason,
                     ..
                 } = card.as_ref()
             {
                 assert_eq!(from, "session:claude-code:s1");
                 assert_eq!(relation, "fork");
-                assert_eq!(how.as_deref(), None);
+                assert_eq!(reason.as_deref(), None);
                 assert!(seen.insert(to.clone()), "relationship repeated");
             }
         }

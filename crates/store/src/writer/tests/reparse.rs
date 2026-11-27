@@ -96,7 +96,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
             child: sid("child"),
             kind: LinkKind::Spawn,
             copies_prefix: false,
-            how: None,
+            reason: None,
             branch_point: None,
             call_id: None,
             evidence: b.input.id.clone(),
@@ -288,7 +288,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "links",
-            "SELECT parent_id,child_id,kind,how,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,how,branch_point,spawning_call,evidence,input,source_chain",
+            "SELECT parent_id,child_id,kind,reason,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM session_link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,reason,branch_point,spawning_call,evidence,input,source_chain",
         ),
         (
             "event_sources",
@@ -827,7 +827,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let pool = ReadPool::open(&w.archive).unwrap();
     let positions = || {
         pool.reader().unwrap().query(
-        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
+        "SELECT e.kind,m.id AS after,e.position FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
     };
     let changed = || {
         pool.reader()
@@ -858,8 +858,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":null,"seq":0},
-            {"kind":"own_position","after":null,"seq":7},
+            {"kind":"message_position","after":null,"position":0},
+            {"kind":"own_position","after":null,"position":7},
         ])
     );
     let before = changed();
@@ -877,8 +877,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":"claude-code:anchor","seq":10},
-            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+            {"kind":"message_position","after":"claude-code:anchor","position":10},
+            {"kind":"own_position","after":"claude-code:anchor","position":7},
         ])
     );
     assert!(changed() > before);
@@ -893,8 +893,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":"claude-code:anchor","seq":50},
-            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+            {"kind":"message_position","after":"claude-code:anchor","position":50},
+            {"kind":"own_position","after":"claude-code:anchor","position":7},
         ])
     );
     assert!(changed() > before);
@@ -915,8 +915,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":null,"seq":0},
-            {"kind":"own_position","after":null,"seq":7},
+            {"kind":"message_position","after":null,"position":0},
+            {"kind":"own_position","after":null,"position":7},
         ])
     );
     assert!(changed() > before);
@@ -960,15 +960,15 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         .collect();
     let unused: Vec<(String, u64)> = r
         .query(
-            "SELECT what, sum(count) AS n FROM unused GROUP BY what
-             ORDER BY n DESC, what LIMIT 20",
+            "SELECT item, sum(count) AS n FROM unused GROUP BY item
+             ORDER BY n DESC, item LIMIT 20",
             &[],
         )
         .unwrap()
         .into_iter()
         .map(|row| {
             (
-                row["what"].as_str().unwrap().to_owned(),
+                row["item"].as_str().unwrap().to_owned(),
                 row["n"].as_u64().unwrap(),
             )
         })
@@ -981,7 +981,7 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
     );
     assert_eq!(
         status.sessions_physical,
-        count("SELECT count(*) AS n FROM session WHERE stub = 0")
+        count("SELECT count(*) AS n FROM session WHERE has_transcript = 1")
     );
     assert_eq!(status.messages, count("SELECT count(*) AS n FROM message"));
     assert_eq!(

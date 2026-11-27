@@ -20,7 +20,7 @@ fn message_text_parts(
     let mut stmt = conn.prepare_cached(
         "SELECT g.body, t.start, t.length FROM block b JOIN text t ON t.id = b.text_id
            JOIN content_group g ON g.id = t.group_id
-          WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
+          WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.position",
     )?;
     let mut parts = Vec::new();
     for text in stmt.query_and_then([message_pk], |r| crate::text_rows::joined(r, 0))? {
@@ -161,7 +161,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?;
         let pull_requests: Vec<String> = conn
             .prepare_cached(
-                "SELECT repo, number FROM pr_link WHERE session_pk = ?1 ORDER BY repo, number",
+                "SELECT repo, number FROM pull_request_link WHERE session_pk = ?1 ORDER BY repo, number",
             )?
             .query_map([pk], |r| {
                 Ok(format!(
@@ -238,7 +238,7 @@ impl Reader<'_> {
                JOIN content_group g ON g.id = t.group_id
               WHERE s.id = ?1 AND m.written_by = 'human'
                 AND coalesce(m.prompt_kind, 'prose') = 'prose'
-              ORDER BY m.session_order, m.id, b.idx",
+              ORDER BY m.session_order, m.id, b.position",
         )?;
         let rows = stmt.query_and_then([session], |r| {
             Ok::<_, crate::StoreError>((

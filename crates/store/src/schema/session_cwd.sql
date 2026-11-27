@@ -30,4 +30,4 @@ INSERT OR IGNORE INTO session_cwd_member(cwd, session_pk)
 -- write counter value (the daemon's scope index follows it).
 CREATE INDEX session_live_changed ON session(live_changed) WHERE live_changed IS NOT NULL;
 -- The change feed of derived values.
-CREATE INDEX session_derived_changed ON session(derived_changed) WHERE derived_changed IS NOT NULL;
+CREATE INDEX session_summary_changed ON session(summary_changed) WHERE summary_changed IS NOT NULL;

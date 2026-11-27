@@ -27,7 +27,7 @@ struct Frame {
 enum Step {
     Node {
         session: String,
-        /// The node whose link reached it, with that link's kind and how.
+        /// The node whose link reached it, with that link's kind and reason.
         joined: Option<SessionLink>,
         references: Vec<SessionLink>,
         parents: Vec<SessionLink>,
@@ -91,7 +91,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 parent: String::new(),
                 child,
                 kind: String::new(),
-                how: None,
+                reason: None,
                 copies_prefix: false,
                 branch_point: None,
                 spawning_call: None,
@@ -295,7 +295,7 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
                 from: format!("session:{}", link.parent),
                 to: format!("session:{}", link.child),
                 relation: link.kind.clone(),
-                how: link.how.clone(),
+                reason: link.reason.clone(),
                 cross_link: cross,
                 branch_point: link.branch_point.as_ref().map(|at| format!("message:{at}")),
                 spawning_call: link.spawning_call.clone(),

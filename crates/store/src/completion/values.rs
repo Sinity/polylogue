@@ -83,7 +83,7 @@ impl Reader<'_> {
             }
         } else {
             let mut statement = conn.prepare(
-                "SELECT value, sum(n) FROM session_value WHERE field = ?1 AND n > 0
+                "SELECT value, sum(count) FROM session_value WHERE field = ?1 AND count > 0
                  AND value >= ?2 AND (?3 IS NULL OR value < ?3) GROUP BY value",
             )?;
             let mut rows = statement.query(params![field, prefix, upper])?;
@@ -109,7 +109,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let title = crate::session_sql::display_title("s");
         let columns = format!(
-            "s.id, s.native_id, coalesce({title}, ''), s.origin, s.repo, s.last_activity_at,
+            "s.id, s.native_id, coalesce({title}, ''), s.origin, s.repo, s.last_active_at,
              (SELECT max(p.id) FROM session p WHERE p.id < s.id),
              (SELECT min(n.id) FROM session n WHERE n.id > s.id)"
         );

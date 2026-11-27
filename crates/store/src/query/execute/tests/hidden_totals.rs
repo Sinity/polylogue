@@ -82,7 +82,10 @@ fn status_and_the_sessions_unit_agree() {
     f.link("test:one", "test:helper", "spawn", None).unwrap();
     rusqlite::Connection::open(f.archive.index_db())
         .unwrap()
-        .execute("UPDATE session SET stub = 1 WHERE id = 'test:named'", [])
+        .execute(
+            "UPDATE session SET has_transcript = 0 WHERE id = 'test:named'",
+            [],
+        )
         .unwrap();
     f.derive().unwrap();
     let figures = |f: &Fixture| {

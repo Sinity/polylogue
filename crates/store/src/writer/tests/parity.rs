@@ -300,7 +300,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
                 output.links.push(Link {
                     kind: LinkKind::Spawn,
                     copies_prefix: false,
-                    how: None,
+                    reason: None,
                     parent,
                     child: sid(&session_name(*child)),
                     branch_point: None,
@@ -863,7 +863,7 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    const LINKS: &str = "SELECT parent_id || ' > ' || child_id FROM link";
+    const LINKS: &str = "SELECT parent_id || ' > ' || child_id FROM session_link";
     const SESSIONS: &str = "SELECT id FROM session ORDER BY id";
     assert_eq!(rows(LINKS), ["claude-code:s0 > claude-code:s1"]);
     assert_eq!(rows(SESSIONS), ["claude-code:s0", "claude-code:s1"]);

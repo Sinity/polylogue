@@ -104,87 +104,110 @@ polylogue_model::stored_names! {
         Precision => "precision",
     }
 }
+/// A time a condition tests, as the columns that hold it (docs/query.md,
+/// times): its start, the exclusive end of its period (NULL for an
+/// instant, for an unknown time and for a calendar grain without a bound)
+/// and its precision, all in milliseconds. `bytes` and `storage` hold the
+/// whole source time, read only for its quality and by order relations.
 pub(crate) struct StoredTime {
-    pub cache: String,
+    pub at: String,
+    pub until: String,
+    pub precision: String,
+    /// The table whose `<table>_period` index gives its longest stored
+    /// period, so a lower bound on the end of a period reads a range of
+    /// starts; `None` for a table small enough to read whole.
+    pub periods: Option<&'static str>,
     pub bytes: String,
     pub storage: TimeStorage,
-    /// A condition that holds for every row whose time may be other than a
-    /// plain instant, read from an index. A row it does not hold for is an
-    /// instant, so a bound its `cache` misses it cannot meet, and its stored
-    /// time is not read. `None`: every row's stored time is read to learn
-    /// whether it is an instant.
-    pub periods: Option<String>,
 }
 
-/// The messages whose time is not a plain instant, as the `message_period`
-/// index holds them: the statement names the index, so its condition must
-/// stay the index's own.
-const MESSAGE_PERIODS: &str = "message INDEXED BY message_period \
-     WHERE at IS NOT NULL AND json_extract(at_time,'$[1].precision') IS NOT 'instant'";
 impl StoredTime {
     fn attribute(&self, attribute: TimeAttribute) -> String {
+        match attribute {
+            TimeAttribute::Precision => self.precision.clone(),
+            TimeAttribute::Quality => format!(
+                "pl_time_attribute({}, '{}', 'quality')",
+                self.bytes,
+                self.storage.as_str()
+            ),
+        }
+    }
+
+    /// The last millisecond of the time's period: the instant itself, the
+    /// end of a period less one, or NULL when the time or its end is
+    /// unknown, so any comparison of it is unknown too.
+    pub(crate) fn last(&self) -> String {
         format!(
-            "pl_time_attribute({}, '{}', '{}')",
-            self.bytes,
-            self.storage.as_str(),
-            attribute.as_str()
+            "coalesce({} - 1, iif({} = 'instant', {}, NULL))",
+            self.until, self.precision, self.at
         )
+    }
+
+    /// The longest stored period, read by one seek in its index.
+    pub(crate) fn longest(&self) -> Option<String> {
+        self.periods.map(|table| {
+            format!(
+                "(SELECT coalesce(max(at_until - at), 0) FROM {table} \
+                 INDEXED BY {table}_period WHERE at_until IS NOT NULL)"
+            )
+        })
     }
 }
 pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<StoredTime> {
-    let message_periods = || format!("{{m}}.pk IN (SELECT pk FROM {MESSAGE_PERIODS})");
-    let session_periods = || format!("{{s}}.pk IN (SELECT session_pk FROM {MESSAGE_PERIODS})");
-    let (cache, bytes, storage, periods) = match (unit, field) {
+    let (at, until, precision, periods, bytes, storage) = match (unit, field) {
         (Messages | Blocks | ToolCalls, "at") => (
             "{m}.at",
+            "{m}.at_until",
+            "{m}.at_precision",
+            Some("message"),
             "{m}.at_time".to_owned(),
             TimeStorage::Tuple,
-            Some(message_periods()),
         ),
         (Sessions, "started") => (
             "{s}.started_at",
+            "{s}.started_until",
+            "{s}.started_precision",
+            None,
             "{s}.started_time".to_owned(),
             TimeStorage::Tuple,
-            None,
         ),
-        // The latest of the session's message times. With only instants
-        // that is the latest of the messages in their greatest millisecond,
-        // found by two index seeks; a session holding a period reads all
-        // its messages, since a period that starts earlier can end later.
+        // The latest of the session's message times, which the session
+        // summary keeps; its quality is read from the messages.
         (Sessions, "last_active") => (
-            "{s}.last_activity_at",
-            format!(
-                "(CASE WHEN {} \
-                  THEN (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
-                        WHERE {{s}}_activity.session_pk={{s}}.pk AND {{s}}_activity.at IS NOT NULL) \
-                  ELSE (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
-                        WHERE {{s}}_activity.session_pk={{s}}.pk \
-                          AND {{s}}_activity.at=(SELECT max({{s}}_latest.at) FROM message {{s}}_latest \
-                                                 WHERE {{s}}_latest.session_pk={{s}}.pk)) END)",
-                session_periods()
-            ),
+            "{s}.last_active_at",
+            "{s}.last_active_until",
+            "{s}.last_active_precision",
+            None,
+            "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity \
+              WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)"
+                .to_owned(),
             TimeStorage::Latest,
-            Some(session_periods()),
         ),
         (Events, "at") => (
             "{r}.at",
+            "{r}.at_until",
+            "{r}.at_precision",
+            Some("event"),
             crate::content::BODY_BYTES_SQL.to_owned(),
             TimeStorage::Event,
-            None,
         ),
         (Documents, "source_time") => (
-            "{r}.source_time",
-            "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
-            TimeStorage::Tuple,
+            "{r}.at",
+            "{r}.at_until",
+            "{r}.at_precision",
             None,
+            "(SELECT {r}_time.at_details FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
+            TimeStorage::Tuple,
         ),
         _ => return None,
     };
     Some(StoredTime {
-        cache: a.expand(cache),
+        at: a.expand(at),
+        until: a.expand(until),
+        precision: a.expand(precision),
+        periods,
         bytes: a.expand(&bytes),
         storage,
-        periods: periods.map(|periods| a.expand(&periods)),
     })
 }
 pub(crate) fn time_window(unit: Unit, since: bool, a: &Aliases) -> Option<StoredTime> {
@@ -328,7 +351,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsOutlier => Rule::NONE.sql_fn(|a| crate::session_sql::outlier(&a.s)),
         SessionsCorrections => Rule::NONE.sql_fn(|a| crate::session_sql::corrections(&a.s)),
         SessionsOpenItems => Rule::NONE.sql_fn(|a| crate::session_sql::open_items(&a.s)),
-        SessionsSubagentCost => Rule::NONE.sql_fn(|a| crate::measure::cost_of(&format!("SELECT child.pk FROM session child WHERE child.pk IN ({}) AND child.pk<>{}.pk",descendants(&a.s),a.s))),
+        SessionsSubagentCost => Rule::NONE.sql_fn(subagent_cost),
         SessionsCostComplete => Rule::NONE.sql_fn(|a| crate::session_sql::cost_complete(&a.s)),
         SessionsCostWithParents => Rule::NONE.sql_fn(|a| crate::session_sql::cost_with_parents(&a.s)),
         MessagesLang => Rule::NONE.custom(custom::alternate_lang),
@@ -338,8 +361,8 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsLinksTo => Rule::NONE.custom(custom::links_to),
         AnnotationsAnswered => Rule::NONE.sql_fn(|a| crate::session_sql::answered(&a.row)),
         AnnotationsOpen => Rule::NONE.sql_fn(|a| crate::session_sql::open_annotation(&a.row)),
-        SessionsMonthDay => Rule::NONE.sql("pl_month_day({s}.last_activity_at)"),
-        DocumentsMonthDay => Rule::NONE.sql("pl_month_day({r}.source_time)"),
+        SessionsMonthDay => Rule::NONE.sql("pl_month_day({s}.last_active_at)"),
+        DocumentsMonthDay => Rule::NONE.sql("pl_month_day({r}.at)"),
         MessagesMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
         BlocksMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
         ToolCallsMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
@@ -347,7 +370,7 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsMonthDay => Rule::NONE.sql("pl_month_day({r}.created_at)"),
         DeliveriesMonthDay => Rule::NONE.sql("pl_month_day({r}.at)"),
         TurnsMonthDay => Rule::NONE.sql("pl_month_day({r}.start)"),
-        LiveIntervalsMonthDay => Rule::NONE.sql("pl_month_day({r}.start_at)"),
+        LiveIntervalsMonthDay => Rule::NONE.sql("pl_month_day({r}.started_at)"),
         ProcessesMonthDay => Rule::NONE.sql("pl_month_day({r}.started_at)"),
         AlternatesMonthDay => Rule::NONE.sql("pl_month_day(CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER))"),
         QueriesMonthDay => Rule::NONE.sql("pl_month_day({r}.saved_at)"),
@@ -461,7 +484,7 @@ pub fn rule(id: FieldId) -> Rule {
         DocumentsPurpose => Rule::NONE.sql("{r}.purpose"),
         DocumentsAuthorship => Rule::NONE.sql("{r}.authorship"),
         DocumentsTitle => Rule::NONE.sql("{r}.title"),
-        DocumentsSourceTime => Rule::NONE.sql("{r}.source_time"),
+        DocumentsSourceTime => Rule::NONE.sql("{r}.at"),
         DocumentsSince => Rule::NONE.custom(custom::since),
         DocumentsUntil => Rule::NONE.custom(custom::until),
         DocumentsVersions => Rule::NONE.sql("(SELECT count(DISTINCT ds.hash) FROM document_parse ds WHERE ds.document_id={r}.id)"),
@@ -482,7 +505,7 @@ pub fn rule(id: FieldId) -> Rule {
         // session's last activity and does not hold the session; or the newest
         // chain of an input that states the session states it gone (the Drive
         // collector's listing of a removed prompt).
-        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_parse {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_parse {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM session_parse {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
+        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.has_transcript = 0 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_parse {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_parse {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_parse {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_active_at AND NOT EXISTS(SELECT 1 FROM session_parse {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
         SessionsLive => Rule::NONE.custom(custom::live).sql_clock(sessions_live),
         SessionsWaiting => Rule::NONE.custom(custom::waiting).sql_clock(sessions_waiting),
         SessionsRunning => Rule::NONE.custom(custom::running).sql_clock(sessions_running),
@@ -519,7 +542,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsStarted => Rule::NONE.sql("{s}.started_at"),
         SessionsFirstSeen => Rule::NONE.sql_fn(session_first_seen),
         SessionsSeenBy => Rule::NONE.custom(custom::seen_by),
-        SessionsLastActive => Rule::NONE.sql("{s}.last_activity_at"),
+        SessionsLastActive => Rule::NONE.sql("{s}.last_active_at"),
         SessionsSince => Rule::NONE.custom(custom::since),
         SessionsUntil => Rule::NONE.custom(custom::until),
         SessionsMessages => Rule::NONE.sql_fn(|a| crate::session_sql::count(&a.s,"message_count")),
@@ -584,7 +607,7 @@ pub fn rule(id: FieldId) -> Rule {
         BlocksSince => Rule::NONE.custom(custom::since),
         BlocksUntil => Rule::NONE.custom(custom::until),
         ToolCallsMessage => Rule::NONE.sql("{m}.id"),
-        ToolCallsIdx => Rule::NONE.sql("{cb}.idx"),
+        ToolCallsIdx => Rule::NONE.sql("{cb}.position"),
         ToolCallsPosition => Rule::NONE.sql_fn(super::units::call_position),
         ToolCallsTool => Rule::NONE.sql("{t}.tool"),
         ToolCallsMcpServer => Rule::NONE.custom(custom::mcp_server).sql(
@@ -617,8 +640,8 @@ pub fn rule(id: FieldId) -> Rule {
         EventsId => Rule::NONE.sql("{r}.id"),
         EventsText => Rule::NONE.custom(custom::event_text),
         EventsInput => Rule::NONE.sql("{r}i.id"),
-        EventsSource => Rule::NONE.sql("{r}i.format"),
-        EventsOrigin => Rule::NONE.sql("COALESCE({s}.origin,{r}i.format)"),
+        EventsSource => Rule::NONE.sql("{r}i.origin"),
+        EventsOrigin => Rule::NONE.sql("COALESCE({s}.origin,{r}i.origin)"),
         EventsData => Rule::NONE.sql(crate::content::DATA_SQL),
         EventsSourceChain => Rule::NONE.sql("{r}.source_chain"),
         EventsSourceStart => Rule::NONE.sql("{r}.source_start"),
@@ -630,8 +653,8 @@ pub fn rule(id: FieldId) -> Rule {
         EventsSince => Rule::NONE.custom(custom::since),
         EventsUntil => Rule::NONE.custom(custom::until),
         SessionLinksKind => Rule::NONE.sql("{r}.kind"),
-        SessionLinksHow => Rule::NONE.sql("{r}.how"),
-        SessionLinksCopiesPrefix => Rule::NONE.sql("{r}.copies_prefix"),
+        SessionLinksReason => Rule::NONE.sql("{r}.reason"),
+        SessionLinksCopiesPrefix => Rule::NONE.sql("({r}.copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))"),
         SessionLinksParent => Rule::NONE.custom(custom::link_parent).sql("{r}.parent_id"),
         SessionLinksChild => Rule::NONE.custom(custom::link_child).sql("{r}.child_id"),
         SessionLinksPending => Rule::NONE.sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
@@ -670,9 +693,9 @@ pub fn rule(id: FieldId) -> Rule {
         LiveIntervalsSession => Rule::NONE.custom(custom::live_session).sql("{s}.id"),
         LiveIntervalsAspect => Rule::NONE.sql("{r}.aspect"),
         LiveIntervalsValue => Rule::NONE.sql("{r}.value"),
-        LiveIntervalsStart => Rule::NONE.sql("{r}.start_at"),
-        LiveIntervalsEnd => Rule::NONE.sql("{r}.end_at"),
-        LiveIntervalsDurationMs => Rule::NONE.sql("({r}.end_at - {r}.start_at)"),
+        LiveIntervalsStart => Rule::NONE.sql("{r}.started_at"),
+        LiveIntervalsEnd => Rule::NONE.sql("{r}.ended_at"),
+        LiveIntervalsDurationMs => Rule::NONE.sql("({r}.ended_at - {r}.started_at)"),
         LiveIntervalsClosedBy => Rule::NONE.sql("{r}.closed_by"),
         ProcessesSession => Rule::NONE.custom(custom::live_session).sql("{s}.id"),
         ProcessesBootId => Rule::NONE.sql("{r}.boot_id"),
@@ -770,7 +793,7 @@ pub use polylogue_query::fields::LIVE_STATES;
 /// `state`, `until`, `since`, `waiting_on`, `stall`, `process_alive` or
 /// `rank`.
 pub fn live_part(s: &str, part: &str, now: i64) -> String {
-    format!("pl_live({s}.live_facts, {s}.last_activity_at, {now}, '{part}')")
+    format!("pl_live({s}.live_facts, {s}.last_active_at, {now}, '{part}')")
 }
 
 /// The live state of session alias `s` at `now`.
@@ -882,7 +905,7 @@ fn sessions_cost(a: &Aliases) -> String {
 }
 
 fn sessions_tree_cost(a: &Aliases) -> String {
-    crate::measure::cost_of(&descendants(&a.s))
+    crate::measure::cost_of(&spawn_tree(&a.s))
 }
 
 fn sessions_live(a: &Aliases, now: i64) -> String {
@@ -975,7 +998,7 @@ pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 /// whose records hold a version of it.
 pub fn first_seen_of(m: &str) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+        "(SELECT min(fr.seen_at) FROM assembled_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
          WHERE fs.message_pk = {m}.pk)"
@@ -1001,7 +1024,7 @@ fn message_first_seen(a: &Aliases) -> String {
 
 fn session_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
+        "(SELECT min(fr.seen_at) FROM message fm JOIN assembled_message_parse fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
@@ -1040,10 +1063,36 @@ pub fn hidden_session_ids() -> String {
     )
 }
 
+/// The session and every session below it through `spawn` links: its tree
+/// (docs/measures.md, session cost). Continuations, forks and resumes are
+/// not trees, so a child belongs to exactly one.
+pub fn spawn_tree(s: &str) -> String {
+    format!(
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
+         INDEXED BY session_link_key \
+         JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
+         JOIN session lc ON lc.id = l.child_id \
+         WHERE l.kind = 'spawn') SELECT pk FROM tr"
+    )
+}
+
+/// The priced responses of spawned sessions. A priced session with no spawn
+/// links has zero subagent cost; an unresolved or unpriced subtree stays unknown.
+fn subagent_cost(a: &Aliases) -> String {
+    let s = &a.s;
+    let tree = spawn_tree(s);
+    let children = crate::measure::cost_of(&format!("SELECT pk FROM ({tree}) WHERE pk <> {s}.pk"));
+    let own = crate::measure::cost_of(&format!("SELECT {s}.pk"));
+    format!(
+        "(CASE WHEN EXISTS (SELECT 1 FROM session_link l WHERE l.parent_id = {s}.id AND l.kind='spawn')
+          THEN {children} ELSE 0 * {own} END)"
+    )
+}
+
 /// The session and every session below it through structural links.
 pub fn descendants(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          JOIN session lc ON lc.id = l.child_id \
          WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM tr"

@@ -36,7 +36,7 @@ fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild() {
         assert_eq!(messages[1].model.as_deref(), Some("example-model"));
         let sources = r
             .query(
-                "SELECT m.source_start,m.source_end,s.seq AS source_order FROM message m JOIN message_parse s ON s.message_id=m.id AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.seq",
+                "SELECT m.source_start,m.source_end,s.position AS source_order FROM message m JOIN message_parse s ON s.message_id=m.id AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.position",
                 &[],
             )
             .unwrap();

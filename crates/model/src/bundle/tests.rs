@@ -40,7 +40,7 @@ fn manifest() -> Manifest {
 fn bundle_header_refuses_earlier_and_newer_formats() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
-    for version in [0, 1, 2, 3, 4, 5, 7, u32::MAX] {
+    for version in [0, 1, 2, 3, 4, 5, 6, 8, u32::MAX] {
         value.version = version;
         assert_eq!(
             value.validate(),
@@ -385,7 +385,7 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
 fn declared_blob_records_require_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":6,
+        "format":"polylogue-bundle","version":7,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
         "read_position":{"index_instance":"synthetic","index":0,"archive":0},

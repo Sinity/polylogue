@@ -1538,7 +1538,7 @@ fn session_index(
                 let live = reader.live_state(&id, now)?;
                 let last = live
                     .as_ref()
-                    .and_then(|live| live.last_activity_at)
+                    .and_then(|live| live.last_active_at)
                     .and_then(Timestamp::from_unix_ms);
                 format!(
                     "{} · {harness} · {} · last active {} · {}",

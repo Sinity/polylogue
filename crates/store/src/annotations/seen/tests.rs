@@ -218,7 +218,7 @@ fn relation(
             polylogue_model::LinkKind::Resume
         },
         copies_prefix: branch.is_none(),
-        how: None,
+        reason: None,
         parent: crate::fixture::writer::sid(parent),
         child: crate::fixture::writer::sid(child),
         branch_point: branch.cloned(),

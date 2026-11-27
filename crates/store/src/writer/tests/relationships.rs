@@ -23,7 +23,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
         child: sid("child"),
         kind: LinkKind::Continuation,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
@@ -64,7 +64,7 @@ fn relation(parent: &str, child: &str) -> polylogue_model::Link {
         child: sid(child),
         kind: LinkKind::Continuation,
         copies_prefix: false,
-        how: None,
+        reason: None,
         branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
@@ -165,6 +165,6 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
     // The anchored statement of root -> a remains; the relations and their
     // order are the coordinates', not the order the rows were stored in.
     assert_eq!(child_relations(&w, "root"), links);
-    // The statements behind the relation changed, and with them its cursor.
-    assert_ne!(relationship_version(&w), before);
+    // The remaining statement gives the same visible relation in the same place.
+    assert_eq!(relationship_version(&w), before);
 }

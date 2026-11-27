@@ -15,7 +15,7 @@ fn all(reader: &Reader<'_>, selection: &str, options: &str) -> Vec<Value> {
             .query(
                 &query(
                     selection,
-                    "SELECT pk AS _pk FROM session WHERE kind='main' AND stub=0",
+                    "SELECT pk AS _pk FROM session WHERE kind='main' AND has_transcript=1",
                     options,
                 )
                 .unwrap(),

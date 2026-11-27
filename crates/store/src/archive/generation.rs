@@ -6,7 +6,7 @@ use rusqlite::Connection;
 pub(crate) fn create(index: &Connection) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     index.execute(
-        "INSERT INTO meta(key,value) VALUES ('generation',?1),('boot_id',?2),('cursor_key',?3)",
+        "INSERT INTO meta(key,value) VALUES ('index_instance',?1),('boot_id',?2),('cursor_key',?3)",
         [
             uuid::Uuid::now_v7().to_string(),
             boot.trim().to_owned(),
@@ -26,7 +26,7 @@ fn cursor_key() -> Result<String> {
 
 pub(crate) fn rotate(index: &Connection) -> Result<()> {
     for (key, value) in [
-        ("generation", uuid::Uuid::now_v7().to_string()),
+        ("index_instance", uuid::Uuid::now_v7().to_string()),
         ("cursor_key", cursor_key()?),
     ] {
         crate::meta_set(index, key, value)?;
@@ -51,7 +51,7 @@ fn begin(
     }
     with_full_sync(index, || {
         let tx = index.unchecked_transaction()?;
-        let generation = crate::meta_get(&tx, "generation")?;
+        let generation = crate::meta_get(&tx, "index_instance")?;
         let mut changed = false;
         // Changing boot always invalidates cursors, so a lost NORMAL
         // transaction cannot leave positions that look reusable.

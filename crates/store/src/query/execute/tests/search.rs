@@ -14,18 +14,18 @@ fn downward() -> String {
 }
 
 const DOWNWARD: &str = "SELECT id,rank FROM (
-    SELECT s.id,s.last_activity_at,(SELECT min(h.rank) FROM hits h
+    SELECT s.id,s.last_active_at,(SELECT min(h.rank) FROM hits h
       JOIN block b ON b.text_id=h.text_id JOIN message m ON m.pk=b.message_pk
       WHERE b.kind='text' AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')
         AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1
         AND m.session_pk IN (WITH RECURSIVE tree(pk) AS (
-          SELECT s.pk UNION SELECT child.pk FROM link l
+          SELECT s.pk UNION SELECT child.pk FROM session_link l
           JOIN session parent ON parent.id=l.parent_id JOIN tree ON tree.pk=parent.pk
           JOIN session child ON child.id=l.child_id
           WHERE l.kind IN ('spawn','fork','continuation','resume')
         ) SELECT pk FROM tree)) AS rank
     FROM session s WHERE s.origin='test' AND s.kind='main'
-) WHERE rank IS NOT NULL ORDER BY rank,last_activity_at DESC,id";
+) WHERE rank IS NOT NULL ORDER BY rank,last_active_at DESC,id";
 
 fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().unwrap();
@@ -118,7 +118,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     if cycle {
         // Search reachability is bounded even when stored source links cycle.
         // This test reads query rows, independently of transcript layout indexes.
-        conn.execute("INSERT INTO link(parent_id,child_id,kind,how,evidence,input_pk)
+        conn.execute("INSERT INTO session_link(parent_id,child_id,kind,reason,evidence,input_pk)
           VALUES('test:deep','test:leaf','spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))", []).unwrap();
     }
     drop(conn);
@@ -408,7 +408,7 @@ fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, count: usize)
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
     write
         .execute(
-            "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length,data_length) \
+            "INSERT INTO block(message_pk,session_pk,position,kind,text_id,content_group,content_start,content_length,data_length) \
          SELECT m.pk,m.session_pk,0,source.kind,source.text_id,source.content_group,source.content_start,source.content_length,source.data_length \
          FROM message m JOIN session s ON s.pk=m.session_pk \
          CROSS JOIN block source JOIN message source_message ON source_message.pk=source.message_pk \
@@ -545,7 +545,9 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                     "sessions where kind:main ({identities}) {term} | sort by last_active desc"
                 ),
                 3,
-                vec!["test:a", "test:d", "test:e", "test:f", "test:g"],
+                // Newest first is the default order read backwards: e and d
+                // share a time, so the greater ID comes first.
+                vec!["test:a", "test:e", "test:d", "test:f", "test:g"],
             ),
             (
                 format!(

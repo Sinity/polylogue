@@ -438,7 +438,7 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
     let conn = Connection::open(t.archive.index_db()).unwrap();
     let (pk, before): (i64, Vec<u8>) = conn
         .query_row(
-            "SELECT input_pk,hash FROM tool_row WHERE tbl='items'",
+            "SELECT input_pk,hash FROM tool_row WHERE table_name='items'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -456,9 +456,11 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
         matches!(update.write(&conn,pk), Err(crate::StoreError::StoredValue { column: None, reason }) if reason == "negative database comparison length")
     );
     let after: Vec<u8> = conn
-        .query_row("SELECT hash FROM tool_row WHERE tbl='items'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT hash FROM tool_row WHERE table_name='items'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(before, after);
 }

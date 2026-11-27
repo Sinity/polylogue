@@ -80,7 +80,7 @@ fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
     write(
         &w,
         batch(
-            "aaa-earlier",
+            &input_sorting_before("middle", "earlier"),
             Route::Live,
             0,
             vec![row(0, message("new", "s"))],
@@ -122,7 +122,7 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
     child.parse[0].output.links.push(polylogue_model::Link {
         kind: LinkKind::Fork,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: sid("s"),
         child: sid("child"),
         branch_point: Some(message("p1", "s").id),
@@ -185,7 +185,7 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
     child.parse[0].output.links.push(polylogue_model::Link {
         kind: LinkKind::Resume,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid("s"),
         child: sid("child"),
         branch_point: None,
@@ -233,7 +233,7 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     index
         .execute(
-            "UPDATE message SET session_order='0' WHERE source_start=20",
+            "UPDATE message SET session_order=X'00' WHERE source_start=20",
             [],
         )
         .unwrap();

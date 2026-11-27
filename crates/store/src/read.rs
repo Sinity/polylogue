@@ -136,7 +136,7 @@ row! {
         archive: i64,
     }
     statements {
-        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS index_instance,
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='index_instance') AS index_instance,
             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
     }
@@ -168,7 +168,7 @@ row! {
 row! {
     /// Where a visit from a message starts in its session's order.
     struct MessageStart {
-        session_order: String,
+        session_order: Vec<u8>,
         id: String,
     }
     statements {
@@ -262,8 +262,8 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT what AS name, sum(count) AS n FROM unused GROUP BY what
-            ORDER BY n DESC, what LIMIT 20";
+        const UNUSED = "SELECT item AS name, sum(count) AS n FROM unused GROUP BY item
+            ORDER BY n DESC, item LIMIT 20";
     }
 }
 
@@ -1451,7 +1451,7 @@ impl Reader<'_> {
         };
         let mut parameters = vec![Value::Integer(session_pk.0)];
         if let Some(start) = &start {
-            parameters.push(Value::Text(start.session_order.clone()));
+            parameters.push(Value::Blob(start.session_order.clone()));
             parameters.push(Value::Text(start.id.clone()));
         }
         let statement = match (&start, ordinal) {
@@ -1597,7 +1597,7 @@ impl Reader<'_> {
                 .map(|count| (count.name, count.n))
                 .collect(),
             fields: c.scalar::<u64>(
-                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
+                "SELECT count(*) FROM (SELECT item FROM unused GROUP BY item HAVING sum(count) > 0)",
                 [],
             )?,
         });

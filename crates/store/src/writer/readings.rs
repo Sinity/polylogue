@@ -59,7 +59,7 @@ pub(super) fn link_statement(link: &Link) -> Result<Vec<u8>> {
         link.parent.to_string(),
         link.child.to_string(),
         link.kind.as_str(),
-        link.how.map(|how| how.as_str()),
+        link.reason.map(|reason| reason.as_str()),
         link.branch_point.as_ref().map(ToString::to_string),
         link.call_id.as_deref(),
     ))?)
@@ -116,10 +116,10 @@ const READING_TABLES: &[&str] = &[
     "document_parse",
     "call_outcome",
     "message_injection_field",
-    "prefix_member",
-    "prefix_copy",
+    "shared_prefix_message",
+    "shared_prefix",
     "unused",
-    "export_reading",
+    "export_parse",
     "repo_lookup",
 ];
 
@@ -200,12 +200,12 @@ pub(super) fn delete(
     }
     // Copied-prefix facts name both sessions; either may read differently.
     for session in strings(
-        "SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2
-         UNION SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2",
+        "SELECT parent_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2
+         UNION SELECT child_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2",
     )? {
         touched.sessions.insert(session);
     }
-    for child in strings("SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2")? {
+    for child in strings("SELECT child_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2")? {
         changes.link_child(tx, &child)?;
     }
     crate::fragment::retract(tx, input_pk, chain)?;
@@ -289,7 +289,7 @@ pub(super) fn write(
                 chain: chain.chain,
                 parse_version: step.parse_version.clone(),
             });
-        tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(prefix_member.committed,excluded.committed),prefix_member.committed,excluded.committed)")?
+        tx.prepare_cached("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,position,record_position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(shared_prefix_message.committed,excluded.committed),shared_prefix_message.committed,excluded.committed)")?
             .execute(params![chain.input_pk,chain.chain,parent,child,member.message.to_string(),source.input,source.chain,source.parse_version,member.position[0].to_string(),member.position[1].to_string(),chain.committed])?;
         write_prefix_copy(tx, chain, &parent, &child, true, touched)?;
     }
@@ -309,7 +309,7 @@ pub(super) fn write(
         }
         for (origin, at) in latest {
             tx.prepare_cached(
-                "INSERT INTO export_reading(input_pk,chain,origin,latest_at) VALUES (?1,?2,?3,?4)
+                "INSERT INTO export_parse(input_pk,chain,origin,latest_at) VALUES (?1,?2,?3,?4)
                  ON CONFLICT(input_pk,chain,origin) DO UPDATE SET latest_at=max(latest_at,excluded.latest_at)",
             )?
             .execute(params![chain.input_pk, chain.chain, origin, at])?;
@@ -372,9 +372,9 @@ fn write_prefix_copy(
 ) -> Result<()> {
     chain.changes.link_child(tx, child)?;
     tx.prepare_cached(
-        "INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,committed,explicit_members) VALUES (?1,?2,?3,?4,?5,?6)
+        "INSERT INTO shared_prefix(input_pk,chain,parent_id,child_id,committed,explicit_members) VALUES (?1,?2,?3,?4,?5,?6)
          ON CONFLICT DO UPDATE SET explicit_members=max(explicit_members,excluded.explicit_members),
-         committed=coalesce(max(prefix_copy.committed,excluded.committed),prefix_copy.committed,excluded.committed)",
+         committed=coalesce(max(shared_prefix.committed,excluded.committed),shared_prefix.committed,excluded.committed)",
     )?
     .execute(params![chain.input_pk, chain.chain, parent, child, chain.committed, explicit_members])?;
     touched.sessions.insert(parent.to_owned());
@@ -473,7 +473,7 @@ fn write_texts(
         let Some(hash) = hash else { continue };
         let id = crate::text_rows::resolve(tx, hash, packed.get(hash))?;
         tx.prepare_cached(
-            "INSERT INTO parse_text(input_pk,chain,document,item,idx,text_id) VALUES (?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO parse_text(input_pk,chain,document,item,position,text_id) VALUES (?1,?2,?3,?4,?5,?6)",
         )?
         .execute(params![chain.input_pk, chain.chain, document, item, idx as i64, id])?;
     }
@@ -601,14 +601,14 @@ fn write_messages(
             let route = row.route(chain.route);
             let message = &row.message;
             tx.prepare_cached(
-                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,seq,record_position,
-                     at,route,completion,id_kind,hash,layout,response_key,content_name,
+                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,position,record_position,
+                     at,route,state,id_kind,hash,layout,response_key,content_name,
                      content_group,content_start,content_length)
                  VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
-                     source_start=excluded.source_start,source_length=excluded.source_length,seq=excluded.seq,
+                     source_start=excluded.source_start,source_length=excluded.source_length,position=excluded.position,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
-                     completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,
+                     state=excluded.state,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,
                      content_group=excluded.content_group,
                      content_start=excluded.content_start,content_length=excluded.content_length",
@@ -674,22 +674,21 @@ fn order_times(
     restates: bool,
     touched: &mut Touched,
 ) -> Result<()> {
-    let mut running: Option<i64> =
-        if restates {
-            None
-        } else {
-            tx.prepare_cached(
+    let mut running: Option<i64> = if restates {
+        None
+    } else {
+        tx.prepare_cached(
             "SELECT order_time FROM message_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3
-             AND (seq,record_position)<(?4,?5) ORDER BY seq DESC,record_position DESC LIMIT 1",
+             AND (position,record_position)<(?4,?5) ORDER BY position DESC,record_position DESC LIMIT 1",
         )?
         .query_row(params![chain.input_pk, chain.chain, session, first.0, first.1], |r| r.get(0))
         .optional()?
         .flatten()
-        };
+    };
     let later = tx
         .prepare_cached(
             "SELECT message_id,at,order_time FROM message_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3
-             AND (seq,record_position)>=(?4,?5) ORDER BY seq,record_position",
+             AND (position,record_position)>=(?4,?5) ORDER BY position,record_position",
         )?
         .query_map(params![chain.input_pk, chain.chain, session, first.0, first.1], |r| {
             <(String, Option<i64>, Option<i64>)>::try_from(r)
@@ -723,7 +722,7 @@ fn write_injection_fields(
     let insert = |block: u64, field: StatedHookField| -> Result<()> {
         field.validate()?;
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO message_injection_field(input_pk,chain,message_id,block_ordinal,field) VALUES (?1,?2,?3,?4,?5)",
+            "INSERT OR IGNORE INTO message_injection_field(input_pk,chain,message_id,source_block_position,field) VALUES (?1,?2,?3,?4,?5)",
         )?
         .execute(params![chain.input_pk, chain.chain, message, block.to_string(), serde_json::to_string(&field)?])?;
         Ok(())
@@ -766,7 +765,7 @@ fn write_documents(
         let time = row.document.source_time;
         let stored: Option<(Option<i64>, String, Vec<u8>)> = tx
             .prepare_cached(
-                "SELECT source_time,route,hash FROM document_parse WHERE input_pk=?1 AND chain=?2 AND document_id=?3",
+                "SELECT at,route,hash FROM document_parse WHERE input_pk=?1 AND chain=?2 AND document_id=?3",
             )?
             .query_row(params![chain.input_pk, chain.chain, id], |r| <(_, _, _)>::try_from(r))
             .optional()?;
@@ -804,10 +803,10 @@ fn write_documents(
             touched,
         )?;
         tx.prepare_cached(
-            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_length,source_time,time,hash,body)
+            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_length,at,at_details,hash,body)
              VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10)
              ON CONFLICT(input_pk,chain,document_id) DO UPDATE SET route=excluded.route,source_start=excluded.source_start,
-                 source_length=excluded.source_length,source_time=excluded.source_time,time=excluded.time,hash=excluded.hash,
+                 source_length=excluded.source_length,at=excluded.at,at_details=excluded.at_details,hash=excluded.hash,
                  body=excluded.body",
         )?
         .execute(params![
@@ -907,12 +906,12 @@ fn write_events(
         };
         let session = event.session.as_ref().map(ToString::to_string);
         tx.prepare_cached(
-            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,source_start,source_length,
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,position,source_start,source_length,
                  after_message_id,kind,at,hash,imported_sources,
                  content_group,content_start,content_length,data_length)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8-?7,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(input_pk,chain,event_id) DO UPDATE SET session_id=excluded.session_id,route=excluded.route,
-                 seq=excluded.seq,source_start=excluded.source_start,source_length=excluded.source_length,
+                 position=excluded.position,source_start=excluded.source_start,source_length=excluded.source_length,
                  after_message_id=excluded.after_message_id,kind=excluded.kind,at=excluded.at,hash=excluded.hash,
                  imported_sources=excluded.imported_sources,
                  content_group=excluded.content_group,content_start=excluded.content_start,
@@ -960,7 +959,7 @@ fn write_links(
             merged = merge_link(merged, stored);
         }
         tx.prepare_cached(
-            "INSERT INTO link_parse(input_pk,chain,statement,parent_id,child_id,kind,how,route,hash,body,committed)
+            "INSERT INTO link_parse(input_pk,chain,statement,parent_id,child_id,kind,reason,route,hash,body,committed)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(input_pk,chain,statement) DO UPDATE SET route=excluded.route,hash=excluded.hash,
                  body=excluded.body,committed=coalesce(max(link_parse.committed,excluded.committed),link_parse.committed,excluded.committed)",
@@ -972,7 +971,7 @@ fn write_links(
             link.parent.to_string(),
             link.child.to_string(),
             link.kind.as_str(),
-            link.how.map(|how| how.as_str()),
+            link.reason.map(|reason| reason.as_str()),
             chain.route.as_str(),
             crate::encoding::value_hash(&merged)?.as_slice(),
             serde_json::to_vec(&merged)?,
@@ -1103,7 +1102,7 @@ pub(crate) fn text_ids(
 ) -> Result<BTreeMap<usize, i64>> {
     Ok(conn
         .prepare_cached(
-            "SELECT idx,text_id FROM parse_text WHERE input_pk=?1 AND chain=?2 AND document=?3 AND item=?4",
+            "SELECT position,text_id FROM parse_text WHERE input_pk=?1 AND chain=?2 AND document=?3 AND item=?4",
         )?
         .query_map(params![input_pk, chain, document, item], |row| {
             Ok((row.get::<_, i64>(0)? as usize, row.get(1)?))
@@ -1120,9 +1119,9 @@ fn restore_texts(
     blocks: &mut [Block],
 ) -> Result<()> {
     let mut statement = conn.prepare_cached(
-        "SELECT r.idx,g.body,t.start,t.length FROM parse_text r JOIN text t ON t.id=r.text_id
+        "SELECT r.position,g.body,t.start,t.length FROM parse_text r JOIN text t ON t.id=r.text_id
          JOIN content_group g ON g.id=t.group_id
-         WHERE r.input_pk=?1 AND r.chain=?2 AND r.document=?3 AND r.item=?4 ORDER BY r.idx",
+         WHERE r.input_pk=?1 AND r.chain=?2 AND r.document=?3 AND r.item=?4 ORDER BY r.position",
     )?;
     let mut rows = statement.query(params![input_pk, chain, document, item])?;
     while let Some(row) = rows.next()? {
@@ -1334,7 +1333,7 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
     let mut reader = crate::content::Reader::default();
     for (event_id, copy) in stated {
         let mut statement = conn.prepare_cached(
-            "SELECT i.id,i.format,r.chain,r.source_start,r.source_start+r.source_length,r.imported_sources,r.hash,
+            "SELECT i.id,i.origin,r.chain,r.source_start,r.source_start+r.source_length,r.imported_sources,r.hash,
                  r.event_id,r.content_group,r.content_start,r.content_length,r.data_length
              FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk
              WHERE (?1 IS NOT NULL AND r.event_id=?1) OR (?2 IS NOT NULL AND r.session_id=?2)",

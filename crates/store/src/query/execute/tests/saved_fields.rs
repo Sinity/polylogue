@@ -545,12 +545,12 @@ fn cost_with_parents_includes_prefix() {
     let conn =
         crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP).unwrap();
     conn.execute(
-        "UPDATE link SET branch_point='test:a-1' WHERE child_id='test:b'",
+        "UPDATE session_link SET branch_point='test:a-1' WHERE child_id='test:b'",
         [],
     )
     .unwrap();
     conn.execute(
-        "UPDATE link SET branch_point='test:a-0' WHERE child_id='test:c'",
+        "UPDATE session_link SET branch_point='test:a-0' WHERE child_id='test:c'",
         [],
     )
     .unwrap();
@@ -1739,7 +1739,7 @@ fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() 
     // changed again (docs/live-sessions.md: live-state changes are session
     // changes on the change feed).
     let index = crate::archive::open_write(&archive.archive.index_db(), 16).unwrap();
-    for (column, name) in [("live_changed", "live"), ("derived_changed", "derived")] {
+    for (column, name) in [("live_changed", "live"), ("summary_changed", "derived")] {
         index
             .execute(
                 &format!("UPDATE session SET {column} = ?1 WHERE id = ?2"),
@@ -1755,4 +1755,58 @@ fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() 
             "claude-code:live".to_owned()
         ]
     );
+}
+
+/// A session's tree is its own responses and those of every session below it
+/// through `spawn` links; a fork is not part of the tree, nor is what the
+/// fork spawned (docs/measures.md, session cost).
+#[test]
+fn tree_cost_follows_spawn_links_only() {
+    let d = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(d.path()).unwrap();
+    for (id, cost) in [
+        ("parent", 1_000_000_000),
+        ("spawned", 2_000_000_000),
+        ("grandchild", 4_000_000_000),
+        ("fork", 8_000_000_000),
+        ("fork-spawned", 16_000_000_000),
+    ] {
+        let pk = session(&mut f, &format!("test:{id}"));
+        f.message(
+            pk,
+            MessageFacts {
+                id: &format!("test:{id}-0"),
+                role: "assistant",
+                written_by: "model",
+                text: Some("priced"),
+                cost_nusd: Some(cost),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    f.link("test:parent", "test:spawned", "spawn", None)
+        .unwrap();
+    f.link("test:spawned", "test:grandchild", "spawn", None)
+        .unwrap();
+    f.link("test:parent", "test:fork", "fork", None).unwrap();
+    f.link("test:fork", "test:fork-spawned", "spawn", None)
+        .unwrap();
+    let costs = |fixture: &Fixture, id: &str| {
+        let row = rows(
+            fixture,
+            &format!("sessions where id:test:{id}"),
+            &["tree_cost", "subagent_cost"],
+        )
+        .remove(0);
+        (row["tree_cost"].clone(), row["subagent_cost"].clone())
+    };
+    // Costs are shown in USD.
+    let usd = |whole: i64| serde_json::json!(whole);
+    assert_eq!(costs(&f, "parent"), (usd(7), usd(6)));
+    assert_eq!(costs(&f, "fork"), (usd(24), usd(16)));
+    assert_eq!(costs(&f, "grandchild"), (usd(4), usd(0)));
+    f.link("test:grandchild", "test:missing", "spawn", None)
+        .unwrap();
+    assert_eq!(costs(&f, "grandchild"), (usd(4), serde_json::Value::Null));
 }
