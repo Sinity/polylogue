@@ -91,10 +91,10 @@ fn keep(environment: &process::Fixture) -> String {
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&output.stdout).unwrap();
     let reply = answer.value().unwrap();
-    let kept = reply["reply"]["steps"][0]["outcome"]["reply"]["reply"]["kept"]["result"]
+    let saved = reply["reply"]["steps"][0]["outcome"]["reply"]["reply"]["saved_rows"]["result"]
         .as_str()
         .unwrap_or_else(|| panic!("{reply}"));
-    kept.strip_prefix("result:").unwrap().to_owned()
+    saved.strip_prefix("result:").unwrap().to_owned()
 }
 
 fn callback(
