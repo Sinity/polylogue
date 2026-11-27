@@ -98,7 +98,7 @@ pub(crate) fn ask(
     let socket = polylogue_store::Archive::at(archive).socket();
     let answer = match wait {
         Some(wait) => crate::client::call_with_budget(&socket, &request, wait),
-        None => crate::client::call(&socket, &request),
+        None => crate::client::Exchange::new(&request).call(&socket),
     }
     .ok()?;
     let value = crate::protocol::into_value(answer).ok()?;
