@@ -50,7 +50,7 @@ describe("the popup", () => {
     const stopped = await open(() => state({ status: { host: "ok", daemon: "stopped" } }));
     expect(stopped.text("polylogue-state")).toBe("The daemon did not answer");
     const missing = await open(() => state({ status: { host: "missing", daemon: "unknown" } }));
-    expect(missing.text("polylogue-detail")).toBe("Run: polylogue install chrome --extension-id x");
+    expect(missing.text("polylogue-detail")).toBe("Run: polylogue install chrome");
   });
 
   it("lists five problems and counts the rest", async () => {

@@ -99,7 +99,14 @@ fn chrome_path(startup: &crate::config::Startup) -> std::path::PathBuf {
 }
 
 fn chrome_install(startup: &crate::config::Startup, options: &[&str]) -> (ExitCode, Vec<u8>) {
-    let mut arguments = vec!["polylogue", "install", "chrome"];
+    let program = std::env::current_exe().unwrap();
+    let mut arguments = vec![
+        "polylogue",
+        "install",
+        "chrome",
+        "--program",
+        program.to_str().unwrap(),
+    ];
     arguments.extend_from_slice(options);
     let (_, parsed) = crate::cli::parse(&arguments).unwrap();
     let mut output = Vec::new();

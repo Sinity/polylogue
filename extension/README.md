@@ -80,11 +80,12 @@ same note ID, so a note is never saved twice. Read notes with
 ## Install
 
 1. In `chrome://extensions`, enable Developer mode and choose **Load
-   unpacked** on this directory, from a checkout that stays put.
-2. Register the host with the extension ID Chrome shows:
+   unpacked** on the package's `share/polylogue/extension` directory. The
+   Home Manager module links it at `$XDG_DATA_HOME/polylogue/extension`.
+2. Register the host if Home Manager did not write its manifest:
 
    ```bash
-   polylogue install chrome --extension-id <id>
+   polylogue install chrome
    ```
 
    `polylogue install chrome --remove` takes it out again.
