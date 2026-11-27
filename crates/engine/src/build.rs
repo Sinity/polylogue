@@ -376,6 +376,9 @@ impl Engine {
         self.discard_confirmed_state();
         phases.extend(built?);
         for (mut plan, failure) in failed {
+            // The worker dropped its whole scratch transaction. None of
+            // the ranges this plan read advance the installed checkpoint.
+            plan.parse_pos = 0;
             self.record_failure(&mut plan, failure, &mut pass);
         }
         pass.messages_written = self.reads.reader()?.status(&[])?.messages;
