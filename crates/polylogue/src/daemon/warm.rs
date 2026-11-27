@@ -255,7 +255,7 @@ impl Warm {
         text: &str,
     ) -> Result<Arc<Similarity>, String> {
         let Some(loaded) = self.vectors(reader, provider)? else {
-            return Err("no vectors for this provider's model: `polylogue embed build`".into());
+            return Err("no vectors for this provider's model: `polylogue embed --yes`".into());
         };
         let query = self.query_vector(provider, text)?;
         loaded

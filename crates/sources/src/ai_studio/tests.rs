@@ -30,6 +30,11 @@ fn parse_at(path: &str, bytes: &[u8]) -> crate::parse::Step {
 
 use crate::content_ids::tests::expected;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 #[test]
 fn chunks_become_messages_with_thoughts_split_out() {
     let bytes = prompt(vec![

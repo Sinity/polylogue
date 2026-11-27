@@ -48,7 +48,7 @@ pub(crate) mod lines;
 pub(crate) mod links;
 mod live;
 mod repository;
-mod session;
+pub(crate) mod session;
 pub(crate) mod span;
 mod title;
 mod tool_calls;
@@ -529,7 +529,7 @@ impl<'a> Pass<'a> {
                 .map(|(pk, _)| (*pk, true))
                 .chain(output.active_path.iter().map(|(pk, _)| (*pk, false)));
             for (pk, repeat) in marked {
-                type Keys = (String, String, Option<String>, Option<String>);
+                type Keys = (Vec<u8>, String, Option<Vec<u8>>, Option<String>);
                 if let Some((order, id, parent_order, parent)) =
                     key.query_row([pk], |r| <Keys>::try_from(r)).optional()?
                 {
@@ -805,7 +805,7 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
         if !session.computed.is_empty() {
             // Its summaries reach the change feed; its own rows did not
             // change.
-            tx.prepare_cached("UPDATE session SET derived_changed = ?2 WHERE pk = ?1")?
+            tx.prepare_cached("UPDATE session SET summary_changed = ?2 WHERE pk = ?1")?
                 .execute(params![session.pk, counter])?;
         }
         if write.finish {
@@ -859,7 +859,7 @@ pub(crate) fn caught_up(conn: &Connection) -> Result<bool> {
     let due: bool = conn.scalar(
         // CROSS JOIN keeps the due marks the outer loop: an empty
         // `summary_due` answers without visiting any session.
-        "SELECT EXISTS(SELECT 1 FROM summary_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.stub = 0)",
+        "SELECT EXISTS(SELECT 1 FROM summary_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.has_transcript = 1)",
         [])?;
     if due {
         return Ok(false);

@@ -179,3 +179,43 @@ fn check_reopened_archive(fail: bool) {
         );
     }
 }
+
+/// On reopen after an interrupted index write, status still reflects the
+/// published rows. The newly stored input is visible as work left to parse.
+#[test]
+fn status_is_correct_after_a_writer_killed_mid_transaction() {
+    let w = ClaudeHome::new();
+    w.append("first.jsonl", &claude_user("one", "first", "first body"));
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, []);
+    }
+
+    let status = || w.read(|reader| reader.status(&polylogue_engine::reading_contracts()));
+    let figures = |status: &polylogue_store::read::Status| {
+        (
+            status.sessions,
+            status.sessions_physical,
+            status.messages,
+            status.documents,
+            status.tool_calls,
+        )
+    };
+    let before = status();
+    assert_eq!(figures(&before), (1, 1, 1, 0, 0));
+
+    w.append("second.jsonl", &claude_user("two", "second", "second body"));
+    interrupt_write(&w, "write.index_commit", false);
+
+    let (mut engine, _lock) = w.engine(64 << 20);
+    let mut reopened = status();
+    assert_eq!(figures(&reopened), figures(&before));
+    assert_eq!(reopened.parse_states.remove("parsing"), Some(1));
+    assert_eq!(reopened.parse_states, before.parse_states);
+
+    assert_eq!(engine.run_pass().unwrap().errors, []);
+    let after = status();
+    assert_eq!(figures(&after), (2, 2, 2, 0, 0));
+    assert_eq!(after.parse_states.get("done"), Some(&2));
+    assert_eq!(w.texts("second"), ["second body"]);
+}

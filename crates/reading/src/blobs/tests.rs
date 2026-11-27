@@ -7,15 +7,22 @@ use polylogue_store::{
     fixture::writer::{WriterArchive, message, sid},
 };
 
-fn begin() -> ReadBegin {
-    ReadBegin {
-        format: polylogue_render::Format::Json,
-        snapshot: ReadSnapshot {
+fn begin() -> ReadHeader {
+    ReadHeader {
+        target: "query:synthetic".into(),
+        view: View::Transcript,
+        title: ValueState::known("Synthetic".into()),
+        kind: HeaderKind::Query {
+            query: "sessions".into(),
+        },
+        figures: vec![],
+        zone: None,
+        snapshot: Some(Box::new(ReadSnapshot {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
             ran_at: Timestamp::from_unix_ms(1).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
             },
@@ -27,18 +34,8 @@ fn begin() -> ReadBegin {
             author: Author::Operator,
             notes: vec![],
             incomplete: vec![],
-        },
-        header: ReadHeader {
-            target: "query:synthetic".into(),
-            view: View::Transcript,
-            title: ValueState::known("Synthetic".into()),
-            kind: HeaderKind::Query {
-                query: "sessions".into(),
-            },
-            figures: vec![],
-            zone: None,
-        },
-        options: ReadOptions::default(),
+        })),
+        options: Some(Box::new(ReadOptions::default())),
     }
 }
 

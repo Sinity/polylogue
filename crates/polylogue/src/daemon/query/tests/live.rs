@@ -381,7 +381,7 @@ fn the_change_feed_continues_from_its_cursor() {
     let r = pool.reader().unwrap();
     let all = run(&r, ask("feed", T0)).unwrap();
     assert_eq!(refs(&all), ["claude-code:a", "claude-code:b"]);
-    let cursor = all["read_at"]["cursor"].as_str().unwrap().to_owned();
+    let cursor = all["read_position"]["cursor"].as_str().unwrap().to_owned();
     let after = format!("feed where after:{cursor}");
     assert!(refs(&run(&r, ask(&after, T0)).unwrap()).is_empty());
     drop(r);
@@ -440,12 +440,12 @@ fn stored_facts_equal_applying_the_stored_lines() {
         serde_json::from_str(stored[0]["live_facts"].as_str().unwrap()).unwrap();
     assert_eq!(stored_facts, facts);
     let intervals = w.rows(
-        "SELECT aspect, value, start_at, end_at FROM live_interval ORDER BY start_at, aspect",
+        "SELECT aspect, value, started_at, ended_at FROM live_interval ORDER BY started_at, aspect",
     );
     closed.sort_by(|a, b| (a.start, a.aspect.as_str()).cmp(&(b.start, b.aspect.as_str())));
     let expected: Vec<Value> = closed
         .iter()
-        .map(|i| json!({"aspect": i.aspect.as_str(), "value": i.value, "start_at": i.start, "end_at": i.end}))
+        .map(|i| json!({"aspect": i.aspect.as_str(), "value": i.value, "started_at": i.start, "ended_at": i.end}))
         .collect();
     assert_eq!(intervals, expected);
 }

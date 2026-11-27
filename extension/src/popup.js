@@ -30,7 +30,7 @@
     if (status.host === "missing") {
       tone = "bad";
       label = "Not installed for this browser";
-      detail = `Run: polylogue install chrome --extension-id ${chrome.runtime.id}`;
+      detail = "Run: polylogue install chrome";
     } else if (status.host !== "ok") {
       tone = "bad";
       label = "Polylogue did not answer";
@@ -130,7 +130,7 @@
   });
   $("reader").addEventListener("click", async () => {
     const answer = await chrome.runtime.sendMessage({ type: "polylogue.reader" });
-    if (answer?.error) $("page-detail").textContent = "The reader is not running; start it with `polylogue web`.";
+    if (answer?.error) $("page-detail").textContent = answer.message;
   });
   for (const id of ["automatic", "panel"]) {
     $(id).addEventListener("change", async () => {

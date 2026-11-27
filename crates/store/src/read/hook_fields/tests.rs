@@ -36,7 +36,7 @@ fn capture(
     input: &str,
     mut output: Output,
     with_hook_field: bool,
-) -> (crate::InputKey, i64, u64, crate::ParseStep) {
+) -> (crate::InputKey, i64, u64, crate::ParsePart) {
     let mut bytes=br#"{"type":"system","subtype":"stop_hook_summary","hookAdditionalContext":[null,null,null,"hook context"]}"#.to_vec();
     let end = bytes.len() as u64;
     bytes.push(b'\n');
@@ -126,7 +126,7 @@ fn unauthenticated_hook_field_stays_unknown() {
         );
         injections
     };
-    let mut reading = crate::writer::ChainParse::new().unwrap();
+    let mut reading = crate::writer::Replacement::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
         .replace_chain(input, chain, length, reading)

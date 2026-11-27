@@ -9,8 +9,8 @@ Each table row declares a latency class, and the class applies on every surface 
 | Class | Members | Budget (p95) | Deadline sent |
 |---|---|---|---|
 | **local** | `help`, `--help`, `--version`, grammar refusals, `--explain` of a line's grammar, `install SHELL --dry-run` | ≤ 15 ms | none (no socket) |
-| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, daemon up or down | none for values (catalog file); 30 ms for the count preview, omitted when late |
-| **picker** | first candidates, a keystroke, the preview | 50 ms, 16 ms, 100 ms | none for candidates (catalog file); 100 ms for the preview |
+| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, process start and one socket round trip included | the CLI waits 250 ms, then offers the grammar alone; 30 ms for the count preview, omitted when late |
+| **picker** | first candidates, a keystroke, the preview | 50 ms, 16 ms, 100 ms | the read class for candidates; 100 ms for the preview |
 | **status** | bare `polylogue`, `status`, `status --line` | ≤ 100 ms; `status --line` ≤ 30 ms, because it runs in status bars | 80 ms |
 | **read** | the first screen of a one-row read, the first page of an indexed listing (`origin:`, `repo:`, `since:`, `tag:`, a shipped saved query), a page turn, `resume` | ≤ 100 ms | 250 ms |
 | **write** | one annotation acknowledged as committed | ≤ 100 ms | none ([below](#writes-and-deadlines)) |
@@ -26,7 +26,7 @@ The read-class `internal advisory` operation has a stricter preparation cap of 2
 
 ## Writes and deadlines
 
-Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
+Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a line each step has its own class and shares the original read deadline. After a write step, a reader waits for the index to take in that write before opening its snapshot. If the wait runs out, the line reports the read's timeout alongside the completed write.
 
 **A listing's count** runs after its page, on the request's own reader, until the deadline less the time the reply needs (a fifth of what is left, at most a second); a count that runs out answers the page with `count deferred` and the command that counts without a deadline.
 
@@ -40,7 +40,7 @@ A stopped read names the stage that ran out. A page or similarity stage suggests
 |---|---|
 | busy with a first build or re-parse | interactive replies keep their budgets on the reserved read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
-| down | the local class, completion and the picker's candidates (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
+| down | the local class works, and completion offers the grammar alone; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |
 
 Because one daemon assembly answers every transport, the same line gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP.
@@ -51,7 +51,6 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 
 | Warm item | Serves | Keyed by | Refreshed |
 |---|---|---|---|
-| catalog (memory, and published as a file) | completion, short IDs, reference resolution, picker candidates, `help`'s filled lines; it holds the verbs valid per unit, tag names with counts, saved and shipped query names with their one line, and settings | archive write position | incrementally from each committed batch, published within 2 s |
 | sorted session index with titles, last activity, origin, repository, first prompt, shortest unique prefixes | short IDs, prefixes, `latest`, the picker | write position | batch delta |
 | status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each commit (each batch and each hook event); a reply reads the latest snapshot and never waits for the next |
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |

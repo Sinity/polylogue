@@ -528,16 +528,16 @@ impl<'a> Encoder<'a> {
                 }
             }
             Card::Run {
-                question,
-                read_at,
+                query_id,
+                read_position,
                 author,
                 count,
                 exact,
                 outcome,
             } => {
                 for line in run_lines(
-                    question.as_ref(),
-                    read_at,
+                    query_id.as_ref(),
+                    read_position,
                     author,
                     *count,
                     *exact,
@@ -613,15 +613,16 @@ impl<'a> Encoder<'a> {
                 from,
                 to,
                 relation,
-                how,
+                reason,
                 cross_link,
                 branch_point,
                 spawning_call,
                 copies_prefix,
             } => self.line(&format!(
                 "{from} → {to} · {relation}{}{}{}{}{}",
-                how.as_ref()
-                    .map(|how| format!(" ({how})"))
+                reason
+                    .as_ref()
+                    .map(|reason| format!(" ({reason})"))
                     .unwrap_or_default(),
                 if *copies_prefix {
                     " · copied prefix"
@@ -694,8 +695,8 @@ pub(crate) fn trace_lines(card: &polylogue_model::read::TraceCard) -> Vec<String
 }
 
 pub(crate) fn run_lines(
-    question: Option<&polylogue_model::Reference>,
-    read_at: &polylogue_model::ChangePosition,
+    query_id: Option<&polylogue_model::Reference>,
+    read_position: &polylogue_model::ChangePosition,
     author: &polylogue_model::Author,
     count: Option<u64>,
     exact: Option<bool>,
@@ -705,12 +706,12 @@ pub(crate) fn run_lines(
     vec![
         "Run".into(),
         format!(
-            "Question: {}",
-            question
+            "Query: {}",
+            query_id
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "not applicable (object read)".into())
         ),
-        format!("Read position: {read_at}"),
+        format!("Read position: {read_position}"),
         format!("Author: {author}"),
         format!(
             "Count: {}",
@@ -1190,7 +1191,7 @@ fn saved_query_header_line(kind: &HeaderKind) -> Option<String> {
     };
     Some(format!(
         "Saved query: {} · selected {} · {}",
-        saved.name, saved.selected_revision, saved.question
+        saved.name, saved.selected_revision, saved.query_id
     ))
 }
 

@@ -69,7 +69,7 @@ scratch = "tmpfs"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.land_queue]
-description = "The landing queue: merge every ready pull request, updating stale ones, in passes a minute apart (dev/land --queue)"
+description = "The landing queue: test ready pull requests in batches on master's tip and merge green batches (dev/land --queue)"
 exec = ["dev/land", "--queue"]
 # Long-lived and light (gh and git calls only): the pool for long-running
 # development dependencies, no time limit, no memory reservation.
@@ -99,7 +99,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.measure]
-description = "A measurement in the one-at-a-time measure queue: a benchmark (cargo run --locked --release -p xtask -- bench ...), an archive rebuild with a prebuilt binary, or a measurement driver"
+description = "A measurement in the one-at-a-time measure queue: a benchmark (cargo run --locked --release -p xtask -- bench ...), an archive rebuild with a prebuilt binary, or a measurement driver; admitted at 6 GiB and held below 7 GiB"
 # Paid embedding calls stay off; measurements yield to interactive work.
 exec = ["nix", "develop", "--command", "env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "2", "-n", "7", "nice", "-n", "10"]
 arguments = "required"
@@ -108,10 +108,11 @@ result = "exit"
 timeout_seconds = 10800
 scratch = "nvme"
 cache = "none"
-# A full-archive rebuild peaks near 10 GiB; admission waits for that much
-# rather than starting a run its memory limit would kill.
-admission = { memory_mib = 10240 }
-unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
+# Admission waits for the memory the unit's limits allow it to grow to, so
+# the job plane can admit it; a measurement that needs more needs the host's
+# ceiling raised.
+admission = { memory_mib = 6144 }
+unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=6G", "MemoryMax=7G", "MemorySwapMax=2G"]
 
 [operations.fmt]
 description = "Format the workspace"

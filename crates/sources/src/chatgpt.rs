@@ -41,7 +41,20 @@ pub const ORIGIN: &str = "chatgpt";
 /// `conversations.json` or a shard `conversations-NNN.json`, holding an
 /// array of ChatGPT conversations. claude.ai's export uses the same name;
 /// its conversations start with `uuid`, ChatGPT's never do.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+///
+/// One conversation alone, in the conversation API's shape (`mapping`,
+/// `current_node`, `conversation_id`), is recognized whatever the file is
+/// named, once the whole document is read.
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::{Kind, ShapeKey};
+    if head.shape.is_some()
+        && head.holds(ShapeKey::Mapping, Kind::Object)
+        && head.has(ShapeKey::CurrentNode)
+        && head.holds(ShapeKey::ConversationId, Kind::String)
+    {
+        return true;
+    }
+    let head = head.bytes;
     if !recognize_name(path) || first_byte(head) != Some(b'[') {
         return false;
     }
@@ -65,10 +78,8 @@ const CONVERSATION_KEYS: &[&str] = &[
     "conversation_template_id",
 ];
 
-pub fn open(path: &Path) -> Option<Parse> {
-    path.extension()
-        .is_some_and(|ext| ext == "json")
-        .then(|| Parse::Export(Box::new(Export)))
+pub fn open(_: &Path) -> Option<Parse> {
+    Some(Parse::Export(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {
@@ -413,7 +424,7 @@ fn conversation_with_sessions(
         sink.out.links.push(Link {
             kind: LinkKind::Fork,
             copies_prefix: true,
-            how: None,
+            reason: None,
             parent,
             child: sid.clone(),
             branch_point: Some(at.id),

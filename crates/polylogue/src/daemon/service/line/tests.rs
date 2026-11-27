@@ -1,3 +1,4 @@
+mod read_after_write;
 mod saved_queries;
 
 use crate::test_daemon::{self, Call, TestDaemon};
@@ -975,7 +976,7 @@ fn listing_value(d: &TestDaemon, selection: &str) -> Value {
 
 fn kept_result(d: &TestDaemon, report: &Value) -> Value {
     assert_eq!(report["outcome"]["status"], "done", "{report}");
-    let result = report["outcome"]["reply"]["reply"]["kept"]["result"]
+    let result = report["outcome"]["reply"]["reply"]["saved_rows"]["result"]
         .as_str()
         .unwrap();
     listing_value(d, result)
@@ -1082,7 +1083,7 @@ fn saving_a_saved_kept_relation_retains_nested_output_schemas() {
         "kept-source",
         json!({"selection":"session:claude-code:s1","steps":[{"verb":"save"}]}),
     );
-    let source = original[0]["outcome"]["reply"]["reply"]["kept"]["result"]
+    let source = original[0]["outcome"]["reply"]["reply"]["saved_rows"]["result"]
         .as_str()
         .unwrap();
     let expected = kept_result(&d, &original[0]);
@@ -1248,11 +1249,11 @@ fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_chang
         second[0]["outcome"].get("undo").is_none(),
         "a keep-only Save has no undo"
     );
-    assert_eq!(second_parts["kept"]["result"], "result:second-save-1");
+    assert_eq!(second_parts["saved_rows"]["result"], "result:second-save-1");
     steps(&d, "changed-definition", save("messages"));
     for (id, original) in [("first-save", &first[0]), ("second-save", &second[0])] {
         let retry = steps(&d, id, save("sessions"));
-        for field in ["saved", "watch", "kept"] {
+        for field in ["saved", "watch", "saved_rows"] {
             assert_eq!(part(&retry[0])[field], part(original)[field]);
         }
         assert_eq!(part(&retry[0])["repeat"], true);
@@ -1317,7 +1318,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
         panic!("one atomic Save request")
     };
     assert_eq!(
-        save.outcomes.as_ref().unwrap().kept.result,
+        save.outcomes.as_ref().unwrap().saved_rows.result,
         "result:owned-save-1"
     );
     for child in ["owned-save-1.1", "owned-save-1.2"] {
@@ -1346,8 +1347,8 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
         report["saved"].is_null() && report["watch"].is_null(),
         "{report}"
     );
-    assert_eq!(report["kept"]["rows"], 1);
-    assert_eq!(report["kept"]["result"], "result:only-rows-1");
+    assert_eq!(report["saved_rows"]["rows"], 1);
+    assert_eq!(report["saved_rows"]["result"], "result:only-rows-1");
     assert!(
         kept[0]["outcome"].get("undo").is_none(),
         "an unnamed Save has no undo"
@@ -1416,7 +1417,10 @@ fn save_keeps_the_accepted_membership_after_an_earlier_step_changes_the_predicat
     let kept = kept_result(&d, &reports[1]);
     assert_eq!(kept["count"], 1, "{kept}");
     assert_eq!(kept["rows"][0]["id"], "claude-code:s1", "{kept}");
-    assert_eq!(reports[1]["outcome"]["reply"]["reply"]["kept"]["rows"], 1);
+    assert_eq!(
+        reports[1]["outcome"]["reply"]["reply"]["saved_rows"]["rows"],
+        1
+    );
 }
 
 #[test]

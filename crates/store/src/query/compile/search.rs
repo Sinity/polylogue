@@ -211,7 +211,7 @@ impl Compiler<'_> {
                     format!(
                         "SELECT min(pk) FROM {scope_rows} UNION \
                          SELECT c.pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
-                         CROSS JOIN link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+                         CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                          CROSS JOIN session c ON c.id=l.child_id UNION \
                          SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
                          FROM tree t WHERE t.pk IS NOT NULL"
@@ -220,7 +220,7 @@ impl Compiler<'_> {
                     format!(
                         "SELECT pk FROM {scope_rows} UNION \
                          SELECT c.pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
-                         CROSS JOIN link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+                         CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                          CROSS JOIN session c ON c.id=l.child_id"
                     )
                 };

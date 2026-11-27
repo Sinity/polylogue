@@ -303,7 +303,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
             name: Some("before".into()),
             query: "annotations".into(),
             rows_json: "{\"unit\":\"annotations\",\"columns\":[],\"rows\":[]}".into(),
-            read_at: "{\"now\":1}".into(),
+            read_position: "{\"now\":1}".into(),
             denominator: None,
             watch: None,
             outcomes: None,
@@ -323,7 +323,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
     let mut changed = request.clone();
     if let UserWrite::Save(save) = &mut changed.write {
         save.rows_json = "[{\"id\":\"new\"}]".into();
-        save.read_at = "{\"now\":2}".into();
+        save.read_position = "{\"now\":2}".into();
     }
     assert!(writer.archive().user(changed.clone()).unwrap().repeat);
     // The retry's rows and read time do not replace the original request.
@@ -340,7 +340,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         stored.rows_json,
         "{\"unit\":\"annotations\",\"columns\":[],\"rows\":[]}"
     );
-    assert_eq!(stored.read_at, "{\"now\":1}");
+    assert_eq!(stored.read_position, "{\"now\":1}");
     if let UserWrite::Save(save) = &mut changed.write {
         save.query = "sessions".into();
     }
@@ -363,7 +363,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
                 query: text.into(),
                 denominator: None,
                 rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-                read_at: "{}".into(),
+                read_position: "{}".into(),
                 watch: None,
                 outcomes: None,
             })),
@@ -448,7 +448,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
             revision: 2,
             new_revision: true,
         }),
-        kept: polylogue_model::user::KeptPart {
+        saved_rows: polylogue_model::user::KeptPart {
             result: "result:resolved".into(),
             rows: 0,
             at: recorded.at,

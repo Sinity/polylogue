@@ -18,7 +18,7 @@ pub(crate) fn membership(
         Reference::Block { message, n } => {
             let n = i64::try_from(*n).ok()?;
             Some(format!(
-                "SELECT m.pk,m.session_pk FROM message m WHERE m.id={} AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.idx={n})",
+                "SELECT m.pk,m.session_pk FROM message m WHERE m.id={} AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.position={n})",
                 crate::chain_names::resolved_message_sql(message, bind)
             ))
         }
@@ -71,7 +71,7 @@ pub(crate) fn membership(
                 let Ok(n) = i64::try_from(*n) else {
                     return None;
                 };
-                format!(" AND b.idx={n}")
+                format!(" AND b.position={n}")
             } else {
                 String::new()
             };

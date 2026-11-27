@@ -2,6 +2,11 @@ use super::*;
 use polylogue_model::ToolOutcome;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn session(messages: Vec<Json>) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "sessionId": "s1", "projectHash": "abc", "startTime": "2026-03-14T18:01:43.756Z",

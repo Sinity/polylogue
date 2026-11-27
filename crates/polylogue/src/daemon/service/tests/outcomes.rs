@@ -11,9 +11,9 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
         logical_sessions: Vec::new(),
         value: crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
-            read_at: crate::protocol::query::Position {
+            read_position: crate::protocol::query::Position {
                 freshness: None,
-                generation: "synthetic".into(),
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
                 cursor: "synthetic:1:1".into(),
@@ -114,7 +114,10 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
         assert_eq!(answer.exit_code(), 5, "{outcome:?}");
         let (mut value, notes) = test_answers::degraded(answer);
         assert_eq!(notes, behind().notes(), "{outcome:?}");
-        assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&behind()));
+        assert_eq!(
+            value.read_position_mut().freshness.as_ref(),
+            Some(&behind())
+        );
     }
 }
 
@@ -122,7 +125,7 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
 fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     let mut report = polylogue_engine::ImportReport::default();
     report.user_state.pending = 1;
-    let answer = import_answer(report.clone());
+    let answer = import_answer(report.clone(), false);
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
     let (value, notes) = test_answers::degraded(answer);
@@ -134,7 +137,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
         applied: 1,
         present: 2,
     };
-    let answer = import_answer(report.clone());
+    let answer = import_answer(report.clone(), false);
     assert_eq!(answer.exit_code(), 0);
     assert!(
         crate::protocol::notes(&answer)
@@ -144,10 +147,8 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     test_answers::ok(answer);
 }
 
-/// docs/capture.md, Import: "where that waits for a build, the reply says
-/// index_building with the build's progress".
 #[test]
-fn an_import_answered_during_a_build_says_the_index_is_being_built() {
+fn an_import_answered_during_a_build_says_the_file_is_stored_and_not_yet_readable() {
     let build = polylogue_store::archive::index_build::IndexBuild {
         reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
@@ -157,16 +158,24 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
     };
     let report = polylogue_engine::ImportReport {
         readable: polylogue_engine::Readable::AfterBuild { build },
+        imported: vec!["/home/op/export.json".into()],
         ..Default::default()
     };
-    let answer = import_answer(report);
+    let answer = import_answer(report, false);
     assert_eq!(answer.exit_code(), 5);
-    let (_, notes) = test_answers::degraded(answer);
+    let (report, notes) = test_answers::degraded(answer);
     assert_eq!(
         notes,
         [
-            "the index is being built (the archive had no index): 100 of 300 bytes parsed; 1 of 3 input chains read; the imported inputs are readable once it is installed"
+            "stored, not yet readable: the index is being built (the archive had no index): 100 of 300 bytes parsed; 1 of 3 input chains read"
         ]
+    );
+    assert_eq!(
+        crate::cli::print::import(
+            &crate::protocol::import::Answer::Files(Box::new(report)),
+            command_surface::TextStyle::default(),
+        ),
+        "stored, not yet readable: /home/op/export.json\n",
     );
 }
 
@@ -188,7 +197,10 @@ fn answer_reports_pending_search_text_and_parse_lag() {
             "search text is pending"
         ]
     );
-    assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&freshness));
+    assert_eq!(
+        value.read_position_mut().freshness.as_ref(),
+        Some(&freshness)
+    );
     let answer = crate::protocol::read(value.clone(), &freshness);
     let (same_value, same_notes) = test_answers::degraded(answer);
     assert_eq!(

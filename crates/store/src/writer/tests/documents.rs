@@ -38,7 +38,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     index
-        .execute("UPDATE document_block SET body=x'00' WHERE idx=2", [])
+        .execute("UPDATE document_block SET body=x'00' WHERE position=2", [])
         .unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -71,7 +71,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert!(selected.document().is_err());
     drop(reader);
     index
-        .execute("UPDATE document_block SET body=x'00' WHERE idx=0", [])
+        .execute("UPDATE document_block SET body=x'00' WHERE position=0", [])
         .unwrap();
     let reader = pool.reader().unwrap();
     let selected = reader.select_document(&original.id).unwrap().unwrap();

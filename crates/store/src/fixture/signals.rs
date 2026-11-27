@@ -84,6 +84,7 @@ pub fn pending_delivery(
             text: occurrence.into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         },
         metadata: Metadata {
             delivery: Delivery {

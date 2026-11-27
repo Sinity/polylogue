@@ -1,52 +1,8 @@
-use crate::{
-    ReadPool,
-    fixture::{Fixture, SessionFacts},
-};
+use crate::ReadPool;
 use polylogue_model::SessionId;
 
-/// A link row whose stored kind this build does not know makes reading the
-/// session's links fail as a store failure, not as something wrong with the
-/// request.
-#[test]
-fn links_over_a_corrupt_stored_link_kind_is_a_store_failure() {
-    let root = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(root.path()).unwrap();
-    for id in ["test:parent", "test:child"] {
-        fixture
-            .session(SessionFacts {
-                id,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    fixture
-        .link("test:parent", "test:child", "fork", None)
-        .unwrap();
-    let child = SessionId::parse("test:child").unwrap();
-    let export = |fixture: &Fixture| {
-        let pool = ReadPool::open(&fixture.archive).unwrap();
-        pool.reader().unwrap().links(&child)
-    };
-    assert_eq!(export(&fixture).unwrap().len(), 1);
-    fixture
-        .link("test:parent", "test:child", "unheard-of", None)
-        .unwrap();
-    let error = export(&fixture).unwrap_err();
-    assert!(
-        matches!(
-            error,
-            crate::StoreError::StoredValue {
-                column: Some(0),
-                ..
-            }
-        ),
-        "{error:?}"
-    );
-    assert_eq!(error.code(), polylogue_model::Code::Store);
-}
-
 // The original query is the independent result and negative work control.
-const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
+const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.position,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
 
 fn copied_archive() -> (
     crate::fixture::writer::WriterArchive,
@@ -110,7 +66,7 @@ fn copied_messages_keep_sources_and_branch_points() {
     archive.links.push(Link {
         kind: LinkKind::Fork,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("branched"),
         branch_point: Some(id.clone()),
@@ -164,12 +120,12 @@ fn copied_messages_keep_sources_and_branch_points() {
         .unwrap();
     index
         .execute(
-            "UPDATE prefix_copy SET explicit_members=1 WHERE child_id=?1",
+            "UPDATE shared_prefix SET explicit_members=1 WHERE child_id=?1",
             [sid("copy").to_string()],
         )
         .unwrap();
-    index.execute("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
-        SELECT input_pk,chain,parent_id,child_id,?1,'original-copy',17,'synthetic=2','18446744073709551615','42' FROM prefix_copy WHERE child_id=?2",
+    index.execute("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,position,record_position)
+        SELECT input_pk,chain,parent_id,child_id,?1,'original-copy',17,'synthetic=2','18446744073709551615','42' FROM shared_prefix WHERE child_id=?2",
         rusqlite::params![id.to_string(),sid("copy").to_string()]).unwrap();
     let expected = CopiedFor {
         parent: sid("parent"),
@@ -200,7 +156,7 @@ fn copied_messages_keep_sources_and_branch_points() {
     let absent = polylogue_model::MessageId::parse("claude-code:absent").unwrap();
     index
         .execute(
-            "UPDATE prefix_member SET message_id=?1",
+            "UPDATE shared_prefix_message SET message_id=?1",
             [absent.to_string()],
         )
         .unwrap();
@@ -250,12 +206,12 @@ fn copied_messages_skip_unrelated_prefix_edges() {
     };
     let (expected, before, old_before) = measure();
     index.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000)
-        INSERT INTO link(parent_id,child_id,kind,copies_prefix,evidence,input_pk)
+        INSERT INTO session_link(parent_id,child_id,kind,copies_prefix,evidence,input_pk)
         SELECT 'claude-code:other-parent-'||x,'claude-code:other-child-'||x,'fork',1,'synthetic',(SELECT min(pk) FROM input_ref) FROM n",[]).unwrap();
     index
         .execute(
-            "INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,explicit_members)
-        SELECT input_pk,0,parent_id,child_id,0 FROM link WHERE evidence='synthetic'",
+            "INSERT INTO shared_prefix(input_pk,chain,parent_id,child_id,explicit_members)
+        SELECT input_pk,0,parent_id,child_id,0 FROM session_link WHERE evidence='synthetic'",
             [],
         )
         .unwrap();

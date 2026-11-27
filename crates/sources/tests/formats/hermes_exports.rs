@@ -8,7 +8,10 @@ fn hermes_atof_reports_are_input_owned_observations_without_conversations() {
     let raw = include_bytes!("../../../../examples/sources/hermes/atof/input.jsonl");
     let path = ".hermes/observability/nemo-relay/atof/events.jsonl";
     let origin = by_name("hermes").unwrap();
-    assert!((origin.recognize)(Path::new(path), &raw[..64]));
+    assert!((origin.recognize)(
+        Path::new(path),
+        &polylogue_sources::document::Head::new(&raw[..64])
+    ));
     let parsed = parse("hermes", path, raw);
     assert!(sessions(&parsed).is_empty());
     assert!(messages(&parsed).is_empty());
@@ -69,7 +72,7 @@ fn verification_rows_are_kept_without_guesses() {
     let path = ".hermes/verification_evidence.db.jsonl";
     assert!((by_name("hermes").unwrap().recognize)(
         Path::new(path),
-        &raw[..64]
+        &polylogue_sources::document::Head::new(&raw[..64])
     ));
     let parsed = parse("hermes", path, &raw);
     assert!(sessions(&parsed).is_empty());
@@ -113,7 +116,7 @@ fn hermes_verification_needs_its_schema_not_markers() {
     let marker = br#"{"polylogue_artifact":"hermes_verification_evidence_db","verification_db_path":"/neutral/never-open.db"}"#;
     assert!(!(by_name("hermes").unwrap().recognize)(
         Path::new("marker.json"),
-        marker
+        &polylogue_sources::document::Head::new(marker)
     ));
 }
 

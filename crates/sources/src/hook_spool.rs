@@ -81,7 +81,8 @@ fn is_spool_file(path: &Path) -> bool {
 
 /// A spool line starts `{"event_type"` (per-session files), `{"event_id"`
 /// (dated files) or `{"at_ns"` (the hook command's files).
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     is_spool_file(path) && matches!(first_key(head), Some("event_type" | "event_id" | "at_ns"))
 }
 

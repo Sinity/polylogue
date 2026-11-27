@@ -94,6 +94,7 @@ pub struct Options {
 pub enum Choice {
     Selected(Vec<String>),
     Cancelled,
+    Empty,
 }
 
 /// Opens over query rows or an ambiguity's candidates and returns references.
@@ -552,10 +553,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
         page = runtime.block_on(source.page(request.clone()))?;
     }
     if page.rows.is_empty() {
-        return Err(Failure::new(
-            polylogue_model::Code::Empty,
-            "no rows match the selection",
-        ));
+        return Ok(Choice::Empty);
     }
     if page.rows.len() == 1 && page.next.is_none() {
         return finish(&*source, &options, vec![page.rows[0].reference.clone()]);
@@ -594,7 +592,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
     restored?;
     match choice {
         Choice::Selected(references) => finish(&*source, &options, references),
-        Choice::Cancelled => Ok(Choice::Cancelled),
+        Choice::Cancelled | Choice::Empty => Ok(choice),
     }
 }
 

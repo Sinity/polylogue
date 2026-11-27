@@ -141,22 +141,35 @@ impl Statements {
 
     /// One page in `order`, `reverse`d or not. With `after`, it holds the
     /// rows that sort after a row whose order values are bound after the
-    /// query's `params` parameters, one per key; the page size is bound
-    /// last. A keyed answer pages its keys, which [`Statements::hydrate`]
-    /// turns into rows.
+    /// query's `params` parameters, one per key, and `after` says whether
+    /// that row is in the second part of a partitioned order
+    /// ([`OrderKey::partition`]); the page size is bound last. A keyed answer
+    /// pages its keys, which [`Statements::hydrate`] turns into rows.
     pub fn page(
         &self,
         order: &[OrderKey],
         params: usize,
-        after: bool,
+        after: Option<bool>,
         reverse: bool,
         columns: PageColumns,
     ) -> String {
-        let source = match self {
-            Statements::Keyed(keyed) => &keyed.keys,
-            Statements::Derived(derived) => &derived.rows,
-        };
-        page_of(source, order, params, after, reverse, columns)
+        match self {
+            Statements::Keyed(keyed) => {
+                page_of(&keyed.keys, order, params, after, reverse, columns)
+            }
+            // A derived relation is computed whole, so reading it as two
+            // parts would compute it twice; it is sorted as one.
+            Statements::Derived(derived) => {
+                let order: Vec<OrderKey> = order
+                    .iter()
+                    .map(|key| OrderKey {
+                        partition: false,
+                        ..key.clone()
+                    })
+                    .collect();
+                page_of(&derived.rows, &order, params, after, reverse, columns)
+            }
+        }
     }
 
     /// The row columns of the keys bound as one JSON array after the
@@ -186,7 +199,7 @@ impl Statements {
         let predicate = order
             .iter()
             .enumerate()
-            .map(|(i, key)| format!("\"{}\" IS ?{}", key.column, params + i + 1))
+            .map(|(i, key)| format!("\"{}\" IS {}", key.column, key.bound(params + i + 1)))
             .collect::<Vec<_>>()
             .join(" AND ");
         Some(format!(
@@ -198,13 +211,19 @@ impl Statements {
 
 /// One page of `source` in `order`, `reverse`d or not. With `after`, it
 /// holds the rows that sort after a row whose order values are bound after
-/// the source's `params` parameters, one per key; the page size is bound
-/// last.
+/// the source's `params` parameters, one per key, and `after` says whether
+/// that row is in the second part of a partitioned order; the page size is
+/// bound last.
+///
+/// An order led by a partition (`t IS NULL, t, ...`) is read as two ordered
+/// parts, the rows with a value and then those without, each in the order
+/// of the keys after the partition, so an index on `(t, ...)` serves both
+/// and a time bound or a continuation seeks in it.
 pub fn page_of(
     source: &str,
     order: &[OrderKey],
     params: usize,
-    after: bool,
+    after: Option<bool>,
     reverse: bool,
     columns: PageColumns,
 ) -> String {
@@ -216,8 +235,70 @@ pub fn page_of(
             .collect::<Vec<_>>()
             .join(", "),
     };
+    let limit = if after.is_some() {
+        params + order.len() + 1
+    } else {
+        params + 1
+    };
+    if order.len() >= 2 && order[0].partition {
+        let value = &order[1];
+        // The part without a value sorts second in ascending order.
+        let mut parts = [false, true];
+        if order[0].descending ^ reverse {
+            parts.reverse();
+        }
+        let start = after.map_or(0, |second| usize::from(second == parts[1]));
+        let arms: Vec<String> = parts[start..]
+            .iter()
+            .enumerate()
+            .map(|(n, &without)| {
+                // Rows without a value order by the keys after it.
+                let (keys, first) = if without {
+                    (&order[2..], 2)
+                } else {
+                    (&order[1..], 1)
+                };
+                let mut condition = format!(
+                    "\"{}\" IS {}NULL",
+                    value.column,
+                    if without { "" } else { "NOT " }
+                );
+                if n == 0 && after.is_some() && !keys.is_empty() {
+                    condition.push_str(" AND ");
+                    if !without {
+                        // The value is never NULL here, so the first key's
+                        // bound is a range the index seeks.
+                        let op = if value.descending ^ reverse {
+                            "<="
+                        } else {
+                            ">="
+                        };
+                        condition.push_str(&format!(
+                            "\"{}\" {op} {} AND ",
+                            value.column,
+                            value.bound(params + 2)
+                        ));
+                    }
+                    condition.push_str(&format!(
+                        "({})",
+                        after_condition(keys, params + first, reverse)
+                    ));
+                }
+                let mut arm = format!("SELECT {select_list} FROM ({source}) WHERE {condition}");
+                if !keys.is_empty() {
+                    arm.push_str(" ORDER BY ");
+                    arm.push_str(&super::order_by_in_direction(keys, reverse));
+                }
+                format!("SELECT * FROM ({arm} LIMIT ?{limit})")
+            })
+            .collect();
+        return format!(
+            "SELECT * FROM ({}) LIMIT ?{limit}",
+            arms.join(" UNION ALL ")
+        );
+    }
     let mut sql = format!("SELECT {select_list} FROM ({source})");
-    if after && !order.is_empty() {
+    if after.is_some() && !order.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&after_condition(order, params, reverse));
     }
@@ -225,30 +306,22 @@ pub fn page_of(
         sql.push_str(" ORDER BY ");
         sql.push_str(&super::order_by_in_direction(order, reverse));
     }
-    let limit = if after {
-        params + order.len() + 1
-    } else {
-        params + 1
-    };
     sql.push_str(&format!(" LIMIT ?{limit}"));
     sql
 }
 
-/// Rows after the bound key values `?{params+1}`...: equal on every earlier
-/// key and after on this one, for some key. Reversing the order reverses
-/// NULL placement together with each value comparison.
+/// Rows after the key values bound from `?{params+1}`: equal on every
+/// earlier key and after on this one, for some key. Reversing the order
+/// reverses NULL placement together with each value comparison.
 fn after_condition(order: &[OrderKey], params: usize, reverse: bool) -> String {
     let mut any = vec![];
     for (i, key) in order.iter().enumerate() {
         let mut all: Vec<String> = order[..i]
             .iter()
             .enumerate()
-            .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, params + j + 1))
+            .map(|(j, k)| format!("\"{}\" IS {}", k.column, k.bound(params + j + 1)))
             .collect();
-        let (column, value) = (
-            format!("\"{}\"", key.column),
-            format!("?{}", params + i + 1),
-        );
+        let (column, value) = (format!("\"{}\"", key.column), key.bound(params + i + 1));
         all.push(if key.descending ^ reverse {
             format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
         } else {
