@@ -175,7 +175,26 @@
     return Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"]'));
   }
 
+  // Message identity catches branch changes even when the rendered text is
+  // identical. The surrounding page, including its menus, is not a message.
+  const MESSAGE = "[data-message-id]";
+
+  function shownMessages() {
+    return Array.from(document.querySelectorAll(`main ${MESSAGE}`), (message) => [
+      message.getAttribute("data-message-id"), message.innerText ?? message.textContent,
+    ]);
+  }
+
+  function messageChanged({ target, addedNodes, removedNodes, type }) {
+    if (type === "attributes") return Boolean(target.closest("main"));
+    const element = target instanceof Element ? target : target.parentElement;
+    return Boolean(element?.closest(`main ${MESSAGE}`)) ||
+      [...addedNodes, ...removedNodes].some((node) =>
+        node instanceof Element && (node.matches(MESSAGE) || node.querySelector(MESSAGE)));
+  }
+
   globalThis.polylogueProvider = {
     name: "chatgpt", conversationId, temporary, currentConversation, fetchConversation, list, fetchFile, generating,
+    shownMessages, messageChanged, messageAttributes: ["data-message-id"],
   };
 })();

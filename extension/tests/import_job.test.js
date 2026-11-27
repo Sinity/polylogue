@@ -135,6 +135,28 @@ it("a_provider_edit_after_spooling_is_captured", async () => {
   expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 2, captured: 1, unchanged: 1, failed: 0 } });
 });
 
+it("imports a native ChatGPT title change that advances the provider's update time", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  const held = { c1: { messages: 1, last_captured_at: Date.parse("2026-01-02T00:00:00Z") } };
+  let title = "First title";
+  const { importJob, capturer, stored, reports } = setup({ job, held,
+    listing: () => ({ status: 200, info: { conversations: [{ id: "c1", title, updated_at: "2026-01-03T00:00:00Z" }], next: null, done: true, newest_first: true } }),
+    conversation: () => ({ status: 200, info: { id: "c1", url: "https://chatgpt.com/c/c1" },
+      body: new Blob([JSON.stringify({ conversation_id: "c1", title, mapping: { m1: { content: { parts: ["same question"] } } } })]) }),
+  });
+  await capturer.capture(7, "chatgpt", { id: "c1" });
+  title = "New title";
+  await importJob.step();
+  held.c1.last_captured_at = Date.parse("2026-01-04T00:00:00Z");
+  await importJob.step();
+  expect(stored.map((capture) => capture.raw_provider_payload.title)).toEqual(["First title", "New title"]);
+  expect(stored[0].raw_provider_payload.mapping).toEqual(stored[1].raw_provider_payload.mapping);
+  expect(reports.filter((report) => report.kind === "finished").map((report) => report.counts)).toEqual([
+    { listed: 1, captured: 1, unchanged: 0, failed: 0 },
+    { listed: 1, captured: 0, unchanged: 1, failed: 0 },
+  ]);
+});
+
 it("resumes a current conversation whose attachment bytes are still downloading", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
   const { importJob, stored } = setup({ job, held: { ...HELD,
