@@ -577,7 +577,7 @@ fn a_spawn_cut_keeps_its_header() {
         ..ReadOptions::default()
     };
     d.wait_for(|status| {
-        status["busy"] == false
+        status["caught_up"] == true
             && d.daemon
                 .reads
                 .reader()

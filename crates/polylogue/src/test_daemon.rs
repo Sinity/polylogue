@@ -200,7 +200,7 @@ impl TestDaemon {
         }
         // Checked after `ok`: an idle loop seen now has finished any pass
         // that wrote what `ok` saw.
-        while status()["busy"] != false {
+        while status()["caught_up"] != true {
             std::thread::sleep(Duration::from_millis(10));
         }
     }

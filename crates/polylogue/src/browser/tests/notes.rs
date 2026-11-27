@@ -45,7 +45,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         200
     );
     loop {
-        if matches!(crate::protocol::into_value(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon)), Ok(data) if data["store"]["messages"] == 1 && data["busy"] == false)
+        if matches!(crate::protocol::into_value(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon)), Ok(data) if data["store"]["messages"] == 1 && data["caught_up"] == true)
         {
             break;
         }
