@@ -4,6 +4,11 @@ fn parse(bytes: &[u8]) -> Step {
 }
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn attr(k: &str, v: Json) -> Json {
     let value = match v {
         Json::String(s) => json!({"stringValue": s}),

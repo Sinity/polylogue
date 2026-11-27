@@ -2,6 +2,11 @@ use super::*;
 
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn node(id: &str, parent: Option<&str>, message: Json) -> (String, Json) {
     (
         id.to_owned(),

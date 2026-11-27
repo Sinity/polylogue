@@ -1,58 +1,15 @@
 //! Local-image references in session files are read when observed. Recorded directories
 //! alone resolve relative paths; coverage facts survive with the captured bytes.
 use crate::*;
-use polylogue_model::{Json, JsonExt};
+use polylogue_model::Json;
+use polylogue_sources::origin::LocalReferences;
 use std::io::{BufRead, Seek, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
-fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> std::io::Result<()> {
-    match value {
-        Json::Object(o) => {
-            if let Some(images) = value.array("local_images") {
-                for image in images {
-                    // A typed entry is emitted once by the recursion below.
-                    let path = image.as_str().or_else(|| {
-                        image
-                            .str("path")
-                            .filter(|_| image.str("type") != Some("local_image"))
-                    });
-                    if let Some(path) = path {
-                        emit(path)?;
-                    }
-                }
-            }
-            if value.str("type") == Some("local_image")
-                && let Some(path) = value.str("path")
-            {
-                emit(path)?;
-            }
-            if matches!(value.str("type"), Some("input_image" | "image"))
-                && let Some(path) = o
-                    .get("image_url")
-                    .or_else(|| o.get("url"))
-                    .and_then(Json::as_str)
-                    .filter(|p| p.starts_with("file://"))
-            {
-                emit(path)?;
-            }
-            for value in o.values() {
-                visit(value, emit)?;
-            }
-        }
-        Json::Array(values) => {
-            for value in values {
-                visit(value, emit)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 /// Whether a record refers to a local file by a relative path.
-fn has_relative_reference(value: &Json) -> bool {
+fn has_relative_reference(references: LocalReferences, value: &Json) -> bool {
     let mut relative = false;
-    let _ = visit(value, &mut |raw| {
+    let _ = (references.each)(value, &mut |raw| {
         relative |= !Path::new(raw.strip_prefix("file://").unwrap_or(raw)).is_absolute();
         Ok(())
     });
@@ -62,6 +19,7 @@ fn has_relative_reference(value: &Json) -> bool {
 /// The working directory the last record before `start` recorded: read
 /// backwards from `start` in windows, whole lines only.
 fn directory_before(
+    references: LocalReferences,
     stored: &polylogue_store::blobs::StoredChain,
     blobs: &polylogue_store::blobs::Blobs,
     start: u64,
@@ -88,7 +46,7 @@ fn directory_before(
         };
         for line in bytes[first_line_end..].split(|b| *b == b'\n').rev() {
             if let Ok(value) = serde_json::from_slice::<Json>(line)
-                && let Some(cwd) = polylogue_sources::codex::recorded_directory(&value)
+                && let Some(cwd) = (references.directory)(&value)
             {
                 return Ok(Some(PathBuf::from(cwd)));
             }
@@ -109,10 +67,10 @@ impl Engine {
     ) -> Result<(), EngineError> {
         // A loop without sources reads no file outside the archive, a
         // referenced image included.
-        if !self.config.reads_sources
-            || plan.origin.name != "codex"
-            || plan.input.route.is_imported()
-        {
+        let Some(references) = plan.origin.local_references else {
+            return Ok(());
+        };
+        if !self.config.reads_sources || plan.input.route.is_imported() {
             return Ok(());
         }
         let Change::Reparse { chain } = plan.change else {
@@ -126,10 +84,11 @@ impl Engine {
         // records, or every record when the reading starts again.
         let start = plan.parse_pos.min(plan.size);
         let blobs = Arc::clone(&self.blobs);
-        let mut before = || directory_before(&stored, &blobs, start);
+        let mut before = || directory_before(references, &stored, &blobs, start);
         if start == 0 {
             return self.capture_local_files(
                 std::io::BufReader::new(stored.reader(Arc::clone(&self.blobs))),
+                references,
                 0,
                 &mut before,
                 &plan.input.id,
@@ -139,6 +98,7 @@ impl Engine {
         let appended = stored.read_range(&self.blobs, start, plan.size)?;
         self.capture_local_files(
             std::io::Cursor::new(appended),
+            references,
             start,
             &mut before,
             &plan.input.id,
@@ -149,6 +109,7 @@ impl Engine {
     pub(crate) fn capture_local_files(
         &mut self,
         mut source: impl BufRead,
+        references: LocalReferences,
         start: u64,
         directory_before: &mut dyn FnMut() -> Result<Option<PathBuf>, EngineError>,
         transcript: &str,
@@ -161,20 +122,20 @@ impl Engine {
         let mut looked_before = start == 0;
         let mut line = Vec::new();
         let mut offset = start;
-        let mut references = 0u64;
+        let mut found = 0u64;
         while source.read_until(b'\n', &mut line)? > 0 {
             if let Ok(value) = serde_json::from_slice::<Json>(&line) {
-                if let Some(cwd) = polylogue_sources::codex::recorded_directory(&value) {
+                if let Some(cwd) = (references.directory)(&value) {
                     // A relative recorded cwd is insufficient to resolve a ref.
                     directory = Some(PathBuf::from(cwd));
                 }
-                let relative = has_relative_reference(&value);
+                let relative = has_relative_reference(references, &value);
                 if relative && directory.is_none() && !looked_before {
                     looked_before = true;
                     directory = directory_before()?;
                 }
-                visit(&value, &mut |raw| {
-                    references += 1;
+                (references.each)(&value, &mut |raw| {
+                    found += 1;
                     let path = PathBuf::from(raw.strip_prefix("file://").unwrap_or(raw));
                     let resolved = if path.is_absolute() {
                         Some(path)
@@ -209,13 +170,14 @@ impl Engine {
             offset += line.len() as u64;
             line.clear();
         }
-        if references > 0 {
+        if found > 0 {
             manifest.rewind()?;
             let prepared = self.archive.prepare_bytes(&mut manifest)?;
             let id = prepared.hash().to_string();
             if self.reads.reader()?.latest_chain(&id)?.is_none() {
                 let origin =
-                    polylogue_sources::origin::by_name("tool-context").expect("declared origin");
+                    polylogue_sources::origin::by_name(polylogue_sources::origin::TOOL_CONTEXT)
+                        .expect("declared origin");
                 let observation = self.observation(
                     Path::new(&format!("codex-local-references/{transcript}.jsonl")),
                     None,
