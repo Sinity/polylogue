@@ -402,8 +402,20 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<(), Error> {
-    // On a filesystem supporting reflinks the checked index is not copied
-    // sector by sector. SQLite writes only into the staged copy.
+    // Btrfs clones only when the files agree on whether writes use copy-on-write.
+    // A new file normally inherits the directory's flag, which can differ from
+    // a native archive's database or WAL.
+    if let (Some(source), Some(parent)) = (no_cow(from), to.parent().and_then(no_cow))
+        && source != parent
+    {
+        File::create_new(to)?;
+        let _ = std::process::Command::new("chattr")
+            .arg(if source { "+C" } else { "-C" })
+            .arg("--")
+            .arg(to)
+            .output();
+    }
+    // SQLite writes only into the staged copy.
     if !std::process::Command::new("cp")
         .arg("--reflink=auto")
         .arg("--")
@@ -415,6 +427,22 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), Error> {
         return Err(format!("could not copy {}", from.display()).into());
     }
     Ok(())
+}
+
+fn no_cow(path: &Path) -> Option<bool> {
+    let result = std::process::Command::new("lsattr")
+        .args(["-d", "--"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !result.status.success() {
+        return None;
+    }
+    result
+        .stdout
+        .split(|byte| byte.is_ascii_whitespace())
+        .next()
+        .map(|flags| flags.contains(&b'C'))
 }
 
 fn sync_database(conn: &Connection, path: &Path) -> Result<(), Error> {
