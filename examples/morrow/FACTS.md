@@ -263,7 +263,8 @@ The main archive includes one hook spool file,
 start 612000, boot `7b1e0000-0000-4000-8000-00000000b003`). The
 `UserPromptSubmit` line records #4's prompt naming #2 by its full reference
 at 14:42:00 on October 3. The `ContextEmitted` line names that invocation and
-the delivery it handed over at 14:42:00.180.
+the delivery it handed over at 14:42:00.180. The `SessionEnd` line closes #4
+at 15:10:01, just after its last prompt.
 
 The daemon's delivery record and its outcome are imported from
 `polylogue/delivery.jsonl`. The daemon prepared the session brief 170 ms

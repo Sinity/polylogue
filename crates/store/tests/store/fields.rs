@@ -159,9 +159,8 @@ fn a_message_shows_its_role_and_its_writer_apart() {
     assert_eq!(got, want);
 }
 
-/// Two deliveries, written as the daemon writes them (a prepared delivery,
-/// then what happened to it), whose recipient, event, sender, references
-/// and outcome all differ.
+/// Morrow's delivery and two more with different recipients, events,
+/// senders, references and outcomes.
 #[test]
 fn deliveries_show_their_recipient_event_sender_and_outcome() {
     let morrow = Morrow::build(Set::Main);
@@ -227,7 +226,14 @@ fn deliveries_show_their_recipient_event_sender_and_outcome() {
         json!("mcp"),
         json!("failed"),
     ];
-    let mut want = vec![want_first.clone(), want_second];
+    let want_morrow = vec![
+        json!("01a101c9-1dc0-7000-8000-000000000d01"),
+        json!("#4"),
+        json!("session_brief"),
+        json!("hook"),
+        json!("delivered"),
+    ];
+    let mut want = vec![want_first.clone(), want_second, want_morrow.clone()];
     want.sort_by_key(|tuple| serde_json::to_string(tuple).unwrap());
     assert_eq!(tuples(&rows(&reader, "deliveries", &fields), &fields), want);
     assert_eq!(
@@ -239,6 +245,6 @@ fn deliveries_show_their_recipient_event_sender_and_outcome() {
             ),
             &fields
         ),
-        [want_first]
+        [want_first, want_morrow]
     );
 }
