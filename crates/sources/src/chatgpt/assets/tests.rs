@@ -229,16 +229,17 @@ fn absent_library_fields_are_unknown_and_empty_ids_are_rejected() {
     assert_eq!(entries[0].source_id, "file-A");
 
     let names = "conversation_asset_file_names.json";
+    // The data error points just after the value, at the closing `}`.
     for (bytes, valid, column) in [
         (
             br#"{".dat":"a"}"#.as_slice(),
             br#"{"file-A.dat":"a"}"#.as_slice(),
-            11,
+            12,
         ),
         (
             br#"{"":"a"}"#.as_slice(),
             br#"{"file-A":"a"}"#.as_slice(),
-            7,
+            8,
         ),
     ] {
         let ScanError::Malformed(error) = metadata(names, bytes, |_| Ok(())).unwrap_err() else {
