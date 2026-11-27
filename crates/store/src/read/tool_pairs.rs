@@ -4,11 +4,73 @@
 use crate::row::{BlockPk, Rows as _, row};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
-    Block, ErrorReason, MessageId, SessionId, ToolOutcome,
+    Block, ErrorReason, MessageId, Reference, SessionId, ToolOutcome,
     bundle::ShownBlocks,
     read::{Source, SourceBlock, ToolPair, ValueState},
 };
-use rusqlite::params;
+use rusqlite::{Connection, params};
+
+row! {
+    pub(super) struct CallSource {
+        pub(super) message: MessageId,
+        ordinal: String,
+    }
+    statements {
+        const OF_CALL = "SELECT m.id AS message, coalesce(b.source_position,cast(b.position AS TEXT)) AS ordinal
+            FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+            JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk
+            WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2";
+    }
+}
+
+impl CallSource {
+    pub(super) fn block(&self) -> Result<u64> {
+        self.ordinal
+            .parse()
+            .map_err(|_| StoreError::internal("invalid original block ordinal"))
+    }
+}
+
+pub(super) fn call_source(
+    conn: &Connection,
+    session: &SessionId,
+    call: &str,
+) -> Result<Option<CallSource>> {
+    let rows = conn.all(&CallSource::OF_CALL, params![session.to_string(), call])?;
+    if rows.len() > 1 {
+        return Err(StoreError::Ambiguous {
+            reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
+            candidates: rows
+                .into_iter()
+                .map(|row: CallSource| format!("message:{}", row.message))
+                .collect(),
+        });
+    }
+    Ok(rows.into_iter().next())
+}
+
+/// The original result block addressed by a unique stored call.
+pub(crate) fn tool_result_reference(
+    conn: &Connection,
+    session: &SessionId,
+    call: &str,
+) -> Result<Option<Reference>> {
+    let Some(source) = call_source(conn, session, call)? else {
+        return Ok(None);
+    };
+    let Some(result) =
+        tool_pair_fact(conn, &source.message, source.block()?)?.and_then(|pair| pair.result)
+    else {
+        return Err(StoreError::ReferenceUnavailable {
+            reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
+            reason: "the call has no recorded result available".into(),
+        });
+    };
+    Ok(Some(Reference::Block {
+        message: result.message,
+        n: result.ordinal,
+    }))
+}
 
 /// The line beneath a failed call: the first output line that names the
 /// failure (error, failed, failure, fatal, panicked, exception or denied, in
@@ -404,87 +466,10 @@ impl Reader<'_> {
     }
 
     fn tool_pair_fact(&self, message: &MessageId, ordinal: u64) -> Result<Option<PairFact>> {
-        let resolved = crate::chain_names::resolved_message(self.conn()?, message)?;
-        let message = &resolved;
-
-        let conn = self.conn()?;
-        let mut blocks = conn
-            .all(
-                &BlockAt::OF_MESSAGE,
-                params![message.to_string(), ordinal.to_string()],
-            )?
-            .into_iter();
-        let Some(input) = blocks.next() else {
-            return Ok(None);
-        };
-        let input = BlockFact::of(input)?;
-        if blocks.next().is_some() {
-            return Err(crate::StoreError::stored(
-                0,
-                "one original block ordinal has conflicting current rows",
-            ));
-        }
-        if !input.visible()? {
-            return Ok(None);
-        }
         self.check()?;
-        let mut pairs = conn.all(&CallAndResult::OF_BLOCK, [input.pk])?.into_iter();
-        let Some(pair) = pairs.next() else {
-            return Ok(None);
-        };
-        let matched_row = pair.matched.unwrap_or(false);
-        let result = match (
-            pair.result_pk,
-            pair.result_position,
-            pair.result_ordinal,
-            pair.result_message,
-            pair.result_session,
-        ) {
-            (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
-                Some(BlockFact::of(BlockAt {
-                    pk,
-                    position: idx,
-                    ordinal,
-                    message,
-                    session,
-                    call_id: pair.result_call_id,
-                    version: pair.result_version,
-                    layout: pair.result_layout,
-                    blocks: pair.result_blocks,
-                })?)
-            }
-            _ => None,
-        };
-        let call = BlockFact::of(BlockAt {
-            pk: pair.pk,
-            position: pair.position,
-            ordinal: pair.ordinal,
-            message: pair.message,
-            session: pair.session,
-            call_id: pair.call_id,
-            version: pair.version,
-            layout: pair.layout,
-            blocks: pair.blocks,
-        })?;
-        let matched = matched_row
-            && result
-                .as_ref()
-                .map(BlockFact::visible)
-                .transpose()?
-                .unwrap_or(false);
-        if pairs.next().is_some() {
-            return Err(crate::StoreError::stored(
-                0,
-                "one source block has conflicting current tool relations",
-            ));
-        }
-        if !call.visible()? || (input.pk != call.pk && !matched) {
-            return Ok(None);
-        }
-        Ok(Some(PairFact {
-            call,
-            result: result.filter(|_| matched),
-        }))
+        let fact = tool_pair_fact(self.conn()?, message, ordinal)?;
+        self.check()?;
+        Ok(fact)
     }
     fn tool_pair_block(&self, fact: &BlockFact, full: bool) -> Result<SourceBlock> {
         self.check()?;
@@ -520,9 +505,96 @@ impl Reader<'_> {
 }
 
 /// The rows this module declares statements for, for the every-statement test.
+fn tool_pair_fact(
+    conn: &Connection,
+    message: &MessageId,
+    ordinal: u64,
+) -> Result<Option<PairFact>> {
+    let resolved = crate::chain_names::resolved_message(conn, message)?;
+    let message = &resolved;
+
+    let mut blocks = conn
+        .all(
+            &BlockAt::OF_MESSAGE,
+            params![message.to_string(), ordinal.to_string()],
+        )?
+        .into_iter();
+    let Some(input) = blocks.next() else {
+        return Ok(None);
+    };
+    let input = BlockFact::of(input)?;
+    if blocks.next().is_some() {
+        return Err(crate::StoreError::stored(
+            0,
+            "one original block ordinal has conflicting current rows",
+        ));
+    }
+    if !input.visible()? {
+        return Ok(None);
+    }
+    let mut pairs = conn.all(&CallAndResult::OF_BLOCK, [input.pk])?.into_iter();
+    let Some(pair) = pairs.next() else {
+        return Ok(None);
+    };
+    let matched_row = pair.matched.unwrap_or(false);
+    let result = match (
+        pair.result_pk,
+        pair.result_position,
+        pair.result_ordinal,
+        pair.result_message,
+        pair.result_session,
+    ) {
+        (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
+            Some(BlockFact::of(BlockAt {
+                pk,
+                position: idx,
+                ordinal,
+                message,
+                session,
+                call_id: pair.result_call_id,
+                version: pair.result_version,
+                layout: pair.result_layout,
+                blocks: pair.result_blocks,
+            })?)
+        }
+        _ => None,
+    };
+    let call = BlockFact::of(BlockAt {
+        pk: pair.pk,
+        position: pair.position,
+        ordinal: pair.ordinal,
+        message: pair.message,
+        session: pair.session,
+        call_id: pair.call_id,
+        version: pair.version,
+        layout: pair.layout,
+        blocks: pair.blocks,
+    })?;
+    let matched = matched_row
+        && result
+            .as_ref()
+            .map(BlockFact::visible)
+            .transpose()?
+            .unwrap_or(false);
+    if pairs.next().is_some() {
+        return Err(crate::StoreError::stored(
+            0,
+            "one source block has conflicting current tool relations",
+        ));
+    }
+    if !call.visible()? || (input.pk != call.pk && !matched) {
+        return Ok(None);
+    }
+    Ok(Some(PairFact {
+        call,
+        result: result.filter(|_| matched),
+    }))
+}
+
 #[cfg(test)]
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<BlockAt>();
+    check.row::<CallSource>();
     check.row::<CallAndResult>();
 }
 

@@ -172,6 +172,12 @@ impl<'a> ReferenceText<'a> {
             Reference::Message(_) | Reference::Block { .. } | Reference::Document(_) => {
                 self.source_text_while(reference, complete, None, &mut |_, text| visit(text))
             }
+            Reference::ToolCall(session, call) => {
+                let Some(result) = crate::read::tool_result_reference(conn, session, call)? else {
+                    return Ok(false);
+                };
+                self.source_text_while(&result, complete, None, &mut |_, text| visit(text))
+            }
             Reference::MessageRange { first, last } => self.range_text(first, last, visit),
             Reference::Alternate { revision, part } => {
                 let alternate = if let Some(id) = &revision.revision {

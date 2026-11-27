@@ -188,6 +188,7 @@ fn named(text: &str) -> Option<Reference> {
     }
     Reference::parse(text.trim()).ok().filter(|reference| {
         polylogue_query::catalog::reference_unit(reference).is_some()
+            || matches!(reference, Reference::Span { container, .. } if matches!(container.as_ref(), Reference::ToolCall(..)))
             || matches!(
                 reference,
                 Reference::Result { .. }

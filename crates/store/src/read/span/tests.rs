@@ -466,3 +466,181 @@ fn document_replay_seeks_the_source_block_ordinal() {
     assert!(matches!(flow, std::ops::ControlFlow::Continue(())));
     assert_eq!(selected, "selected");
 }
+
+#[test]
+fn tool_span_replays_the_original_result_block() {
+    use crate::fixture::writer::call;
+    use polylogue_model::{
+        bundle::{TextFragment, TextFragmentSource},
+        query_objects::NormalizedReadSpan,
+    };
+
+    let mut archive = WriterArchive::new();
+    let mut messages = call(
+        "s",
+        1,
+        1,
+        "synthetic",
+        None,
+        serde_json::json!({}),
+        Ok("a💡z"),
+    );
+    messages[1].blocks.insert(
+        0,
+        Block::Text {
+            text: "separate body".into(),
+        },
+    );
+    let result = messages[1].id.clone();
+    let hash = messages[1].content_hash().unwrap();
+    archive.write("s", messages);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let requested = reference("span:tool:claude-code:s#t1#u16=1-3");
+    let text_of = |source: &SpanSource<'_, '_>| {
+        let mut selected = String::new();
+        source
+            .visit_text(|piece| {
+                selected.push_str(piece);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        selected
+    };
+    let bound = {
+        let reader = pool.reader().unwrap();
+        let source = reader.select_span_source(&requested).unwrap().unwrap();
+        assert_eq!(
+            source.origin(),
+            &TextSpanOrigin {
+                reference: reference("span:block:claude-code:s-r1#1#u16=1-3"),
+                start: 1,
+                end: 5,
+            }
+        );
+        assert_eq!(
+            source.version(),
+            &TextSourceVersion::ContentHash {
+                record: Reference::Message(result),
+                hash,
+            }
+        );
+        assert_eq!(text_of(&source), "💡");
+        let mut reference_text = String::new();
+        assert_eq!(
+            reader
+                .visit_reference_text(&requested, |piece| {
+                    reference_text.push_str(piece);
+                    Ok(ControlFlow::Continue(()))
+                })
+                .unwrap(),
+            Some(ControlFlow::Continue(4))
+        );
+        assert_eq!(reference_text, "💡");
+
+        let fragment = TextFragment {
+            container: source.container().clone(),
+            source_version: source.version().clone(),
+            coverage: source.coverage(),
+            text: text_of(&source),
+            text_hash: BlobHash::of("💡".as_bytes()),
+            provenance: TextFragmentSource {
+                spans: vec![source.origin().clone()],
+                sources: vec![],
+                imports: vec![],
+            },
+        };
+        assert_eq!(
+            fragment.reference(),
+            reference("span:block:claude-code:s-r1#1#b=1-5")
+        );
+        fragment.validate().unwrap();
+        NormalizedReadSpan::new(
+            source.origin().clone(),
+            source.version().clone(),
+            source.seek(),
+        )
+        .unwrap()
+    };
+
+    let conn =
+        crate::archive::open_write(&archive.archive.index_db(), crate::archive::cache::SETUP)
+            .unwrap();
+    conn.execute(
+        "UPDATE tool_call SET result_message_id=NULL, result_position=NULL WHERE call_id='t1'",
+        [],
+    )
+    .unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(matches!(
+        reader.select_span_source(&requested),
+        Err(StoreError::ReferenceUnavailable { .. })
+    ));
+    assert!(matches!(
+        reader.visit_reference_text(&requested, |_| Ok(ControlFlow::Continue(()))),
+        Err(StoreError::ReferenceUnavailable { .. })
+    ));
+    let replay = reader
+        .resume_span_source(&bound.origin, &bound.version, bound.seek)
+        .unwrap();
+    assert_eq!(text_of(&replay), "💡");
+}
+
+#[test]
+fn tool_span_refuses_ambiguous_or_unavailable_output() {
+    use crate::fixture::writer::call;
+
+    let mut archive = WriterArchive::new();
+    let mut messages = call(
+        "s",
+        1,
+        1,
+        "synthetic",
+        None,
+        serde_json::json!({}),
+        Ok("ignored"),
+    );
+    let Block::ToolResult { output, .. } = &mut messages[1].blocks[0] else {
+        panic!("result fixture");
+    };
+    *output = None;
+    messages.extend(call(
+        "s",
+        2,
+        3,
+        "synthetic",
+        None,
+        serde_json::json!({}),
+        Ok("first"),
+    ));
+    messages.extend(call(
+        "s",
+        3,
+        5,
+        "synthetic",
+        None,
+        serde_json::json!({}),
+        Ok("second"),
+    ));
+    archive.write("s", messages);
+    let conn =
+        crate::archive::open_write(&archive.archive.index_db(), crate::archive::cache::SETUP)
+            .unwrap();
+    conn.execute("UPDATE tool_call SET call_id='t2' WHERE call_id='t3'", [])
+        .unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let missing = reference("span:tool:claude-code:s#missing#b=0-0");
+    assert!(reader.select_span_source(&missing).unwrap().is_none());
+    let without_text = reference("span:tool:claude-code:s#t1#b=0-0");
+    assert!(matches!(
+        reader.select_span_source(&without_text),
+        Err(StoreError::ReferenceUnavailable { .. })
+    ));
+    let ambiguous = reference("span:tool:claude-code:s#t2#b=0-0");
+    assert!(matches!(
+        reader.select_span_source(&ambiguous),
+        Err(StoreError::Ambiguous { reference, candidates })
+            if reference == "tool:claude-code:s#t2"
+                && candidates == ["message:claude-code:s-c2", "message:claude-code:s-c3"]
+    ));
+}

@@ -29,7 +29,7 @@ fn prepare(
         Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..) => true,
         Reference::Span { container, .. } => matches!(
             container.as_ref(),
-            Reference::Message(_) | Reference::Block { .. }
+            Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..)
         ),
         _ => false,
     };

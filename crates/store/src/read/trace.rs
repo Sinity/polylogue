@@ -1,5 +1,5 @@
 //! The message's recorded source routes, without guessing a byte range or blob.
-use super::*;
+use super::{tool_pairs::call_source, *};
 use polylogue_model::{
     Reference, Route,
     bundle::fragments::seek::SourceTextPiece,
@@ -45,55 +45,36 @@ row! {
     }
 }
 
-row! {
-    struct CallSource {
-        message: MessageId,
-        ordinal: String,
-    }
-    statements {
-        const OF_CALL = "SELECT m.id AS message, coalesce(b.source_position,cast(b.position AS TEXT)) AS ordinal
-            FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
-            JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk
-            WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2";
-    }
-}
-
 impl Reader<'_> {
     /// A selected item and the original coordinates at which it is read.
     pub fn reading_item(&self, reference: &Reference) -> Result<Option<Source>> {
         let (message, block) = match reference {
             Reference::ToolCall(session, call) => {
-                let Some(row) = self.call_source(session, call)? else {
+                let Some(row) = call_source(self.conn()?, session, call)? else {
                     return Ok(None);
                 };
-                let block = row
-                    .ordinal
-                    .parse()
-                    .map_err(|_| StoreError::internal("invalid original block ordinal"))?;
                 return Ok(Some(Source {
                     reference: reference.to_string(),
-                    ..Source::block(&row.message, session, block, false)
+                    ..Source::block(&row.message, session, row.block()?, false)
                 }));
             }
             Reference::Block { n, .. } => (self.trace_message(reference)?, Some(*n)),
             Reference::Span { container, .. }
                 if matches!(
                     container.as_ref(),
-                    Reference::Message(_) | Reference::Block { .. }
+                    Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..)
                 ) =>
             {
-                let Some(message) = self.trace_message(container)? else {
-                    return Ok(None);
-                };
                 let Some(span) = self.select_span_source(reference)? else {
                     return Ok(None);
                 };
+                let message = self.trace_message(span.container())?;
                 let block = match span.seek().start.piece {
                     SourceTextPiece::Body { body } => Some(body.block),
                     SourceTextPiece::Separator { before, .. } => Some(before.block),
                     SourceTextPiece::Empty => None,
                 };
-                (Some(message), block)
+                (message, block)
             }
             _ => return Ok(None),
         };
@@ -110,21 +91,6 @@ impl Reader<'_> {
             source_session: Some(session),
             inherited: false,
         }))
-    }
-
-    fn call_source(&self, session: &SessionId, call: &str) -> Result<Option<CallSource>> {
-        let conn = self.conn()?;
-        let rows = conn.all(&CallSource::OF_CALL, params![session.to_string(), call])?;
-        if rows.len() > 1 {
-            return Err(StoreError::Ambiguous {
-                reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
-                candidates: rows
-                    .into_iter()
-                    .map(|row: CallSource| format!("message:{}", row.message))
-                    .collect(),
-            });
-        }
-        Ok(rows.into_iter().next())
     }
 
     /// The concrete message containing a traceable item. Unsupported families
@@ -148,15 +114,11 @@ impl Reader<'_> {
                 }
                 Ok(Some(id))
             }
-            Reference::Span { container, .. } => {
-                let message = self.trace_message(container)?;
-                if message.is_some() && self.select_span_source(reference)?.is_none() {
-                    return Ok(None);
-                }
-                Ok(message)
-            }
+            Reference::Span { .. } => Ok(self
+                .reading_item(reference)?
+                .and_then(|source| source.message)),
             Reference::ToolCall(session, call) => {
-                Ok(self.call_source(session, call)?.map(|row| row.message))
+                Ok(call_source(self.conn()?, session, call)?.map(|row| row.message))
             }
             _ => Err(polylogue_model::Reason::TraceTarget {}.into()),
         }
@@ -273,7 +235,6 @@ impl Reader<'_> {
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<TraceSource>();
     check.row::<TraceExtent>();
-    check.row::<CallSource>();
 }
 
 #[cfg(test)]
