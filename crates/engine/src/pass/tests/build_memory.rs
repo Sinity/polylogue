@@ -516,3 +516,28 @@ fn a_first_pass_over_a_new_archive_parses_each_file_once_in_the_rebuild() {
     assert_eq!(home.texts("first"), ["first file"]);
     assert_eq!(home.texts("second"), ["second file"]);
 }
+
+#[test]
+fn a_live_spool_found_before_index_install_is_planned_for_capture_only() {
+    let home = ClaudeHome::new();
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(&home.root).unwrap();
+    let mut engine = Engine::new(home.config(4096), archive).unwrap();
+    let spool = engine
+        .config
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    std::fs::create_dir_all(&spool).unwrap();
+    let path = spool.join("42.ndjson");
+    std::fs::write(
+        &path,
+        "{\"at_ns\":\"1767225600000000000\",\"event\":\"Stop\",\"provider\":\"claude-code\",\"session_id\":\"synthetic\",\"payload\":{}}\n",
+    )
+    .unwrap();
+    let plans = engine
+        .live_plans(&std::collections::HashSet::new(), &mut Pass::default())
+        .unwrap();
+    let [plan] = plans.as_slice() else {
+        panic!("expected one new spool path, got {}", plans.len());
+    };
+    assert_eq!(plan.path, path);
+    assert!(plan.storing_only);
+}

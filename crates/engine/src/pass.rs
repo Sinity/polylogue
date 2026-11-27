@@ -1248,7 +1248,22 @@ impl Engine {
                 plans.push(plan);
             }
         }
+        if self.archive.index_build().is_some() && !self.archive.index_files()?.serves() {
+            self.store_without_parsing(&mut plans);
+        }
         Ok(plans)
+    }
+
+    /// Keeps source capture runnable before there is an installed index.
+    fn store_without_parsing(&mut self, plans: &mut Vec<Plan>) {
+        plans.retain_mut(|plan| {
+            let local = matches!(plan.source, pool::Bytes::File);
+            plan.storing_only |= local;
+            local
+        });
+        for capture in &mut self.rollout_captures {
+            capture.storing_only = true;
+        }
     }
 
     /// The chain a file holds fewer bytes of, each equal to the stored byte
@@ -2120,17 +2135,7 @@ impl Engine {
         // it starts at) or the incremental update after its install parses
         // them.
         if !self.archive.index_files()?.serves() {
-            let mut storing = Vec::with_capacity(plans.len());
-            for mut plan in plans {
-                if matches!(plan.source, pool::Bytes::File) {
-                    plan.storing_only = true;
-                    storing.push(plan);
-                }
-            }
-            plans = storing;
-            for capture in &mut self.rollout_captures {
-                capture.storing_only = true;
-            }
+            self.store_without_parsing(&mut plans);
         }
         if self.archive.index_build().is_some() {
             let key = |plan: &Plan| {
@@ -2366,7 +2371,9 @@ impl Engine {
                     match live {
                         Ok(live) => {
                             for plan in live.into_iter().rev() {
-                                if plan.replace {
+                                if plan.storing_only {
+                                    waiting.push_front(plan);
+                                } else if plan.replace {
                                     chains.push_front(plan);
                                 } else if let Some(parser) = export_parser(&plan) {
                                     exports.push_front((plan, parser));
