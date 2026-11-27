@@ -17,6 +17,7 @@ use rusqlite::Connection;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 #[path = "reuse_archive_index/continuation.rs"]
@@ -424,7 +425,11 @@ fn copy_file_with(from: &Path, to: &Path, reflink: &str) -> Result<(), Error> {
     if let (Some(source), Some(parent)) = (no_cow(from), to.parent().and_then(no_cow))
         && source != parent
     {
-        File::create_new(to)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(from.metadata()?.permissions().mode() & 0o777)
+            .open(to)?;
         let _ = std::process::Command::new("chattr")
             .arg(if source { "+C" } else { "-C" })
             .arg("--")
