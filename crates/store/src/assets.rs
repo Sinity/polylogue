@@ -34,8 +34,8 @@ row! {
         length: i64,
     }
     statements {
-        const ARCHIVE = "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1";
-        const INDEX = "SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1";
+        const ARCHIVE = "SELECT chain,length FROM revision WHERE input=?1 AND (?2 IS NULL OR commit_seq<=?2) ORDER BY number DESC LIMIT 1";
+        const INDEX = "SELECT chain,length FROM source_revision WHERE input=?1 AND (?2 IS NULL OR commit_seq<=?2) ORDER BY number DESC LIMIT 1";
     }
 }
 
@@ -48,7 +48,7 @@ macro_rules! asset_extents {
             "extent e LEFT JOIN ",
             $prefix,
             "blob b ON b.hash=e.blob
-            WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"
+            WHERE e.input=?1 AND e.chain=?2 AND (?3 IS NULL OR e.commit_seq<=?3) ORDER BY e.offset"
         )
     };
 }
@@ -157,12 +157,24 @@ fn asset_source(
     prefix: &str,
     input: &str,
 ) -> Result<Option<AssetSource>> {
+    asset_source_at(index, conn, prefix, input, None)
+}
+
+fn asset_source_at(
+    index: &Connection,
+    conn: &Connection,
+    prefix: &str,
+    input: &str,
+    cut: Option<Position>,
+) -> Result<Option<AssetSource>> {
+    let through = cut.map(|position| position.0);
     let (revision, extents) = if prefix.is_empty() {
         (AssetRevision::ARCHIVE, AssetExtent::ARCHIVE)
     } else {
         (AssetRevision::INDEX, AssetExtent::INDEX)
     };
-    let Some(AssetRevision { chain, length }) = conn.maybe(&revision, [input])? else {
+    let Some(AssetRevision { chain, length }) = conn.maybe(&revision, params![input, through])?
+    else {
         return Ok(None);
     };
     let length =
@@ -176,7 +188,7 @@ fn asset_source(
     let mut end = 0u64;
     let mut count = 0;
     let mut blob = None;
-    let _ = conn.each(&extents, params![input, chain], |row| {
+    let _ = conn.each(&extents, params![input, chain, through], |row| {
         let AssetExtent {
             offset,
             length: size,
@@ -316,24 +328,39 @@ impl Reader<'_> {
         Ok((out, through))
     }
 
-    pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
-        let conn = self.conn()?;
-        let mut pending = Vec::new();
-        let _ = conn.each(&AssetSidecar::WITH_REVISION, [], |row| {
-            let AssetSidecar {
-                input,
-                sidecar,
-                version,
-                source_version: recorded,
-            } = row;
-            let current = asset_source(conn, conn, "source_", &input)?.map(|source| source.version);
-            if version != Some(RULES) || recorded != current {
-                pending.push((input, sidecar));
-            }
-            Ok(ControlFlow::Continue(()))
-        })?;
-        Ok(pending)
+    pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String, AssetSource)>> {
+        pending_sidecars(self.conn()?, None)
     }
+}
+
+/// Reads the sidecars from the index being populated, and their bytes from
+/// the archive at the same cut as that index.
+pub(crate) fn pending_sidecars(
+    conn: &Connection,
+    cut: Option<Position>,
+) -> Result<Vec<(String, String, AssetSource)>> {
+    let mut pending = Vec::new();
+    let _ = conn.each(&AssetSidecar::WITH_REVISION, [], |row| {
+        let AssetSidecar {
+            input,
+            sidecar,
+            version,
+            source_version: recorded,
+        } = row;
+        let Some(source) = asset_source_at(conn, conn, "source_", &input, cut)? else {
+            if cut.is_none() {
+                return Err(StoreError::internal(
+                    "a stored sidecar has no current revision",
+                ));
+            }
+            return Ok(ControlFlow::Continue(()));
+        };
+        if version != Some(RULES) || recorded.as_deref() != Some(source.version.as_str()) {
+            pending.push((input, sidecar, source));
+        }
+        Ok(ControlFlow::Continue(()))
+    })?;
+    Ok(pending)
 }
 
 impl Reader<'_> {
@@ -604,7 +631,16 @@ fn reset_metadata(conn: &Connection, input: &str, sidecar: &str) -> Result<bool>
 pub(crate) fn install(
     conn: &mut Connection,
     archive: &Connection,
+    staged: ExportItems,
+) -> Result<()> {
+    install_at(conn, archive, staged, None)
+}
+
+pub(crate) fn install_at(
+    conn: &mut Connection,
+    archive: &Connection,
     mut staged: ExportItems,
+    cut: Option<Position>,
 ) -> Result<()> {
     crate::fault::check("assets.install", "")?;
     let catalog_prefix = crate::source::Source::of(archive)?.prefix();
@@ -649,7 +685,7 @@ pub(crate) fn install(
                 source_version: recorded,
                 error,
             } => {
-                if asset_source(&tx, archive, catalog_prefix, &input)?
+                if asset_source_at(&tx, archive, catalog_prefix, &input, cut)?
                     .as_ref()
                     .map(|source| source.version.as_str())
                     != Some(recorded.as_str())

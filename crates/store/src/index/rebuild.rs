@@ -190,7 +190,14 @@ impl Rebuild {
     /// sessions are assembled: messages that name an asset find it then.
     pub fn import_assets(&mut self, staged: crate::export_items::ExportItems) -> Result<()> {
         let archive = crate::archive::open_read(&self.archive.archive_db())?;
-        crate::assets::install(&mut self.conn, &archive, staged)
+        crate::assets::install_at(&mut self.conn, &archive, staged, Some(self.position))
+    }
+
+    /// Reads this build's sidecar list and the source revisions it covers.
+    pub fn pending_asset_sidecars(
+        &self,
+    ) -> Result<Vec<(String, String, crate::assets::AssetSource)>> {
+        crate::assets::pending_sidecars(&self.conn, Some(self.position))
     }
 
     /// Runs every stage after parsing, from the parse workers' sorted files

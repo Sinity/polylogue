@@ -705,7 +705,7 @@ fn rebuilding_an_import_keeps_a_record_without_a_final_newline() {
     let bytes = polylogue_testkit::claude_user("at-eof", "copy", "Last record");
     fs::write(&file, bytes.trim_end_matches('\n')).unwrap();
     {
-        let (mut engine, _lock) = w.engine(64 << 20);
+        let (mut engine, _lock) = w.installed_engine(64 << 20);
         let report = engine
             .import_with_options(
                 &[file],
