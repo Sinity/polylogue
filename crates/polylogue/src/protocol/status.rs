@@ -89,6 +89,8 @@ pub struct Answer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<polylogue_store::verify::Verification>,
     pub pending_writes: PendingWrites,
+    /// Session starts without context after the latest successful start.
+    pub session_starts_without_context: Option<MissingContext>,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
@@ -153,6 +155,12 @@ impl AnswersFrom {
             } => Some("figures not read yet since the new index was installed"),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MissingContext {
+    pub since: Option<polylogue_model::Timestamp>,
+    pub causes: std::collections::BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
