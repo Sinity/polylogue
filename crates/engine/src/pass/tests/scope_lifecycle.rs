@@ -380,7 +380,6 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             );
             if kept {
                 assert_eq!(captured, complete.len() as u64);
-                assert_eq!(source_rows(&engine, &input), captured_before);
             } else {
                 assert!(
                     captured > first.len() as u64,
@@ -405,6 +404,9 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
                 engine.config.reads_sources = reads_sources;
                 let resumed = engine.run_pass().unwrap();
                 assert!(resumed.errors.is_empty(), "{resumed:?}");
+            }
+            if kept {
+                assert_eq!(source_rows(&engine, &input), captured_before);
             }
             assert_eq!(
                 home.texts("request-turn"),

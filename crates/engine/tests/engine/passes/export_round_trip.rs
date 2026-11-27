@@ -679,7 +679,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         );
         let portable = export_file(&receiving, &sessions);
         let final_home = ClaudeHome::new();
-        let (mut final_engine, _final_lock) = final_home.engine(64 << 20);
+        let (mut final_engine, _final_lock) = final_home.installed_engine(64 << 20);
         let report = final_engine.import(&[portable]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
