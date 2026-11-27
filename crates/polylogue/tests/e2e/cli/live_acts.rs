@@ -1,4 +1,4 @@
-use super::{cli, json, line, query_rows, start_daemon_with, wait_status};
+use super::{cli, json, line, printed_cli, query_rows, start_daemon_with, wait_status};
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
@@ -119,10 +119,16 @@ printf '%s\n' '{"type":"result"}'
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let started = json(&started);
     let hosted = started["session"].as_str().unwrap();
-    wait_status(&env, |status| status["store"]["sessions"] == 2);
-    let out = cli(&env, &["--json", "--all", "sessions", "send", "continue"]);
+    let out = printed_cli(
+        &env,
+        &format!(
+            "printf '%s\\n' session:claude-code:s1 {} | polylogue --json - send continue",
+            polylogue_render::shell_quote(&format!("session:{hosted}"))
+        ),
+    );
     assert_eq!(out.status.code(), Some(5), "{out:?}");
     let value = json(&out);
+    assert_eq!(value["reply"]["resolved"]["count"], 2);
     let report = step(&value);
     assert_eq!(
         report["skipped"],

@@ -337,12 +337,6 @@ fn the_last_page_follows_what_the_session_appends() {
     // One page holds the whole session, so it is the last.
     let last = read(&d, "session:claude-code:cont", ReadOptions::default());
     let follow = last.document.footer.follow.clone().expect("a follow call");
-    let before = crate::test_daemon::Call::new("status", serde_json::json!({}))
-        .answer(&d.daemon)
-        .value()
-        .unwrap()["store"]["messages"]
-        .as_u64()
-        .unwrap();
     let path = d.home.join(".claude/projects/-p/cont.jsonl");
     let mut source = std::fs::read_to_string(&path).unwrap();
     source.push_str(&user(
@@ -352,11 +346,14 @@ fn the_last_page_follows_what_the_session_appends() {
         "appended question",
     ));
     std::fs::write(&path, source).unwrap();
-    d.wait_for(|status| {
-        status["store"]["messages"]
-            .as_u64()
-            .is_some_and(|n| n > before)
-            && status["store"]["search_pending"] == 0
+    d.wait_for(|_| {
+        texts(&read(
+            &d,
+            "session:claude-code:cont",
+            ReadOptions::default(),
+        ))
+        .iter()
+        .any(|text| text == "appended question")
     });
     let envelope: command_surface::RunnableRequest = follow.request;
     let call = crate::test_daemon::Call::from_request(&envelope);
