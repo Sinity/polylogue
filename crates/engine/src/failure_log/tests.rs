@@ -92,3 +92,39 @@ fn a_failed_turn_is_an_error_until_a_turn_completes() {
         ]
     );
 }
+
+#[test]
+fn a_file_error_stays_until_the_file_is_read_without_the_error() {
+    let mut log = FailureLog::default();
+    let none = HashSet::new();
+    let file = [PathBuf::from("/home/op/a.jsonl")].into();
+    let failure = unreadable("permission denied");
+    log.pass_ended(
+        std::slice::from_ref(&failure),
+        Looked {
+            files: &file,
+            walked: false,
+            completed: true,
+        },
+    );
+    for _ in 0..3 {
+        log.pass_ended(
+            &[],
+            Looked {
+                files: &none,
+                walked: true,
+                completed: true,
+            },
+        );
+        assert_eq!(log.errors(), std::slice::from_ref(&failure));
+    }
+    log.pass_ended(
+        &[],
+        Looked {
+            files: &file,
+            walked: false,
+            completed: true,
+        },
+    );
+    assert_eq!(log.errors(), []);
+}

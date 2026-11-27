@@ -2,6 +2,7 @@
 use command_surface::JsonSchema;
 use polylogue_render::short_duration;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -21,13 +22,16 @@ pub struct Arguments {
     /// Every log record the daemon keeps (200), not only the last 20
     #[serde(default)]
     pub log: bool,
+    /// Include per-pattern capture counts and unread source fields
+    #[serde(default)]
+    pub details: bool,
     /// Redraw the view every 2 seconds until interrupted (CLI on a color terminal only)
     #[serde(default)]
     pub watch: bool,
     /// Answer once the daemon has caught up, or when this much time has passed (30s, 10m)
     pub wait: Option<String>,
     /// With --wait, answer once it has caught up after this many changes (the `changes` of an earlier answer)
-    pub after: Option<u64>,
+    pub after_changes: Option<u64>,
 }
 
 /// How many log records an ordinary status answer carries.
@@ -54,7 +58,7 @@ pub struct Answer {
     /// The archive totals, from the snapshot; absent when none is read
     /// (`answers_from`) or it could not be read (`totals_error`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub store: Option<polylogue_store::Status>,
+    pub store: Option<Store>,
     /// The rebuild of `index.db` in progress, with its reason and counts.
     /// Read with `build_progress`, so both are present or neither.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +112,8 @@ pub struct Answer {
     /// running longer than [`STATEMENTS_AFTER`], by thread name.
     #[serde(default)]
     pub threads: Vec<polylogue_store::activity::Thread>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slow_statements: Vec<polylogue_store::activity::SlowStatement>,
 }
 
 /// What a status reply's archive figures come from.
@@ -292,5 +298,137 @@ impl Running {
             }
         }
         line
+    }
+}
+
+/// Archive figures with capture summaries for the status reply.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Store {
+    pub sessions: u64,
+    pub messages: u64,
+    pub documents: u64,
+    pub tool_calls: u64,
+    pub inputs: u64,
+    pub revisions: u64,
+    /// Bytes of input content stored, decoded: what the inputs hold, not
+    /// what the segment log takes on disk.
+    pub stored_bytes: u64,
+    /// Input chains by how they are shown: `parsing`, `repeated`, `no_parser`,
+    /// `done`, `waiting`, `refused`, or `failed`.
+    pub parse_states: BTreeMap<String, u64>,
+    /// The 20 most frequent unread fields, with --details only.
+    pub unused: Vec<(String, u64)>,
+    /// How many record kinds and fields parsers did not read, all of them.
+    pub unused_fields: u64,
+    /// Texts stored but not yet in the search index: how far search lags
+    /// the writer.
+    pub search_pending: u64,
+    /// The count stopped at its bound. More texts are waiting when this is true.
+    pub search_pending_is_minimum: bool,
+    /// Sessions waiting for their summaries to be folded.
+    pub summaries_due: u64,
+    /// The latest confirmed full discovery walk from each source machine.
+    pub capture_coverage: Vec<Coverage>,
+    /// Why this index replaced the one before it, as its rebuild recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_rebuild: Option<polylogue_store::index::file::IndexRebuild>,
+}
+
+/// The last scan on one machine.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Coverage {
+    pub machine: String,
+    pub observed_at: polylogue_model::Timestamp,
+    pub roots: Vec<Root>,
+}
+
+/// One watched root, with pattern counts only when requested.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Root {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_bytes: Option<Vec<u8>>,
+    pub status: polylogue_model::capture::Accessibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub collected: u64,
+    pub ignored: u64,
+    pub unrecognized: u64,
+    pub unreadable: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<polylogue_model::capture::Entry>,
+}
+
+impl Store {
+    pub fn from_snapshot(
+        store: polylogue_store::Status,
+        details: bool,
+        errors: &[polylogue_model::Failure],
+        machine: &str,
+    ) -> Self {
+        use polylogue_model::capture::Classification;
+        Self {
+            sessions: store.sessions,
+            messages: store.messages,
+            documents: store.documents,
+            tool_calls: store.tool_calls,
+            inputs: store.inputs,
+            revisions: store.revisions,
+            stored_bytes: store.stored_bytes,
+            parse_states: store.parse_states,
+            unused: if details { store.unused } else { Vec::new() },
+            unused_fields: store.unused_fields,
+            search_pending: store.search_pending,
+            search_pending_is_minimum: store.search_pending_is_minimum,
+            summaries_due: store.summaries_due,
+            capture_coverage: store
+                .capture_coverage
+                .into_iter()
+                .map(|coverage| {
+                    let errors = if coverage.machine == machine {
+                        errors
+                    } else {
+                        &[]
+                    };
+                    Coverage {
+                        machine: coverage.machine,
+                        observed_at: coverage.observed_at,
+                        roots: coverage
+                            .roots
+                            .into_iter()
+                            .map(|root| {
+                                let path = String::from_utf8_lossy(&root.path_bytes).into_owned();
+                                let count = |class| {
+                                    root.entries
+                                        .iter()
+                                        .filter(|entry| entry.class == class)
+                                        .map(|entry| entry.files)
+                                        .sum()
+                                };
+                                Root {
+                                    error: errors
+                                        .iter()
+                                        .find(|error| {
+                                            error.subject == format!("source root {path}")
+                                        })
+                                        .map(ToString::to_string),
+                                    path,
+                                    path_bytes: std::str::from_utf8(&root.path_bytes)
+                                        .is_err()
+                                        .then_some(root.path_bytes),
+                                    status: root.status,
+                                    collected: count(Classification::Collected),
+                                    ignored: count(Classification::Ignored),
+                                    unrecognized: count(Classification::Unrecognized),
+                                    unreadable: root.unavailable_paths.len(),
+                                    entries: if details { root.entries } else { Vec::new() },
+                                }
+                            })
+                            .collect(),
+                    }
+                })
+                .collect(),
+            index_rebuild: store.index_rebuild,
+        }
     }
 }

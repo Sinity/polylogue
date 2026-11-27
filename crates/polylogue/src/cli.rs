@@ -694,13 +694,13 @@ fn status_view(
     let problems = problems(answer);
     let width = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         // A terminal that reports no size (a pseudo-terminal nobody sized)
-        // gets the same width as no terminal.
+        // uses a conventional terminal width.
         crossterm::terminal::size()
             .ok()
             .filter(|(columns, _)| *columns > 0)
             .map_or(100, |(columns, _)| usize::from(columns))
     } else {
-        100
+        usize::MAX
     };
     status_view::render(
         status,
