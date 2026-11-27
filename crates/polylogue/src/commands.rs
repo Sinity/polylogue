@@ -57,11 +57,7 @@ impl Tool {
 
     /// The name without the `polylogue_` prefix.
     pub fn family(self) -> &'static str {
-        match self {
-            Tool::Read => "read",
-            Tool::Write => "write",
-            Tool::Act => "act",
-        }
+        self.access().as_str()
     }
 
     pub fn access(self) -> ToolAccess {
@@ -172,25 +168,15 @@ pub(crate) fn verb_sentence(verb: &command_surface::StepDeclaration) -> String {
     }
 }
 
-/// The smallest MCP tool that may run a request: one that reads, one
-/// that also writes the archive, or one that also acts outside it.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolAccess {
-    Read,
-    Write,
-    Act,
+polylogue_model::stored_names! {
+    /// The smallest MCP tool that may run a request: one that reads, one
+    /// that also writes the archive, or one that also acts outside it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum ToolAccess {
+        Read => "read",
+        Write => "write",
+        Act => "act",
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

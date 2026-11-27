@@ -2,6 +2,29 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
+fn line_explanation_access_keeps_wire_and_family_names() {
+    use crate::commands::{Tool, ToolAccess};
+    let wire = r#"["read","write","act"]"#;
+    assert_eq!(serde_json::to_string(ToolAccess::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<ToolAccess>>(wire).unwrap(),
+        ToolAccess::ALL
+    );
+    assert_eq!(Tool::ALL.map(Tool::family), ["read", "write", "act"]);
+}
+
+#[test]
+fn act_outcomes_keep_their_wire_names() {
+    use crate::protocol::acts::ActOutcome;
+    let wire = r#"["delivered","prepared","started","queued","not_sent","cancelled"]"#;
+    assert_eq!(serde_json::to_string(ActOutcome::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<ActOutcome>>(wire).unwrap(),
+        ActOutcome::ALL
+    );
+}
+
+#[test]
 fn unread_status_figures_keep_their_wire_milestones() {
     use crate::protocol::status::{AnswersFrom, NotReadSince};
     for (since, wire) in [
