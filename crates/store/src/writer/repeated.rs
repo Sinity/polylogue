@@ -1,10 +1,9 @@
 //! The rows an older chain gives up to a newer chain of its input that
 //! begins with the same bytes (docs/archive.md, readings). In a growing
-//! input the bytes frame each record, so a record that ends within the bytes the two
-//! are known to share yields the same rows in the newer chain's parse; the
-//! older copy can leave. How far two chains agree is read only
-//! from the agreement the archive recorded when the newer chain was stored
-//! ([`crate::archive::writer::agreement`]); the index never compares bytes.
+//! input the bytes frame each record. Records within bytes shared by two
+//! chains yield the same rows in either reading. The archive records how
+//! far the bytes agree when it stores a newer chain
+//! ([`crate::archive::writer::agreement`]).
 //!
 //! Rows with a byte range leave by their range; the rest of the older
 //! chain's parse (what it states about sessions, links, call outcomes,
@@ -28,11 +27,20 @@ const RANGED: &[&str] = &[
 
 /// Where a part of chain `chain`'s parse left it, for [`follow`].
 pub(super) struct Seen<'a> {
-    /// The stored length its parser had seen before the part (0 for a part
-    /// that replaces the parse).
-    pub from: u64,
+    pub previous: &'a ChainState,
+    pub replacing: bool,
     pub next: &'a ChainState,
     pub rebuilding: bool,
+}
+
+/// The bytes a committed reading can account for. An open last record
+/// starts after the checkpoint, so a reader waiting on it can still
+/// cover the earlier records. A failed attempt has only its prior rows.
+fn covers_through(state: &ChainState) -> u64 {
+    match state {
+        ChainState::Failed { parsed_to, .. } => *parsed_to,
+        _ => state.seen_to(),
+    }
 }
 
 /// After a part of chain `chain` of `input` is written: once its parser has
@@ -69,7 +77,13 @@ pub(super) fn follow(
             )?
             .unwrap_or(0))
     };
-    let reached = |bound: u64| seen.from < bound && bound <= seen.next.seen_to();
+    let before = if seen.replacing {
+        0
+    } else {
+        covers_through(seen.previous)
+    };
+    let after = covers_through(seen.next);
+    let reached = |bound: u64| before < bound && bound <= after;
     // What the older chains share with it. A chain that begins like none
     // agrees with none.
     if chains
@@ -101,7 +115,7 @@ pub(super) fn follow(
         for (newer, known) in chains.newer(chain) {
             if !seen.rebuilding {
                 let state = crate::parse_state::state(tx, input_pk, newer)?;
-                if state.version() != seen.next.version() || state.seen_to() < known {
+                if state.version() != seen.next.version() || covers_through(&state) < known {
                     continue;
                 }
             }

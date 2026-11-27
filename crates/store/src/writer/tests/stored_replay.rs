@@ -86,6 +86,18 @@ fn a_replayed_chain_keeps_records_until_the_newer_reading_commits() {
     w.store_reading(older.clone(), None).unwrap();
     assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&older)})]);
 
+    // A failed read accounts for its attempted length but supplied no
+    // records. It cannot take the older reading's place.
+    let mut failed = newer.clone();
+    let mut failure = ParsePart::failed(
+        0..100,
+        polylogue_model::ChainFailure::refused("synthetic refusal"),
+    );
+    failure.parse_version = failed.parse[0].parse_version.clone();
+    failed.parse = vec![failure];
+    w.store_reading(failed, None).unwrap();
+    assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&older)})]);
+
     w.store_reading(newer.clone(), None).unwrap();
     assert_eq!(holders(), vec![serde_json::json!({"chain": chain(&newer)})]);
 

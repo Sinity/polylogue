@@ -129,7 +129,8 @@ pub(super) fn write_step(
         input_pk,
         chain,
         super::repeated::Seen {
-            from: if p.reset { 0 } else { previous.seen_to() },
+            previous: &previous,
+            replacing: p.reset,
             next: &next,
             rebuilding: w.rebuilding,
         },
