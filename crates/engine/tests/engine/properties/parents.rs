@@ -14,11 +14,6 @@ const L5: &str = "claude-code:7f3a2c10-0105-4000-8000-000000000105";
 /// Facts that do not hold yet. Delete an entry when its assertion starts to match.
 const GAPS: &[(&str, &str, &str)] = &[
     (
-        L1_SIDE,
-        "session ID",
-        "L1-side uses a fixed suffix; FACTS.md names it by its first record UUID",
-    ),
-    (
         L1,
         "spawn tree cost",
         "L1 tree cost includes its fork; FACTS.md includes only spawn descendants",
@@ -186,22 +181,7 @@ fn parents_set_lineage_matches_morrow_facts() {
     };
     let program = compile("sessions where physical:true | sort by id", &options).unwrap();
     let rows = reader.query_rows(&program).unwrap();
-    // Only the session-ID gap needs today's ID for the remaining observations.
-    // Remove this lookup with that GAPS entry.
-    let lookup_id = |id| {
-        if id == L1_SIDE && gap(L1_SIDE, "session ID").is_some() {
-            "claude-code:7f3a2c10-0101-4000-8000-000000000101/sidechain"
-        } else {
-            id
-        }
-    };
-    let side_id = rows
-        .iter()
-        .map(|row| row["id"].as_str().unwrap())
-        .find(|id| *id == L1_SIDE || *id == lookup_id(L1_SIDE))
-        .unwrap();
-    assert_fact(L1_SIDE, "session ID", side_id, L1_SIDE);
-    let mut expected_ids: Vec<_> = expected.iter().map(|row| lookup_id(row.0)).collect();
+    let mut expected_ids: Vec<_> = expected.iter().map(|row| row.0).collect();
     expected_ids.sort();
     assert_eq!(
         rows.iter()
@@ -215,7 +195,7 @@ fn parents_set_lineage_matches_morrow_facts() {
     let mut own_ids = Vec::new();
     let mut shown_ids = BTreeMap::new();
     for (id, kind, own, shown, human) in expected {
-        let sid = SessionId::parse(lookup_id(id)).unwrap();
+        let sid = SessionId::parse(id).unwrap();
         assert_eq!(
             reader.session(&sid).unwrap().unwrap().kind,
             kind,
@@ -243,7 +223,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             .unwrap();
         assert_eq!(ids.len(), shown, "messages with parents: {id}");
         shown_ids.insert(id, ids);
-        let row = rows.iter().find(|row| row["id"] == lookup_id(id)).unwrap();
+        let row = rows.iter().find(|row| row["id"] == id).unwrap();
         assert_fact(
             id,
             "session message count",
@@ -280,8 +260,8 @@ fn parents_set_lineage_matches_morrow_facts() {
     ]
     .map(|(p, c, kind, call)| {
         (
-            lookup_id(expected[p].0).to_owned(),
-            lookup_id(expected[c].0).to_owned(),
+            expected[p].0.to_owned(),
+            expected[c].0.to_owned(),
             kind.to_owned(),
             call.map(str::to_owned),
             None,
@@ -292,7 +272,7 @@ fn parents_set_lineage_matches_morrow_facts() {
     if gap(L1_SIDE, "spawn link").is_some() {
         let wanted = expected_links
             .iter()
-            .find(|link| link.1 == lookup_id(L1_SIDE))
+            .find(|link| link.1 == L1_SIDE)
             .unwrap()
             .clone();
         let actual = links
@@ -338,7 +318,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             .iter()
             .map(|&member| costs[expected[member].0])
             .sum();
-        let row = rows.iter().find(|row| row["id"] == lookup_id(*id)).unwrap();
+        let row = rows.iter().find(|row| row["id"] == *id).unwrap();
         assert_fact(
             id,
             "spawn tree cost",
