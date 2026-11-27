@@ -626,7 +626,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
     d.wait_for(|status| {
         status["store"]["messages"] == 2
             && status["store"]["search_pending"] == 0
-            && status["busy"] == false
+            && status["caught_up"] == true
     });
     let target = "session:claude-code:issue-child";
     let whole = page(&d.daemon, target, true, View::Transcript, 4000, None);
