@@ -211,6 +211,7 @@ pub fn run(
 }
 
 /// The manifest Chrome reads: this binary, allowing only `extension_id`.
+/// Keep the written key order so the installer still recognizes its earlier files.
 pub fn manifest(binary: &std::path::Path, extension_id: &str) -> Value {
     let mut host: Value =
         serde_json::from_str(include_str!("../../../../extension/native-host.json"))

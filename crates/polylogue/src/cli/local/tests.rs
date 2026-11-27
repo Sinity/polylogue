@@ -173,6 +173,16 @@ fn install_chrome_remove_restores_backup_bytes_and_permissions() {
     let (exit, _) = chrome_install(&startup, &["--remove", "--dry-run"]);
     assert_eq!(exit, ExitCode::SUCCESS);
     assert_eq!(std::fs::read(&path).unwrap(), installed);
+    let earlier_manifest = br#"{
+  "name": "com.polylogue.browser_capture",
+  "description": "Polylogue browser capture host",
+  "path": "/test/bin/polylogue",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+  ]
+}"#;
+    std::fs::write(&path, earlier_manifest).unwrap();
     for _ in 0..2 {
         let (exit, _) = chrome_install(&startup, &["--remove"]);
         assert_eq!(exit, ExitCode::SUCCESS);
