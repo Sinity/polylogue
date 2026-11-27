@@ -201,7 +201,7 @@ fn reuses_a_checked_index_and_reads_the_append_from_retained_bytes() {
         .read(|reader| reader.annotation_family_state(&annotation))
         .unwrap();
     assert_eq!(
-        state.heads.heads,
+        state.heads,
         [polylogue_model::Reference::Annotation(
             RevisionReference::exact(annotation.root, revised)
         )]
