@@ -512,6 +512,7 @@ impl CallParts {
             budget: self.budget,
             limit: &self.limit,
             lane: crate::daemon::handler::Lane::Ordinary,
+            after_write: None,
             output: &self.events,
             query: &self.query,
         }

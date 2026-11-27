@@ -255,11 +255,11 @@ fn delivered(out: &mut String, act: &str, delivered: &protocol::acts::Delivered)
     if let Some(role) = &delivered.started {
         let _ = write!(out, ", a new instance of the role {role}");
     }
-    for part in [&delivered.reason, &delivered.detail, &delivered.note]
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(out, "; {part}");
+    if let Some(reason) = &delivered.reason {
+        let _ = write!(out, "; {reason}");
+    }
+    if let Some(note) = &delivered.note {
+        let _ = write!(out, "; {note}");
     }
     out.push('\n');
 }
@@ -284,7 +284,15 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         match reached {
             Reached::Session(sent) => {
                 for one in &sent.deliveries {
-                    delivered(&mut out, "sent to", one);
+                    use protocol::acts::ActOutcome::*;
+                    let action = match one.outcome {
+                        Delivered => "sent to",
+                        Started => "started a run for",
+                        Prepared | Queued => "held message for",
+                        NotSent => "could not send to",
+                        Cancelled => "cancelled message to",
+                    };
+                    delivered(&mut out, action, one);
                 }
                 if let Some(message) = &sent.message {
                     let _ = writeln!(out, "message annotation:{message}");
@@ -295,7 +303,15 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         }
     }
     for skipped in &report.skipped {
-        let _ = writeln!(out, "skipped {}: {}", skipped.session, skipped.line);
+        let reason = match skipped.reason {
+            protocol::acts::SkipReason::SessionMissing => "session missing",
+            protocol::acts::SkipReason::SessionNotRunning { state } => state.as_str(),
+        };
+        let _ = writeln!(
+            out,
+            "skipped {} ({reason}): {}",
+            skipped.session, skipped.line
+        );
     }
     polylogue_render::terminal::escape(&out)
 }
@@ -314,6 +330,17 @@ pub fn act(acted: &protocol::acts::Acted, _style: TextStyle) -> String {
                 name_of(&answered.outcome),
                 name_of(&answered.channel)
             );
+            if let Some(cancellation) = &answered.cancellation {
+                let _ = write!(
+                    out,
+                    "; no matching permission option (offered: {})",
+                    if cancellation.options.is_empty() {
+                        "none".into()
+                    } else {
+                        cancellation.options.join(", ")
+                    }
+                );
+            }
             if let Some(note) = &answered.note {
                 let _ = write!(out, "; {note}");
             }
@@ -470,10 +497,32 @@ fn plan(found: &crate::resume::Plan) -> String {
     out
 }
 
-/// `import`: the files report as JSON; a provider import as its job's line.
+/// `import`: stored paths or the provider job.
 pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
     match answer {
-        protocol::import::Answer::Files(report) => json(report, style),
+        protocol::import::Answer::Files(report) => {
+            if report.python_import.is_some()
+                || (report.imported.is_empty() && report.already_stored.is_empty())
+            {
+                return json(report, style);
+            }
+            let mut out = String::new();
+            for (paths, label) in [
+                (
+                    &report.imported,
+                    match report.readable {
+                        polylogue_engine::Readable::Now => "stored",
+                        polylogue_engine::Readable::AfterBuild { .. } => "stored, not yet readable",
+                    },
+                ),
+                (&report.already_stored, "already stored"),
+            ] {
+                for path in paths {
+                    let _ = writeln!(out, "{label}: {}", path.display());
+                }
+            }
+            polylogue_render::terminal::escape(&out)
+        }
         protocol::import::Answer::Provider(job) => import_job_answer(job, style),
     }
 }

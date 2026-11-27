@@ -2,10 +2,11 @@
 use super::Daemon;
 use crate::brief::{self, Ask};
 use crate::daemon::Failure;
-use command_surface::Answer;
+use command_surface::{Answer, Outcome};
 use polylogue_model::user::{Delivery, UserWrite};
+use polylogue_model::{Cause, Code};
 use polylogue_reading::operation::{Context, Invocation};
-use polylogue_store::{StoreError, WriterSender, user_writes};
+use polylogue_store::{StoreError, WriterSender, archive::writer::Committed, user_writes};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -60,34 +61,63 @@ pub(crate) fn query_outcome(
     }
 }
 
-/// An import is degraded, with the awaiting-confirmation note, while restored
-/// user state Sinex has not confirmed is pending or the Python Polylogue
-/// import's authored publication or source membership is unfinished.
-/// An import whose inputs are readable only after the index being built
-/// is installed says so beside its report's `readable`.
 pub(crate) fn import_answer(
     report: polylogue_engine::ImportReport,
+    dry_run: bool,
 ) -> Answer<polylogue_engine::ImportReport> {
-    let pending = report.user_state.pending > 0;
-    let after_build = match &report.readable {
-        polylogue_engine::Readable::Now => None,
-        polylogue_engine::Readable::AfterBuild { build } => Some(format!(
-            "{build}; the imported inputs are readable once it is installed"
-        )),
-    };
-    let mut answer = crate::protocol::written(report, pending);
-    if let Some(note) = after_build {
-        answer.outcome = match answer.outcome {
-            command_surface::Outcome::Ok(value) => command_surface::Outcome::Degraded {
-                value,
-                missing: vec![note],
-            },
-            command_surface::Outcome::Degraded { value, mut missing } => {
-                missing.push(note);
-                command_surface::Outcome::Degraded { value, missing }
+    let mut missing = Vec::new();
+    if !dry_run && (!report.refused.is_empty() || !report.pass.errors.is_empty()) {
+        // Staging failures have no entry among the classified members.
+        let refused_members: HashSet<_> = report
+            .members
+            .iter()
+            .filter(|member| member.class == "refused")
+            .map(|member| &member.path)
+            .collect();
+        let mut staging_failed = false;
+        missing.extend(report.refused.iter().map(|r| {
+            let label = if refused_members.contains(&r.path) {
+                "refused"
+            } else {
+                staging_failed = true;
+                "failed"
+            };
+            format!("{label} {}: {}", r.path.display(), r.reason)
+        }));
+        missing.extend(report.pass.errors.iter().map(ToString::to_string));
+        if report.imported.is_empty() {
+            let problem = missing.join("\n");
+            if let Some(failure) = report.pass.errors.iter().find(|failure| {
+                failure.code == Code::NotFound
+                    || !matches!(failure.cause, Cause::Content | Cause::Request)
+            }) {
+                return error(failure.code, problem);
             }
-            other => other,
-        };
+            if staging_failed {
+                return error(Code::Io, problem);
+            }
+            return Failure::refusal(polylogue_model::Reason::ImportRefused { problem }).answer();
+        }
+        polylogue_store::log!(
+            warning,
+            "import incomplete: {}",
+            missing.join(" | ").replace('\n', " | ")
+        );
+    }
+    if report.user_state.pending > 0 {
+        missing.push(crate::protocol::AWAITING_CONFIRMATION.into());
+    }
+    if let polylogue_engine::Readable::AfterBuild { build } = &report.readable {
+        missing.push(format!("stored, not yet readable: {build}"));
+    }
+    let already_stored = report.imported.is_empty() && !report.already_stored.is_empty();
+    let mut answer = if missing.is_empty() {
+        Answer::ok(report)
+    } else {
+        Answer::degraded(report, missing)
+    };
+    if already_stored && matches!(answer.outcome, Outcome::Ok(_)) {
+        answer = answer.with_note("Everything named was already stored.");
     }
     answer
 }
@@ -325,11 +355,14 @@ pub(crate) fn context(
                 .expect("advisory cooldown held")
                 .insert(session.to_string(), operation.clock.now.as_millisecond());
         }
-        if let Err(error) = writes.archive().accept_delivery(request) {
-            if let Some(recent) = &mut cooldown {
-                recent.remove(&ask.recipient().expect("advisory recipient").to_string());
+        match writes.archive().accept_delivery(request) {
+            Ok(written) => d.acts.watch_delivery(&request_id, written),
+            Err(error) => {
+                if let Some(recent) = &mut cooldown {
+                    recent.remove(&ask.recipient().expect("advisory recipient").to_string());
+                }
+                return store_error(&error);
             }
-            return store_error(&error);
         }
         delivery = Some(request_id);
     }
@@ -377,10 +410,13 @@ pub(crate) fn delivery_event(
         .archive()
         .accept_delivery(invocation.request(request_id.clone(), write))
     {
-        Ok(_) => crate::protocol::written(
-            serde_json::json!({ "id": request_id, "queued": true }),
-            false,
-        ),
+        Ok(written) => {
+            d.acts.watch_delivery(&request_id, written);
+            crate::protocol::written(
+                serde_json::json!({ "id": request_id, "queued": true }),
+                false,
+            )
+        }
         Err(error) => store_error(&error),
     }
 }
@@ -409,19 +445,17 @@ pub(crate) fn submit<T: serde::Serialize>(
     selected_scope: Option<polylogue_store::ReadScopeToken>,
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
 ) -> Answer<T> {
-    submit_result(d, invocation, request_id, w, selected_scope, |receipt| {
-        present(receipt.outcome)
-    })
+    submit_result(d, invocation, request_id, w, selected_scope)
+        .map(|committed| present(committed.outcome.outcome))
 }
 
-pub(crate) fn submit_result<T>(
+pub(crate) fn submit_result(
     d: &Daemon,
     invocation: &Invocation,
     request_id: String,
     w: UserWrite,
     selected_scope: Option<polylogue_store::ReadScopeToken>,
-    present: impl FnOnce(polylogue_store::user_writes::WriteResult) -> T,
-) -> Answer<T> {
+) -> Answer<Committed<user_writes::WriteResult>> {
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
@@ -434,22 +468,18 @@ pub(crate) fn submit_result<T>(
     };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
-    let result = writes
-        .archive()
-        .submit(
-            polylogue_store::writer::UserSubmission {
-                request,
-                scope: selected_scope,
-                preparation: Some(preparation),
-                parent: invocation.parent_lifetime(),
-            },
-            None,
-        )
-        .map(|committed| committed.outcome);
-    match result {
-        Ok(outcome) => {
-            let pending = outcome.outcome.pending;
-            crate::protocol::written(present(outcome), pending)
+    match writes.archive().submit(
+        polylogue_store::writer::UserSubmission {
+            request,
+            scope: selected_scope,
+            preparation: Some(preparation),
+            parent: invocation.parent_lifetime(),
+        },
+        None,
+    ) {
+        Ok(committed) => {
+            let pending = committed.outcome.outcome.pending;
+            crate::protocol::written(committed, pending)
         }
         Err(error) => store_error(&error),
     }

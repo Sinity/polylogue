@@ -144,7 +144,19 @@ Each reply is an `answer` message carrying the shared answer. `internal capture-
 - **An import has no parse path of its own.** It commits its inputs to the record, and they are read into the index like any other stored input: by upkeep, or by a build when that is less work ([architecture.md](architecture.md#one-path)). History brought in as hundreds of thousands of small files, or as one very large export, is ordinary input.
 - An encrypted or corrupt member refuses its whole container before anything is stored, and a file named as a ZIP archive whose bytes are not one is refused, never read as another kind of container. So does a member whose decoded size is more than its container declared, a container that holds its own bytes (directly or through containers inside it), and a container whose declared decoded size does not fit in the free staging space; all are checked before decoding the bytes they describe. A container repeated at another path in the same import is kept as an original and expanded once.
 - In an export, one element the parser cannot read (nested deeper than the 128 levels the JSON reader builds into a value, for example) is counted as unreadable on its own; the other elements still parse, and the export's bytes stay stored. A key an element repeats is counted as an unread field (`path (repeated key; earlier value)`): readers see only its last value.
-- The reply lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets once its inputs are read into the index; its inputs are parsed and derived before it answers, so they are readable at once and `readable` says `now`; where that waits for a build, `readable` is `after_build` with the build's progress and the reply is degraded until the build installs. Bytes the request stored are `imported` even when the request is read again because a build installed under it. With `--dry-run` the daemon recognizes and classifies every member and stores nothing; `--explain` says how the line is read and which structures it would try, reading no file ([terminal.md#explain](terminal.md#explain)).
+- The report lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets once its inputs are read into the index; its inputs are parsed and derived before it answers, so they are readable at once and `readable` says `now`; where that waits for a build, `readable` is `after_build` with the build's progress and the reply is degraded until the build installs. Bytes the request stored are `imported` even when the request is read again because a build installed under it. With `--dry-run` the daemon recognizes and classifies every member and stores nothing; `--explain` says how the line is read and which structures it would try, reading no file ([terminal.md#explain](terminal.md#explain)).
+
+When importing files into the archive, the reply and command exit status follow what was stored.
+
+| Result | Outcome | Exit status |
+|---|---|---|
+| All named files stored or already present, with new files stored | `ok` | 0 |
+| Everything already stored | `ok` with a note | 0 |
+| New files stored and some refused or failed | `degraded` with a reason for each refused or failed path | 5 |
+| No new files stored and at least one path refused or failed | `error` with the paths and reasons | 2 for an input the caller must change, 4 for `not_found` or `io` |
+| Stored, not yet readable (`readable.when` is `after_build`) | `degraded` with index rebuild progress | 5 |
+
+A mistyped `--origin` gives one `bad_value` error listing the importable origins. Failed and partial file imports appear in the daemon's recent log. The text output names the stored paths and gives the reasons for refusals. With `--json`, these facts are in the reply. When an import has a next call, the text output gives a command that runs it.
 
 | Structure | Recognized by | Origin |
 |---|---|---|

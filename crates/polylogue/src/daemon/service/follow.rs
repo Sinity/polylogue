@@ -5,7 +5,8 @@
 //! the selected sessions whose rows or live state changed since its last
 //! look, and ends before the request's deadline with the marks the client
 //! sends back.
-use super::{Daemon, Failure, accepting};
+use super::{Failure, accepting};
+use crate::daemon::handler::Call;
 use crate::protocol::follow::{Line, Marks, step};
 use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
@@ -16,12 +17,13 @@ use std::time::Duration;
 pub(super) const REPLY_MARGIN: Duration = Duration::from_millis(500);
 
 pub(crate) fn run(
-    d: &Daemon,
+    call: &Call<'_>,
     operation: &Arc<polylogue_reading::operation::Context>,
     query: &str,
     marks: Option<Marks>,
     output: &mut dyn std::io::Write,
 ) -> Result<Marks, Failure> {
+    let d = call.daemon;
     let commits = d.writes.as_ref().map(|w| w.completion_commits());
     let limit = polylogue_store::read::limit::ReadLimit::current();
     // A cancelled follow (its client gone, or the daemon stopping) stops
@@ -46,7 +48,7 @@ pub(crate) fn run(
         }
         let now = d.config.requests.now().unix_ms();
         {
-            let reader = d.reads.reader()?;
+            let reader = call.reader()?;
             let (counter, changed) = reader.sessions_changed_after(looked.unwrap_or(i64::MAX))?;
             let selected = selected(&reader, operation, query, now)?
                 .into_iter()

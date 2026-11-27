@@ -1215,12 +1215,18 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value, until: In
     };
     if let Some(output) = permission_output(&data) {
         let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(
+        let written = writeln!(
             stdout,
             "{}",
             polylogue_render::terminal::json(&output, false)
-        );
-        let _ = stdout.flush();
+        )
+        .and_then(|()| stdout.flush());
+        drop(stdout);
+        if written.is_ok()
+            && let Some(delivery) = data["delivery"].as_str()
+        {
+            delivered(startup, delivery, DELIVERED_BUDGET);
+        }
     }
 }
 

@@ -522,6 +522,18 @@ fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
     let (live_event_lines, spool_error) = (spool.lines, spool.error);
     crate::protocol::status::PendingWrites {
         delivery_outcomes,
+        delivery_write_failures: d
+            .acts
+            .delivery_write_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
+        mailbox_failures: d
+            .acts
+            .mailbox_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
+        host_reattachment_failures: d
+            .acts
+            .host_reattachment_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
         live_event_lines,
         last_error: spool_error,
     }

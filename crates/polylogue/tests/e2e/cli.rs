@@ -802,6 +802,7 @@ mod stored_text;
 mod search_snippets;
 
 mod hook_errors;
+mod live_acts;
 
 mod grok_export;
 
@@ -816,6 +817,7 @@ mod hermes_events;
 
 #[cfg(target_os = "linux")]
 mod attachments;
+mod import_outcomes;
 
 #[cfg(target_os = "linux")]
 mod read_bench;
