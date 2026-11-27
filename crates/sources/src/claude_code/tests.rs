@@ -1127,17 +1127,30 @@ fn sidechain_names_no_call_when_several_prompts_match() {
 #[test]
 fn opening_sidechain_prompt_is_written_by_a_model() {
     use polylogue_model::WrittenBy;
+    let mut opening = sidechain("opening", json!("Check the table."));
+    opening["parentUuid"] = json!("task-record");
     let mut follow_up = sidechain("follow-up", json!("Now check the appendix."));
     follow_up["parentUuid"] = json!("opening");
     follow_up["origin"] = json!({"kind":"human"});
-    let records = [sidechain("opening", json!("Check the table.")), follow_up];
+    let records = [
+        task("task-record", "call", "Check the table."),
+        opening,
+        follow_up,
+    ];
     check_appended(&main_file("s1"), &records, |steps| {
         let messages = final_messages(steps);
+        let prompts: Vec<_> = messages
+            .iter()
+            .filter(|message| message.session.native().as_str() == "s1~side-opening")
+            .map(|message| (WrittenBy::of(message), message.prompt_kind))
+            .collect();
         assert_eq!(
-            messages.iter().map(WrittenBy::of).collect::<Vec<_>>(),
-            [WrittenBy::Model, WrittenBy::Human]
+            prompts,
+            [
+                (WrittenBy::Model, Some(PromptKind::Model)),
+                (WrittenBy::Human, Some(PromptKind::Prose)),
+            ]
         );
-        assert_eq!(messages[0].prompt_kind, Some(PromptKind::Model));
     });
 }
 
