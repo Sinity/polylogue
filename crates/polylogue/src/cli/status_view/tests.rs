@@ -46,6 +46,7 @@ fn answer() -> Answer {
         vectors: None,
         vectors_error: None,
         verification: None,
+        session_starts_without_context: None,
         pending_writes: PendingWrites {
             delivery_outcomes: 0,
             live_event_lines: 0,

@@ -29,6 +29,9 @@ Times below are local. Working directory for agent sessions:
 | 8 | `claude-ai:0b9d4e6c-0008-4000-8000-000000000008` | claude-ai | chat | 2026-10-07 18:00–18:05 | "README wording" | not recorded in the export | 4 | 2 |
 
 Top-level sessions (excluding the subagent #3): 7. All sessions: 8.
+Logical sessions (what the default `sessions` listing counts): 6. #3 folds
+into #2 through its spawn link and #6 into #5 through its fork link; #4
+copies #2's history without a marker, so it is its own root.
 A subagent's session ID is `claude-code:agent-<agentId>`. Codex item IDs
 identify messages across files: copied parent messages keep their IDs, while
 distinct messages have distinct IDs. Codex message counts are item
@@ -182,16 +185,22 @@ unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 | Name | Session ID | What it is | Own msgs | Copies counted elsewhere | Human | Own cost | Tree cost |
 |---|---|---|---|---|---|---|---|
 | L1 | `claude-code:7f3a2c10-0101-4000-8000-000000000101` | main, "Release checklist", 08:00–08:40; also present as a byte prefix under a second project folder, `-home-op-morrow-old` | 10 | 0 | 2 | 0.76 | 0.94 |
-| L1-side | `claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001` | older-layout sidechain inside L1's file (no `agentId`), answering L1's `Task` call `toolu_1102` | 2 | 0 | 0 | 0.03 | 0.03 |
-| L2 | `claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000102` | subagent of L1, spawned by `toolu_1101` (meta `toolUseId`) | 6 | 0 | 0 | 0.10 | 0.15 |
-| L3 | `claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000103` | nested subagent of L2 (meta `parentAgentId`, `spawnDepth: 2`, `toolUseId: toolu_1201`) | 4 | 0 | 0 | 0.05 | 0.05 |
-| L4 | `claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000104` | sibling copy: in L1's folder, repeats L2's first 4 records (L2's `agentId`), then continues; meta has no `toolUseId` | 4 | 4 | 0 | 0.05 | 0.05 |
+| L1-side | `claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001` | older-layout sidechain inside L1's file (no `agentId`); its first record has no parent and carries the prompt of the one open `Task` call, `toolu_1102` | 2 | 0 | 0 | 0.03 | 0.03 |
+| L2 | `claude-code:agent-a7f3a2c1000000102` | subagent of L1, spawned by `toolu_1101` (meta `toolUseId`) | 6 | 0 | 0 | 0.10 | 0.15 |
+| L3 | `claude-code:agent-a7f3a2c1000000103` | nested subagent of L2 (meta `parentAgentId`, `spawnDepth: 2`, `toolUseId: toolu_1201`) | 4 | 0 | 0 | 0.05 | 0.05 |
+| L4 | `claude-code:agent-a7f3a2c1000000104` | sibling copy: in L1's folder, repeats L2's first 4 records (L2's `agentId`), then continues; meta has no `toolUseId` | 4 | 4 | 0 | 0.05 | 0.05 |
 | L5 | `claude-code:7f3a2c10-0105-4000-8000-000000000105` | explicit fork of L1 after L1's 4th record (`forkedFrom` on the copies), 09:00–09:30, with a microcompaction | 8 | 4 | 2 | 0.60 | 0.66 |
-| L6 | `claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000106` | team `morrow-review`, name `lint`, subagent of L5 (`toolu_1501`) | 4 | 0 | 0 | 0.03 | 0.03 |
-| L7 | `claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000107` | team `morrow-review`, name `tests`, subagent of L5 (`toolu_1502`); receives one peer message from `lint` (`written_by: model`, `from_session` = L6) | 5 | 0 | 0 | 0.03 | 0.03 |
-| L8 | `claude-code:7f3a2c10-0108-4000-8000-000000000108` | "Weekday fix", 10:00–10:15; its first 3 records carry the `sessionId` of `7f3a2c10-0199-…`, which is not in the archive | 6 | 0 | 2 | 0.36 | 0.36 |
+| L6 | `claude-code:agent-a7f3a2c1000000106` | team `morrow-review`, name `lint`, subagent of L5 (`toolu_1501`) | 4 | 0 | 0 | 0.03 | 0.03 |
+| L7 | `claude-code:agent-a7f3a2c1000000107` | team `morrow-review`, name `tests`, subagent of L5 (`toolu_1502`); receives one peer message from `lint` (`written_by: model`, `from_session` = L6) | 5 | 0 | 0 | 0.03 | 0.03 |
+| L8 | `claude-code:7f3a2c10-0108-4000-8000-000000000108` | "Weekday fix", 10:00–10:15; its first 3 message records copy 0199 | 3 | 3 | 0 | 0.24 | 0.24 |
+| 0199 | `claude-code:7f3a2c10-0199-4000-8000-000000000199` | no file of its own; known only through the first 3 message records in L8's file | 3 | 0 | 2 | 0.12 | 0.12 |
 
-"Own msgs" counts the messages counted in the session (`counted_as` null); "Copies counted elsewhere" counts its copies whose source is stored (`session_facts.inherited_messages`). L8's three copies carry `inherited_from` but count as its own, since their source is absent (`spec/model.md`).
+The home has 14 sessions: #1–#4 plus L1–L8, L1-side and 0199.
+"Own msgs" counts messages in the session that originated them; "Copies
+counted elsewhere" counts copied messages stored in their originating
+session. L8 owns its last three messages; its first three belong to 0199,
+whose original file is absent. The copies remain readable in L8 without a
+provider relationship ([sessions](../../docs/sessions.md#session-links)).
 
 Provider links (`reason` is absent for provider relationships):
 
@@ -205,8 +214,11 @@ Provider links (`reason` is absent for provider relationships):
 | L1 | L5 | fork | `forkedFrom` (four distinct recorded message UUIDs) | — |
 | L5 | L6, L7 | spawn | `toolUseId` | `toolu_1501`, `toolu_1502` |
 
+L1-side's first record has `parentUuid: null`. Its text carries the prompt of
+the one `Task` call open at that point, so its spawning call is `toolu_1102`.
+
 #4 physically copies #2, L4 physically copies L2, and L8 physically copies
-`claude-code:7f3a2c10-0199-…`, whose source is absent. Their copied session or
+`claude-code:7f3a2c10-0199-…`, whose own file is absent. Their copied session or
 agent IDs establish copied history; they supply no continuation or resume
 marker and create no provider link. L4 has no spawning-call marker either;
 its file location alone establishes no spawn.
@@ -220,9 +232,9 @@ Things the examples rely on:
   L2's tree is L2 + L3 = $0.15; L5's tree is L5 + L6 + L7 = $0.66. The
   subagents are not counted again in L1's own cost.
 - **Copies.** L4's 4 copies of L2 and L5's 4 copies of L1 are inherited
-  (their sources are in the archive) and add nothing to counts or cost.
-  L8's 3 copies count as its own, because their source is missing; copied
-  source completeness stays pending.
+  and add nothing to their own counts or cost. L8's 3 copies belong to
+  0199 and add nothing to L8's own count or cost. The 0199 session has no
+  file of its own; its messages are known through L8's copied prefix.
 - **Two folders.** L1 is one session, equal to what the longer file alone
   gives.
 - **Known cost of the whole Claude-Code-only home:** **$7.87** (exact

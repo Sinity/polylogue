@@ -908,6 +908,7 @@ impl Fitter {
 /// so that no archive read happens under its lock.
 struct Here {
     repos: Vec<String>,
+    no_sessions: bool,
     /// Lightweight scope metadata after the last brief, newest first. Bodies
     /// and session annotations are read only for fitted expansions.
     recent: Vec<ScopeSession>,
@@ -923,14 +924,17 @@ impl Here {
         now: i64,
         after: Option<Timestamp>,
     ) -> Self {
-        let recent = index
-            .sessions_under(dirs, me)
+        let sessions = index.sessions_under(dirs, None);
+        let no_sessions = sessions.is_empty();
+        let recent = sessions
             .into_iter()
+            .filter(|s| me.is_none_or(|me| s.session.id.to_string() != me))
             .filter(|s| after.is_none_or(|p| s.session.last_activity.is_some_and(|t| t > p)))
             .cloned()
             .collect();
         Self {
             repos: index.repos_under(dirs),
+            no_sessions,
             recent,
             live: index
                 .live_under(dirs, me, now)
@@ -949,6 +953,7 @@ impl Here {
 #[derive(Default)]
 struct Deadline {
     late: Vec<&'static str>,
+    failed: Vec<LeftOut>,
 }
 
 impl Deadline {
@@ -957,14 +962,28 @@ impl Deadline {
         reader: &Reader<'_>,
         what: &'static str,
         work: impl FnOnce() -> Result<T, StoreError>,
-    ) -> Result<Option<T>, StoreError> {
+    ) -> Option<T> {
         match reader.check().and_then(|()| work()) {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => Some(value),
             Err(StoreError::ReadDeadlineExceeded) => {
                 self.late.push(what);
-                Ok(None)
+                None
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                self.failed.push(LeftOut {
+                    what: what.into(),
+                    reason: format!("not available ({error})"),
+                });
+                None
+            }
+        }
+    }
+
+    fn show_failures(&mut self, fit: &mut Fitter) {
+        for failure in self.failed.drain(..) {
+            fit.pointers
+                .push(format!("{}: {}", failure.what, failure.reason));
+            fit.left_out.push(failure);
         }
     }
 }
@@ -1180,8 +1199,7 @@ fn session_start(
         _ => None,
     };
     let mut deadline = Deadline::default();
-    let stop = polylogue_store::read::limit::ReadLimit::current().and_then(|l| l.deadline());
-    let found = scope.read(stop, |index| {
+    let found = scope.read(Some(std::time::Instant::now()), |index| {
         Here::of(
             index,
             &dirs,
@@ -1196,12 +1214,16 @@ fn session_start(
     if let Some(s) = session {
         targets.push(Reference::Session(s.clone()));
     }
+    let scope_loaded = found.is_some();
+    let no_sessions = found.as_ref().is_some_and(|h| h.no_sessions);
     let (recent, live, beads) = match found {
         Some(h) => (h.recent, Some(h.live), Some(h.beads)),
         None => {
-            deadline
-                .late
-                .extend(["live sessions", "open Beads", "recent sessions"]);
+            deadline.failed.push(LeftOut {
+                what: "live sessions, open Beads, recent sessions".into(),
+                reason: "not available (scope index has not loaded); check `polylogue status`"
+                    .into(),
+            });
             (Vec::new(), None, None)
         }
     };
@@ -1245,7 +1267,9 @@ fn session_start(
     if source == StartSource::Compact
         && let Some(s) = &me
     {
-        let prompts = reader.prompts(s)?;
+        let prompts = deadline
+            .section(reader, "operator prompts", || reader.prompts(s))
+            .unwrap_or_default();
         if !prompts.is_empty() {
             let _ = writeln!(
                 protected_prompts,
@@ -1267,7 +1291,7 @@ fn session_start(
     let notes = deadline
         .section(reader, "operator notes", || {
             operator_note_ids(reader, targets.clone(), previous.map(|p| p.seq), context)
-        })?
+        })
         .unwrap_or_default();
 
     let with_manual = matches!(
@@ -1280,6 +1304,9 @@ fn session_start(
         header.push('\n');
     }
     header.push_str(&protected_prompts);
+    if scope_loaded && no_sessions {
+        let _ = writeln!(header, "No session is recorded for this directory: {here}.");
+    }
     let mut fit = Fitter::new(budget, header)?;
     fit.refs.extend(prompt_refs);
 
@@ -1297,7 +1324,7 @@ fn session_start(
     if let Some(live) = live.filter(|live| !live.is_empty())
         && let Some(items) = deadline.section(reader, "live sessions", || {
             live_items(reader, &live, now.unix_ms(), context.clock.day.zone())
-        })?
+        })
     {
         fit.section(
             "Other agents working here now:",
@@ -1350,7 +1377,7 @@ fn session_start(
     );
     let notices = deadline.section(reader, "notices", || {
         reader.pending_notice_candidates(&dirs, me.as_deref())
-    })?;
+    });
     let (notices, inspect_count) = notices.unwrap_or_default();
     if inspect_count > 0 {
         fit.left_out.push(LeftOut {
@@ -1377,7 +1404,7 @@ fn session_start(
     let other_annotations = deadline
         .section(reader, "annotations by other authors", || {
             unjudged_other_annotations(reader, &targets, context)
-        })?
+        })
         .unwrap_or(0);
     if other_annotations > 0 {
         fit.left_out.push(LeftOut {
@@ -1388,6 +1415,7 @@ fn session_start(
             "{other_annotations} annotations by other authors, not yet accepted: `{other_annotations_command}`"
         ));
     }
+    deadline.show_failures(&mut fit);
     if !deadline.late.is_empty() {
         for what in &deadline.late {
             fit.left_out.push(LeftOut {
@@ -1395,11 +1423,18 @@ fn session_start(
                 reason: "deadline".into(),
             });
         }
-        fit.late = Some(format!(
-            "Not available before the deadline: {}; the whole brief: `polylogue brief --cwd {} --deadline none`",
-            deadline.late.join(", "),
-            polylogue_render::shell_quote(&here)
-        ));
+        fit.late = Some(if scope_loaded {
+            format!(
+                "Not available before the deadline: {}; the whole brief: `polylogue brief --cwd {} --deadline none`",
+                deadline.late.join(", "),
+                polylogue_render::shell_quote(&here)
+            )
+        } else {
+            format!(
+                "Not available before the deadline: {}; check `polylogue status` while the scope index loads",
+                deadline.late.join(", ")
+            )
+        });
     }
     let no_candidates = fit.refs.is_empty()
         && fit.sections.is_empty()
@@ -1497,7 +1532,7 @@ fn session_index(
         let id = session.to_string();
         let harness = session.origin().to_string();
         let text = match reader.session(session)? {
-            None => format!("not in the archive · {harness}"),
+            None => missing_session(session),
             Some(found) => {
                 let live = reader.live_state(&id, now)?;
                 let last = live
@@ -1555,6 +1590,16 @@ fn session_index(
     })
 }
 
+fn missing_session(session: &SessionId) -> String {
+    let mut text = format!("session {session} is not in the archive (yet)");
+    if let Some(origin) = polylogue_sources::origin::by_name(session.origin().as_str())
+        && origin.web.is_some()
+    {
+        let _ = write!(text, "; capture it with `polylogue import {}`", origin.name);
+    }
+    text
+}
+
 fn session_brief(
     reader: &Reader<'_>,
     session: &SessionId,
@@ -1564,15 +1609,31 @@ fn session_brief(
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {
-        return Err(StoreError::NotFound(format!("session {session}")));
+        return Ok(Prepared {
+            event: DeliveryEvent::SessionBrief,
+            text: missing_session(session),
+            refs: vec![format!("session:{session}")],
+            left_out: Vec::new(),
+            search_summary: None,
+            empty: false,
+            next: None,
+        });
     };
-    let prompts = reader.prompts(&id)?;
-    let selected = reader.select_messages(session, true)?;
-    let mut messages = Vec::new();
-    selected.visit(Default::default(), |message| {
-        messages.push(message);
-        std::ops::ControlFlow::Continue(())
-    })?;
+    let mut deadline = Deadline::default();
+    let prompts = deadline
+        .section(reader, "operator prompts", || reader.prompts(&id))
+        .unwrap_or_default();
+    let (messages, parent_issues) = deadline
+        .section(reader, "session messages", || {
+            let selected = reader.select_messages(session, true)?;
+            let mut messages = Vec::new();
+            selected.visit(Default::default(), |message| {
+                messages.push(message);
+                std::ops::ControlFlow::Continue(())
+            })?;
+            Ok((messages, selected.parents().issues.clone()))
+        })
+        .unwrap_or_default();
     // The newest assistant message that has text: a trailing tool-only
     // message does not hide the answer before it.
     let last_answer = messages.iter().rev().find_map(|m| {
@@ -1590,16 +1651,26 @@ fn session_brief(
             .join("\n");
         (!text.trim().is_empty()).then_some(text)
     });
-    let notes = operator_notes(
-        reader,
-        vec![Reference::Session(session.clone())],
-        None,
-        context,
-    )?;
+    let notes = deadline
+        .section(reader, "operator notes", || {
+            operator_notes(
+                reader,
+                vec![Reference::Session(session.clone())],
+                None,
+                context,
+            )
+        })
+        .unwrap_or_default();
     let session_reference = Reference::Session(session.clone());
-    let other_annotations =
-        unjudged_other_annotations(reader, std::slice::from_ref(&session_reference), context)?;
-    let open_items = reader.open_items(&id)?.unwrap_or_default();
+    let other_annotations = deadline
+        .section(reader, "annotations by other authors", || {
+            unjudged_other_annotations(reader, std::slice::from_ref(&session_reference), context)
+        })
+        .unwrap_or_default();
+    let open_items = deadline
+        .section(reader, "open items", || reader.open_items(&id))
+        .flatten()
+        .unwrap_or_default();
 
     let mut text = format!("[polylogue takeover delivery:{delivery_id}: refs in entry map]\n");
     let mut refs = vec![format!("session:{id}")];
@@ -1633,7 +1704,7 @@ fn session_brief(
             reason: "an annotation by another author needs an eligible operator judgment before injection".into(),
         });
     }
-    for issue in &selected.parents().issues {
+    for issue in &parent_issues {
         let _ = writeln!(text, "Parents incomplete: {issue}");
         left_out.push(LeftOut {
             what: "inherited session content".into(),
@@ -1643,10 +1714,14 @@ fn session_brief(
     if open_items.any() {
         let _ = writeln!(text, "Left open: {}.", open_items.phrases().join("; "));
     }
-    let note_items = notes
-        .iter()
-        .map(|note| annotation_item(reader, note, context))
-        .collect::<Result<Vec<_>, StoreError>>()?;
+    let note_items = deadline
+        .section(reader, "operator note text", || {
+            notes
+                .iter()
+                .map(|note| annotation_item(reader, note, context))
+                .collect::<Result<Vec<_>, StoreError>>()
+        })
+        .unwrap_or_default();
     let correction_prefix = note_items
         .iter()
         .map(|item| item.text.as_str())
@@ -1662,6 +1737,15 @@ fn session_brief(
         .collect::<Vec<_>>()
         .join("; ");
     let mut fit = Fitter::new(budget, text)?;
+    deadline.show_failures(&mut fit);
+    for what in deadline.late {
+        fit.pointers
+            .push(format!("{what}: not available (deadline)"));
+        fit.left_out.push(LeftOut {
+            what: what.into(),
+            reason: "deadline".into(),
+        });
+    }
     fit.refs.append(&mut refs);
     fit.left_out.append(&mut left_out);
     let pull = format!("polylogue {id} read");

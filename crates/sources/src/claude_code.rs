@@ -16,7 +16,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 parser_modules! {
     mod blocks;
@@ -64,7 +64,7 @@ pub fn open(path: &Path) -> Option<Parse> {
 /// `claude --resume <id>`. Subagents and sidechains are not resumable on
 /// their own.
 pub fn resume(native: &str) -> Option<Vec<String>> {
-    if native.starts_with("agent-") || native.ends_with("/sidechain") {
+    if native.starts_with("agent-") || native.contains("~side-") {
         return None;
     }
     Some(vec!["claude".into(), "--resume".into(), native.into()])
@@ -145,8 +145,7 @@ pub struct ClaudeCode {
 /// What the parser carries from one record to the next. A response
 /// written as several records yields one row per record, and a record that
 /// stands for another yields an alias row; both are joined when the chain's
-/// reading is formed ([`crate::chain_names`]), so nothing here grows with
-/// the file.
+/// reading is formed ([`crate::chain_names`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
     /// The latest message, for placing events on the timeline.
@@ -167,6 +166,11 @@ pub struct ParserState {
     /// The directory each session was last in, by native ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     cwd: BTreeMap<String, String>,
+    /// One entry per sidechain in the file: its latest record's UUID names
+    /// its session. A parent other than a sidechain's latest record starts
+    /// a separate sidechain.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    sidechains: BTreeMap<String, String>,
 }
 
 fn origin() -> Origin {
@@ -188,7 +192,7 @@ struct RecordSession {
 }
 
 impl ClaudeCode {
-    fn record_session(&self, v: &Json) -> RecordSession {
+    fn record_session(&self, parser_state: &ParserState, v: &Json) -> RecordSession {
         match &self.file {
             File::Subagent { stem } => {
                 let native = v
@@ -216,8 +220,23 @@ impl ClaudeCode {
                     .unwrap_or(stem)
                     .to_owned();
                 if v.bool("isSidechain") == Some(true) {
+                    let uuid = v
+                        .str("uuid")
+                        .filter(|uuid| !uuid.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
+                    let earlier = parser_state
+                        .sidechains
+                        .get(&uuid)
+                        .or_else(|| {
+                            v.str("parentUuid")
+                                .and_then(|parent| parser_state.sidechains.get(parent))
+                        })
+                        .filter(|session| session.starts_with(&format!("{base}~side-")));
                     RecordSession {
-                        native: format!("{base}/sidechain"),
+                        native: earlier
+                            .cloned()
+                            .unwrap_or_else(|| format!("{base}~side-{uuid}")),
                         kind: SessionKind::Sidechain,
                     }
                 } else {
@@ -239,7 +258,7 @@ impl ClaudeCode {
         v: &Json,
         out: &mut Output,
     ) -> Option<SessionId> {
-        let record_session = self.record_session(v);
+        let record_session = self.record_session(parser_state, v);
         let id = session_id(&record_session.native)?;
         let parent = v
             .str("sessionId")
@@ -676,7 +695,7 @@ impl ClaudeCode {
                 } else if role == Role::Assistant {
                     None
                 } else {
-                    self.prompt_kind(v, content)
+                    self.prompt_kind(parser_state, v, content)
                 },
                 blocks,
                 usage,
@@ -743,13 +762,18 @@ impl ClaudeCode {
 
     /// Authorship markers the harness wrote win. Unmarked prose in an unknown
     /// compaction carrier does not establish who originally wrote it.
-    fn prompt_kind(&self, v: &Json, content: &Json) -> Option<PromptKind> {
+    fn prompt_kind(
+        &self,
+        parser_state: &ParserState,
+        v: &Json,
+        content: &Json,
+    ) -> Option<PromptKind> {
         if v.bool("isCompactSummary") == Some(true) {
             return Some(PromptKind::CompactionSummary);
         }
         let kind = blocks::prompt_kind(v, content);
         let human = v.pointer("/origin/kind").and_then(Json::as_str) == Some("human");
-        let session_kind = self.record_session(v).kind;
+        let session_kind = self.record_session(parser_state, v).kind;
         if kind == PromptKind::Prose && session_kind == SessionKind::Compaction && !human {
             return None;
         }
@@ -1203,6 +1227,18 @@ impl Parser for ClaudeCode {
         if let File::Journal { .. } = self.file {
             return self.journal(parser_state, record, v, ty, out);
         }
+        let record_session = self.record_session(parser_state, v);
+        if record_session.kind == SessionKind::Sidechain {
+            let uuid = v
+                .str("uuid")
+                .filter(|uuid| !uuid.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
+            if let Some(parent) = v.str("parentUuid") {
+                parser_state.sidechains.remove(parent);
+            }
+            parser_state.sidechains.insert(uuid, record_session.native);
+        }
         let hook = (ty == "system"
             && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
         .then(|| hook_text(v));
@@ -1230,7 +1266,7 @@ impl Parser for ClaudeCode {
             }
         }
         self.names(parser_state, record, v, out);
-        if self.record_session(v).kind == SessionKind::Compaction
+        if self.record_session(parser_state, v).kind == SessionKind::Compaction
             && !parser_state.compaction_ownership_reported
         {
             let session = self.own_session(out);

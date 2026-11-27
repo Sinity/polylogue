@@ -25,13 +25,17 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         assert_eq!(next.request.operation, "rows");
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert_eq!(body.matches("role=\"alert\"").count(), 0, "{body}");
+        assert_eq!(html_elements(&body, "<div class=\"archived-text\">", "</div>"),
+            ["<div class=\"archived-text\"><p>look at &lt;script&gt;alert(1)&lt;/script&gt; &amp; the parser</p>\n</div>"]);
         let path =
             polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
                 .unwrap();
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(!body.contains("history.back"));
+        let api = follow_read(&r, next).await;
+        assert_reader_items(&body, &api);
+        assert_reader_navigation(&body, &api);
     });
 }
 
@@ -374,6 +378,13 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
             .as_ref()
             .expect("long body continues");
         let second = follow_read(&r, next).await;
+        let next_path =
+            polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
+                .unwrap();
+        let (status, _, current_html) = send_html(&r, &next_path).await;
+        assert_eq!(status, StatusCode::OK, "{current_html}");
+        assert_reader_navigation(&current_html, &second);
+
         let previous = second
             .document
             .footer
@@ -387,7 +398,8 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
                 .unwrap();
         let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(!html.contains("history.back"));
+        assert_reader_items(&html, &restored);
+        assert_reader_navigation(&html, &restored);
     });
 }
 
@@ -469,7 +481,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
 
 #[test]
 fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
-    use polylogue_model::read::{ReadComplete, ReadPart, ReadRecord};
+    use polylogue_model::read::{ReadFooter, ReadPart, ReadRecord};
     let r = reader();
     let position =
         r.w.daemon
@@ -555,9 +567,9 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             }
             assert_eq!(messages, 1);
             assert_eq!(items, expected.document.items);
-            let complete: ReadComplete = serde_json::from_str(&completion.data).unwrap();
+            let complete: ReadFooter = serde_json::from_str(&completion.data).unwrap();
             assert_eq!(complete.counts.messages, messages);
-            assert_eq!(complete.footer.shown, items.len() as u64);
+            assert_eq!(complete.shown, items.len() as u64);
             let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
                 serde_json::from_str(&report.data).unwrap();
             let crate::protocol::line::LineAnswer::Steps(steps) = answer.value().unwrap() else {
@@ -638,7 +650,7 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
                         .iter()
                         .find(|frame| frame.event == "complete")
                         .unwrap();
-                    let complete: polylogue_model::read::ReadComplete =
+                    let complete: polylogue_model::read::ReadFooter =
                         serde_json::from_str(&complete.data).unwrap();
                     assert_eq!(
                         complete.counts.messages, 1,

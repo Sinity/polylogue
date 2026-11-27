@@ -2225,6 +2225,8 @@ dependencies = [
  "libc",
  "polylogue-model",
  "polylogue-query",
+ "polylogue-sources",
+ "polylogue-testkit",
  "proptest",
  "query-language",
  "rusqlite",

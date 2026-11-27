@@ -4,7 +4,9 @@ use std::path::Path;
 
 fn begin() -> serde_json::Value {
     serde_json::json!({
-        "format": "jsonl",
+        "target":"query:synthetic", "view":"transcript",
+        "title":{"state":"value", "value":"Synthetic session"},
+        "kind":{"kind":"query", "query":"sessions"}, "figures":[],
         "snapshot": {
             "query": format!("query:{}", "a".repeat(64)),
             "query_text": "sessions",
@@ -20,11 +22,6 @@ fn begin() -> serde_json::Value {
                 }
             },
             "enabled_alternates":[], "author":"operator"
-        },
-        "header": {
-            "target":"query:synthetic", "view":"transcript",
-            "title":{"state":"value", "value":"Synthetic session"},
-            "kind":{"kind":"query", "query":"sessions"}, "figures":[]
         },
         "options": ReadOptions::default()
     })
@@ -76,12 +73,12 @@ fn deliver(destination: &Path, failed: bool) -> Result<u8, OutputError> {
             ));
         crate::protocol::stream::event(&mut bytes, "answer", &answer).unwrap();
     } else {
-        let complete = ReadComplete {
-            footer: ReadFooter::default(),
+        let complete = ReadFooter {
             counts: Counts {
                 sessions: 1,
                 ..Default::default()
             },
+            ..Default::default()
         };
         crate::protocol::stream::event(&mut bytes, "complete", &complete).unwrap();
         let answer = command_surface::Answer::ok(serde_json::json!({
@@ -225,7 +222,9 @@ fn streamed_line_with_failed_delivery_exits_nonzero() {
     assert_eq!(
         stream_line(
             root.path(),
-            &["sessions", "read", "--to", "clipboard"],
+            // An attachment's bytes are one text reply, which a directory
+            // cannot take.
+            &["sessions", "read", "--to", "out/"],
             &[("steps", steps.clone()), ("answer", steps)],
         )
         .unwrap(),
@@ -241,12 +240,12 @@ fn write_out_keeps_the_earlier_failure_status() {
     let destination = root.path().join("reading.jsonl");
     let mut header = begin();
     header["snapshot"]["incomplete"] = serde_json::json!(["synthetic missing index"]);
-    let complete = ReadComplete {
-        footer: ReadFooter::default(),
+    let complete = ReadFooter {
         counts: Counts {
             sessions: 1,
             ..Default::default()
         },
+        ..Default::default()
     };
     let answer = serde_json::to_value(command_surface::Answer::ok(serde_json::json!({
         "kind":"steps", "reply":{"resolved":null, "steps":[{

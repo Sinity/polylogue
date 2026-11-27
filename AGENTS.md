@@ -200,10 +200,10 @@ date with master, so rebase only to resolve a conflict, taking master's names
 and structure and reapplying your change. The owner's part is to finish the
 pull request: not a draft, hosted review findings answered with a fix or a
 refutation and their threads resolved. The landing queue (`dev/land --queue`)
-then merges it once `check` is green against a master still current for the
-packages it changes, merging master into the branch first when it is not.
-`dev/land <n>` lands one by hand the same way, `dev/land --dry-run <n>` says
-whether a green result is still current, and the label `hold`, with the
+then tests it in a batch with other ready pull requests on master's tip and
+merges the batch when that test is green; with the queue running an owner
+does not land by hand. A pull request the queue sends back fails only
+combined with master; a new head puts it back. The label `hold`, with the
 reason in a comment, parks a finished one. GitHub auto-merge is not used, since
 armed on a clean, green head it sometimes never fires. Development speed
 comes before a perfectly green master: when two
