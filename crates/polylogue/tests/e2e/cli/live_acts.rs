@@ -21,8 +21,10 @@ fn fixture(root: &Path, harness: &str, script: &str) -> (crate::Fixture, super::
     )
     .unwrap();
     let env = crate::Fixture::new(&root.join("archive"), &home, &root.join("config"));
+    let runtime = root.join("runtime").join("r".repeat(108));
+    std::fs::create_dir_all(&runtime).unwrap();
     let mut command = env.command();
-    command.env("PATH", path);
+    command.env("PATH", path).env("XDG_RUNTIME_DIR", runtime);
     let daemon = start_daemon_with(&env, command);
     wait_status(&env, |status| status["store"]["messages"] == 1);
     (env, daemon)

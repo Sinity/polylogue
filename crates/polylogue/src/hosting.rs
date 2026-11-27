@@ -393,7 +393,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let listener = crate::socket::bind(&config.socket)?;
+    let listener = crate::socket::with_short_path(&config.socket, crate::socket::bind)?;
     let mut child = Command::new(program)
         .args(args)
         .current_dir(&config.cwd)
@@ -558,7 +558,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         stopping.store(true, Ordering::Release);
     }
     // Wakes the accept loop so it sees it should stop.
-    let _ = UnixStream::connect(&config.socket);
+    let _ = crate::socket::connect(&config.socket);
     let mut failure = accept
         .join()
         .err()
@@ -715,7 +715,7 @@ fn wait_for_host_socket(
             probe |= watch.changed()?;
         }
         if probe {
-            match UnixStream::connect(socket) {
+            match crate::socket::connect(socket) {
                 Ok(stream) => return Ok(HostSocket::Listening(stream)),
                 Err(error) if crate::cli::is_down(&error) => {}
                 Err(error) => return Err(error),
@@ -936,7 +936,7 @@ impl HostedStdio {
         protocol: HostProtocol,
         protocol_session: String,
     ) -> std::io::Result<Self> {
-        Self::connected(UnixStream::connect(socket)?, protocol, protocol_session)
+        Self::connected(crate::socket::connect(socket)?, protocol, protocol_session)
     }
 
     fn connected(
