@@ -36,6 +36,28 @@ struct StoredEvent {
 }
 
 impl Reader<'_> {
+    /// Visit one event kind, most recent first, without loading other events.
+    pub fn visit_events_by_kind(
+        &self,
+        kind: &str,
+        mut visit: impl FnMut(Event) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        let conn = self.conn()?;
+        let mut reader = crate::content::Reader::default();
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT {SHOWN_EVENT_COLUMNS}
+             FROM event e INDEXED BY event_kind LEFT JOIN session s ON s.pk=e.session_pk
+             WHERE e.kind=?1 ORDER BY e.at DESC"
+        ))?;
+        let mut rows = statement.query([kind])?;
+        while let Some(row) = rows.next()? {
+            if visit(shown_event(conn, &mut reader, row, 0)?).is_break() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     /// The selected event, with every kept source citation and its local source.
     pub fn event_record(&self, id: &str) -> Result<Option<InputEventRecord>> {
         let conn = self.conn()?;

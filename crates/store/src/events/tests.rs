@@ -3,6 +3,42 @@ use crate::{
     fixture::{Fixture, SessionFacts},
 };
 use polylogue_model::Code;
+use std::ops::ControlFlow;
+
+#[test]
+fn an_event_kind_can_be_read_in_reverse_time_without_other_events() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(root.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:events",
+            ..Default::default()
+        })
+        .unwrap();
+    for (kind, at) in [
+        ("chosen", 1000),
+        ("other", 4000),
+        ("chosen", 3000),
+        ("chosen", 2000),
+    ] {
+        fixture.event(session, kind, Some(at)).unwrap();
+    }
+    let pool = ReadPool::open(&fixture.archive).unwrap();
+    let mut times = Vec::new();
+    pool.reader()
+        .unwrap()
+        .visit_events_by_kind("chosen", |event| {
+            assert_eq!(event.kind, "chosen");
+            times.push(event.at.unwrap().unix_ms());
+            if times.len() == 2 {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap();
+    assert_eq!(times, [3000, 2000]);
+}
 
 #[test]
 fn unreadable_event_coordinates_are_stored_value_failures() {

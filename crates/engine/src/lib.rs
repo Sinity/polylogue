@@ -350,6 +350,9 @@ pub struct Pass {
     #[serde(default)]
     pub derivation_pending: bool,
     pub seconds: f64,
+    /// Each phase's name and total seconds, in order of first use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<(String, f64)>,
     pub unreadable_roots: Vec<PathBuf>,
     /// What failed in the pass, each with what it happened to and its cause.
     pub errors: Vec<polylogue_model::Failure>,
@@ -359,7 +362,7 @@ pub struct Pass {
 
 impl Pass {
     /// Adds a later pass's work to this one; unreadable roots and errors
-    /// accumulate.
+    /// accumulate. Phases describe one pass and are not aggregated.
     pub fn add(&mut self, next: Pass) {
         self.authored.applied += next.authored.applied;
         self.authored.present += next.authored.present;
@@ -680,7 +683,10 @@ impl Engine {
 
     /// Commits the rows the writer holds and reports how many of each it wrote.
     fn flush_writes(&mut self) -> Result<WriteReport, EngineError> {
-        Ok(self.writer.flush_rows()?)
+        let _doing = polylogue_store::activity::doing("waiting for the writer");
+        let report = self.writer.flush_rows()?;
+        polylogue_store::activity::progressed();
+        Ok(report)
     }
 
     /// Starts the writer on an archive the caller has locked.

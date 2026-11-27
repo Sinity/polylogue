@@ -329,3 +329,117 @@ fn a_stop_during_an_import_is_not_reported_done_and_importing_again_finishes_it(
     drop(reader);
     resumed.shutdown().unwrap();
 }
+
+#[test]
+fn status_reports_a_source_walk_and_the_finished_pass() {
+    use crate::test_daemon;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let source = home.join(".claude");
+    let project = source.join("projects/-p");
+    std::fs::create_dir_all(&project).unwrap();
+    for n in 0..50 {
+        let id = format!("pass-source-{n}");
+        std::fs::write(
+            project.join(format!("{id}.jsonl")),
+            polylogue_testkit::claude_user(&id, &id, "one message"),
+        )
+        .unwrap();
+    }
+    let archive = dir.path().join("archive");
+    let config = test_daemon::engine_config(home);
+    fault::arm(
+        "source.walk",
+        &source.to_string_lossy(),
+        Action::Hold,
+        49,
+        1,
+    );
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&config, &archive),
+        config,
+        crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilIdle,
+        &Default::default(),
+    )
+    .unwrap();
+    let release_on_stop = runtime.daemon.archive.stop().on_cancel(fault::release);
+    assert!(
+        fault::wait_held_within(Duration::from_secs(30)),
+        "the walk did not reach the last file"
+    );
+    let read_status = || {
+        let answer = test_daemon::call(&runtime.daemon, "status", json!({}));
+        answer
+            .value()
+            .unwrap_or_else(|| panic!("status: {answer:?}"))
+            .clone()
+    };
+    let held = read_status();
+    fault::release();
+    let threads: Vec<polylogue_store::activity::Thread> =
+        serde_json::from_value(held["threads"].clone()).unwrap();
+    let walking = threads
+        .iter()
+        .find(|thread| {
+            thread
+                .doing
+                .first()
+                .is_some_and(|work| work.what == "running a pass")
+        })
+        .expect("the pass is still running");
+    let work: Vec<_> = walking
+        .doing
+        .iter()
+        .map(|work| work.what.as_str())
+        .collect();
+    assert_eq!(
+        work,
+        [
+            "running a pass",
+            "finding source files",
+            "walking source files"
+        ]
+    );
+    let root = walking.doing.last().unwrap();
+    assert_eq!(root.subject.as_deref(), source.to_str());
+    assert!(walking.seconds_since_progress.unwrap() < root.seconds);
+
+    let mut idle = runtime.idle();
+    let summary = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(idle.wait_for(Option::is_some))
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(summary.work.errors.is_empty(), "{summary:?}");
+    let finished = read_status();
+    let pass: polylogue_engine::Pass =
+        serde_json::from_value(finished["last_pass"].clone()).unwrap();
+    assert_eq!(pass.inputs_seen, 50, "{pass:?}");
+    let reader = runtime.daemon.reads.reader().unwrap();
+    for n in 0..50 {
+        let session = SessionId::parse(&format!("claude-code:pass-source-{n}")).unwrap();
+        assert_eq!(
+            reader.messages(&session, false).unwrap().len(),
+            1,
+            "{session}"
+        );
+    }
+    drop(reader);
+    assert!(
+        pass.phases
+            .iter()
+            .any(|(phase, _)| phase == "finding source files")
+    );
+    assert_eq!(
+        pass.seconds,
+        pass.phases.iter().map(|(_, seconds)| seconds).sum::<f64>()
+    );
+    drop(release_on_stop);
+    runtime.shutdown().unwrap();
+    fault::clear();
+}

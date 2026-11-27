@@ -614,7 +614,7 @@ impl Engine {
                 origin.route
             },
         };
-        Ok(Some(self.reparse_plan(
+        let mut plan = self.reparse_plan(
             path,
             origin,
             input,
@@ -624,7 +624,9 @@ impl Engine {
             0,
             None,
             false,
-        )?))
+        )?;
+        plan.input_finished = c.imported;
+        Ok(Some(plan))
     }
 }
 

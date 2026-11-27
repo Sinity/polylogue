@@ -7,6 +7,7 @@
 
 use crate::Config;
 use polylogue_sources::{Arrival, ORIGINS, OriginSpec};
+use polylogue_store::activity;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -166,6 +167,7 @@ fn walk_paths(
             .collect();
         for child in children {
             let metadata = fs::symlink_metadata(&child);
+            activity::progressed();
             if metadata.as_ref().is_ok_and(|m| m.is_dir()) {
                 walk_paths(&child, segs, paths, out, unreadable);
             } else if rest.is_empty() && metadata.is_ok_and(|m| m.is_file()) {
@@ -184,6 +186,7 @@ fn walk_paths(
             })
             .collect();
         for child in children {
+            activity::progressed();
             if child
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -309,11 +312,25 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
     };
     let mut rows = BTreeMap::new();
     for (root, tool) in areas {
+        let _doing = activity::doing_on("walking source files", root.display().to_string());
         let mut files = Vec::new();
         let before = scan.unreadable.len();
         let mut status = Accessibility::Accessible;
         all_files(&root, &root, &roots, &mut files, &mut scan, &mut status);
         for (path, meta) in files {
+            if let Err(error) =
+                polylogue_store::fault::check("source.walk", &root.to_string_lossy())
+            {
+                scan.unreadable.push(path.clone());
+                scan.errors.push(
+                    polylogue_model::Failure::new(
+                        format!("source root {}", root.display()),
+                        &error,
+                    )
+                    .doing(&path.display().to_string()),
+                );
+                continue;
+            }
             let relative = path.strip_prefix(&root).unwrap_or(&path);
             let ignored = meta
                 .file_type()
@@ -397,6 +414,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                     .and_then(|duration| duration.as_millis().try_into().ok());
                 row.newest_mtime_ms = row.newest_mtime_ms.max(mtime);
             }
+            activity::progressed();
         }
         if status == Accessibility::Accessible && scan.unreadable.len() > before {
             status = Accessibility::Incomplete;
@@ -493,6 +511,7 @@ fn all_files(
     } else {
         fs::symlink_metadata(path)
     };
+    activity::progressed();
     if path == root {
         *status = match &metadata {
             Ok(_) => Accessibility::Accessible,
@@ -691,11 +710,14 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
 fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
         Ok(rd) => rd
-            .filter_map(|entry| match entry {
-                Ok(entry) => Some(entry.path()),
-                Err(_) => {
-                    unreadable.push(dir.to_path_buf());
-                    None
+            .filter_map(|entry| {
+                activity::progressed();
+                match entry {
+                    Ok(entry) => Some(entry.path()),
+                    Err(_) => {
+                        unreadable.push(dir.to_path_buf());
+                        None
+                    }
                 }
             })
             .collect(),

@@ -699,6 +699,11 @@ fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
     }
     let mut lines = vec![parts.join(" · "), work.join(" · ")];
+    lines.extend(
+        pass.phases
+            .iter()
+            .map(|(phase, seconds)| format!("{} s {}", decimal(*seconds), phase)),
+    );
     if let Some(first) = pass.errors.first() {
         let more = match pass.errors.len() {
             1 => String::new(),
