@@ -17,12 +17,19 @@ use rusqlite::Connection;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
+
+#[path = "reuse_archive_index/continuation.rs"]
+mod continuation;
 
 type Error = Box<dyn std::error::Error>;
 
 fn main() -> Result<(), Error> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os().skip(1).peekable();
+    if args.next_if(|arg| arg == "continue").is_some() {
+        return continuation::run(args);
+    }
     let (Some(earlier), Some(later), None) = (args.next(), args.next(), args.next()) else {
         return Err("usage: reuse_archive_index <earlier sealed copy> <later sealed copy>".into());
     };
@@ -42,16 +49,7 @@ fn reuse(earlier: &Path, later: &Path) -> Result<(u64, u64), Error> {
     }
     let old_id = archive_id(&old)?;
     let new_id = archive_id(&new)?;
-    let index = IndexFiles::at(earlier, &old_id, Position(from))?;
-    if index.rebuilding != Rebuilding::No
-        || index.installed
-            != (Installed::Current {
-                archive: old_id,
-                position: Position(from),
-            })
-    {
-        return Err(format!("earlier archive needs an installed index at position {from}").into());
-    }
+    checked_index(earlier, old_id, from)?;
     for name in [
         "index.db",
         "index.db-wal",
@@ -71,10 +69,25 @@ fn reuse(earlier: &Path, later: &Path) -> Result<(u64, u64), Error> {
         }
     }
     attach(&old, &target.archive_db())?;
-    prove_prefix(&old, from, earlier, later)?;
+    prove_record_prefix(&old, from)?;
+    prove_segment_prefix(&old, earlier, later)?;
     prove_vectors(&source, &target)?;
     install_index(earlier, later, &new_id, from)?;
     Ok((from, to))
+}
+
+fn checked_index(earlier: &Path, old_id: ArchiveId, from: u64) -> Result<(), Error> {
+    let index = IndexFiles::at(earlier, &old_id, Position(from))?;
+    if index.rebuilding != Rebuilding::No
+        || index.installed
+            != (Installed::Current {
+                archive: old_id,
+                position: Position(from),
+            })
+    {
+        return Err(format!("earlier archive needs an installed index at position {from}").into());
+    }
+    Ok(())
 }
 
 // The daemon uses this same file as its exclusive writer lock. Offline copies
@@ -116,7 +129,7 @@ fn attach(conn: &Connection, path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> Result<(), Error> {
+fn prove_record_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
     // Immutable capture and authored records must survive the cut. Rows with
     // a commit position cannot first appear on the wrong side of the cut.
     // The later archive supplies mutable authored state itself, including
@@ -159,6 +172,21 @@ fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> R
     ] {
         compare_rows(conn, table, suffix, from)?;
     }
+    Ok(())
+}
+
+fn segment_path(name: &str) -> Result<&Path, Error> {
+    let path = Path::new(name);
+    let mut parts = path.components();
+    if !matches!((parts.next(), parts.next(), parts.next()),
+        (Some(Component::Normal(dir)), Some(Component::Normal(_)), None) if dir == "segments")
+    {
+        return Err(format!("invalid segment name {name}").into());
+    }
+    Ok(path)
+}
+
+fn prove_segment_prefix(conn: &Connection, earlier: &Path, later: &Path) -> Result<(), Error> {
     let mut statement = conn.prepare(
         "SELECT name, (SELECT committed_end FROM main.segment WHERE name = s.name), committed_end FROM later.segment s",
     )?;
@@ -171,13 +199,7 @@ fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> R
     })?;
     for segment in segments {
         let (name, old_end, new_end) = segment?;
-        let path = Path::new(&name);
-        let mut parts = path.components();
-        if !matches!((parts.next(), parts.next(), parts.next()),
-            (Some(Component::Normal(dir)), Some(Component::Normal(_)), None) if dir == "segments")
-        {
-            return Err(format!("invalid segment name {name}").into());
-        }
+        let path = segment_path(&name)?;
         let mut target = File::open(later.join(path))?;
         if target.metadata()?.len() != new_end {
             return Err(
@@ -364,7 +386,19 @@ fn install_index(
 }
 
 fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
-    copy_file(from, to)?;
+    copy_database_with(from, to, copy_file)
+}
+
+fn reflink_database(from: &Path, to: &Path) -> Result<(), Error> {
+    copy_database_with(from, to, |from, to| copy_file_with(from, to, "always"))
+}
+
+fn copy_database_with(
+    from: &Path,
+    to: &Path,
+    copy: impl Fn(&Path, &Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    copy(from, to)?;
     let sidecar = |file: &Path, suffix: &str| -> PathBuf {
         let mut name = OsString::from(file);
         name.push(suffix);
@@ -372,7 +406,7 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
     };
     let wal = sidecar(from, "-wal");
     if wal.try_exists()? {
-        copy_file(&wal, &sidecar(to, "-wal"))?;
+        copy(&wal, &sidecar(to, "-wal"))?;
     }
     if sidecar(from, "-journal").try_exists()? {
         return Err(format!("{} has a rollback journal", from.display()).into());
@@ -381,19 +415,55 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<(), Error> {
-    // On a filesystem supporting reflinks the checked index is not copied
-    // sector by sector. SQLite writes only into the staged copy.
+    copy_file_with(from, to, "auto")
+}
+
+fn copy_file_with(from: &Path, to: &Path, reflink: &str) -> Result<(), Error> {
+    // Btrfs clones only when the files agree on whether writes use copy-on-write.
+    // A new file normally inherits the directory's flag, which can differ from
+    // a native archive's database or WAL.
+    if let (Some(source), Some(parent)) = (no_cow(from), to.parent().and_then(no_cow))
+        && source != parent
+    {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(from.metadata()?.permissions().mode() & 0o777)
+            .open(to)?;
+        let _ = std::process::Command::new("chattr")
+            .arg(if source { "+C" } else { "-C" })
+            .arg("--")
+            .arg(to)
+            .output();
+    }
+    // SQLite writes only into the staged copy.
     if !std::process::Command::new("cp")
-        .arg("--reflink=auto")
+        .arg(format!("--reflink={reflink}"))
         .arg("--")
         .arg(from)
         .arg(to)
         .status()?
         .success()
     {
-        return Err(format!("could not copy {}", from.display()).into());
+        return Err(format!("could not copy {} with --reflink={reflink}", from.display()).into());
     }
     Ok(())
+}
+
+fn no_cow(path: &Path) -> Option<bool> {
+    let result = std::process::Command::new("lsattr")
+        .args(["-d", "--"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !result.status.success() {
+        return None;
+    }
+    result
+        .stdout
+        .split(|byte| byte.is_ascii_whitespace())
+        .next()
+        .map(|flags| flags.contains(&b'C'))
 }
 
 fn sync_database(conn: &Connection, path: &Path) -> Result<(), Error> {
