@@ -27,9 +27,24 @@ fn record(versions: &[Vec<u8>]) -> Chains {
     chains
 }
 
-/// Byte strings over a small alphabet, so that versions share prefixes.
+/// Short byte strings over a small alphabet, or versions that diverge after
+/// a shared prefix ending inside the second or third comparison block.
 fn versions() -> impl Strategy<Value = Vec<Vec<u8>>> {
-    prop::collection::vec(prop::collection::vec(0u8..3, 0..24), 1..7)
+    prop_oneof![
+        3 => prop::collection::vec(prop::collection::vec(0u8..3, 0..24), 1..7),
+        1 => (1..65_536usize, 1..=2usize, any::<u8>(), 2..7u8).prop_map(
+            |(offset, full_blocks, byte, count)| {
+                let prefix = vec![byte; full_blocks * 65_536 + offset];
+                (0..count)
+                    .map(|different| {
+                        let mut version = prefix.clone();
+                        version.push(different);
+                        version
+                    })
+                    .collect()
+            }
+        ),
+    ]
 }
 
 /// Whether some chain's bytes are a prefix of an earlier chain's.
