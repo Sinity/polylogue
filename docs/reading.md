@@ -103,7 +103,7 @@ A word without a level means its fullest. Tool output cut to head and tail marks
 ## Ranges
 
 - `--from` and `--until` take a message, a time within the session or an absolute time; `--until` also takes `compaction[:N]` (before the last or the Nth-last boundary) and is exclusive.
-- `--first N` and `--last N` together are a head-and-tail window, with an omission line carrying the exact count between.
+- `--first N` shows the first N visible messages and `--last N` shows the last N. Together they show both ends, with one omission line giving the exact count between. Overlapping ends show each message once. Continuation pages keep the window selected on its first page as new messages arrive.
 - `--around N` takes N messages either side of the message holding the selected item: a message, block, tool call or span.
 - Positions are message IDs underneath, so a range stays put while a session grows. A `--from` position inside an inherited message, or an item there with `--around`, shows the inherited messages of that range.
 - `--physical` reads only the named physical session, not the continuations and subagents it is grouped with.

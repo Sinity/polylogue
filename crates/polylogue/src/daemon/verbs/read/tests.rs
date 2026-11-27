@@ -57,6 +57,8 @@ fn every_option() -> ReadStep {
         "show": ["tools:5", "thinking", "turns"],
         "hide": ["annotations"],
         "from": "seen",
+        "first": 3,
+        "last": 2,
         "around": 2,
         "diff": "compaction:1",
         "alternate": "translation:pl",
@@ -93,6 +95,10 @@ fn a_continuation_carries_every_option_of_its_step() {
         "read",
         "--view",
         "dialogue",
+        "--first",
+        "3",
+        "--last",
+        "2",
         "--cursor",
         "sealed",
     ]
@@ -106,6 +112,7 @@ fn a_continuation_carries_every_option_of_its_step() {
         panic!("one read")
     };
     assert_eq!(step.options.view, View::Dialogue);
+    assert_eq!((step.options.first, step.options.last), (Some(3), Some(2)));
     assert_eq!(step.cursor.as_deref(), Some("sealed"));
 }
 
