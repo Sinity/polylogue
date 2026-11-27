@@ -1566,7 +1566,7 @@ impl Engine {
                 CompletenessDimension::Incomplete(reasons)
                 | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
                     matches!(
-                        reason,
+                        reason.reason,
                         CompletenessReason::MissingCheckpoint
                             | CompletenessReason::ParseVersionChanged
                             | CompletenessReason::ParserBehind

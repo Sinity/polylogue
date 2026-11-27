@@ -52,9 +52,9 @@ pub enum RevisionChains {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChainCensus {
     pub chains: BTreeMap<(String, ChainStatusName), u64>,
-    /// Why the chains shown as `parsing` are due, by origin: never parsed,
-    /// parsed under another parser version, or stored further.
-    pub behind: BTreeMap<String, std::collections::BTreeSet<CompletenessReason>>,
+    /// Why the chains shown as `parsing` are due, counted by origin: never
+    /// parsed, parsed under another parser version, or stored further.
+    pub behind: BTreeMap<String, BTreeMap<CompletenessReason, u64>>,
 }
 
 impl ChainCensus {
@@ -317,7 +317,12 @@ impl Reader<'_> {
                     }
                     Some(_) => CompletenessReason::ParserBehind,
                 };
-                census.behind.entry(origin.clone()).or_default().insert(why);
+                *census
+                    .behind
+                    .entry(origin.clone())
+                    .or_default()
+                    .entry(why)
+                    .or_default() += 1;
             }
             *census.chains.entry((origin, shown.name())).or_default() += 1;
         }

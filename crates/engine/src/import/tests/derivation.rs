@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
+use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, CountedReason};
 use polylogue_model::{Session, SessionId, SessionKind};
 use polylogue_sources::Output;
 use polylogue_testkit::{ClaudeHome, claude_user};
@@ -103,7 +103,9 @@ fn unchanged_import_returns_while_unrelated_derivation_is_held_and_wakes_it() {
     assert_eq!(repeat.pass.sessions_derived, 0, "{repeat:?}");
     assert_eq!(
         pending,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
+        CompletenessDimension::Incomplete(vec![CountedReason::new(
+            CompletenessReason::DerivationBehind
+        )])
     );
     assert_eq!(
         home.count("SELECT COUNT(*) AS n FROM a.revision"),

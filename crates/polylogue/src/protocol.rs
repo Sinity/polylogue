@@ -467,7 +467,7 @@ pub fn read<T>(value: T, freshness: &polylogue_model::freshness::ReadFreshness) 
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
                 value,
-                missing: freshness.notes().into_iter().map(str::to_owned).collect(),
+                missing: freshness.notes(),
             },
             envelope: command_surface::Envelope {
                 next: vec![],

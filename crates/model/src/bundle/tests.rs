@@ -15,7 +15,9 @@ fn manifest() -> Manifest {
         freshness: crate::freshness::ReadFreshness {
             local: crate::freshness::ReadCompleteness {
                 search: crate::freshness::CompletenessDimension::Incomplete(vec![
-                    crate::freshness::CompletenessReason::SearchPending,
+                    crate::freshness::CountedReason::new(
+                        crate::freshness::CompletenessReason::SearchPending,
+                    ),
                 ]),
                 ..crate::freshness::ReadCompleteness::empty()
             },

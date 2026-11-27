@@ -234,7 +234,9 @@ pub(super) fn answer(
         && !loop_status.busy
         && !freshness.local.background_work_pending()
         && snapshot.commits_read >= d.writes.as_ref().map_or(0, |writes| writes.commits_made());
-    let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
+    // A failed or refused parse leaves reads up to date, since waiting does
+    // not end it; status names it until its bytes or its parser change.
+    let mut missing = freshness.status_notes();
     missing.extend(loop_status.last_pass.errors.iter().map(ToString::to_string));
     missing.extend(
         loop_status
@@ -403,7 +405,8 @@ fn unread(
     changes: u64,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     use polylogue_model::freshness::{
-        CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
+        CompletenessDimension, CompletenessReason, CountedReason, IndexFreshness, ReadCompleteness,
+        ReadFreshness,
     };
     let building = answers_from == crate::protocol::status::AnswersFrom::Build;
     let loop_status = d.status.get();
@@ -417,7 +420,9 @@ fn unread(
     // session figures are one of its steps.
     let dimension = || {
         if building {
-            CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding])
+            CompletenessDimension::Incomplete(vec![CountedReason::new(
+                CompletenessReason::IndexBuilding,
+            )])
         } else {
             CompletenessDimension::Unknown(Vec::new())
         }
@@ -427,9 +432,7 @@ fn unread(
             parsing: dimension(),
             derivation: dimension(),
             search: dimension(),
-            confirmed_stream: CompletenessDimension::NotApplicable,
-            kept_chains: 0,
-            raw_only_chains: 0,
+            ..ReadCompleteness::empty()
         },
         sinex: IndexFreshness::Standalone,
     };

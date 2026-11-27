@@ -560,6 +560,7 @@ mod judgments;
 
 mod saved;
 
+mod archive_outcomes;
 mod deliveries;
 mod outcomes;
 
