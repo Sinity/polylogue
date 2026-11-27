@@ -1095,7 +1095,7 @@ fn interleaved_sidechains_match_their_own_open_tasks() {
     let records = [
         task("a1", "call-one", "Review the index."),
         task("a2", "call-two", "Review the appendix."),
-        sidechain("index", json!("Review the index.")),
+        sidechain("index", json!(["Review the index."])),
         sidechain(
             "appendix",
             json!([{"type":"text","text":"Your task: Review the appendix. Report any issues."}]),

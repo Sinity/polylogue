@@ -1341,16 +1341,20 @@ impl Parser for ClaudeCode {
                     .into_iter()
                     .flatten()
                     .filter(|(_, prompt)| {
+                        let contains = |value: &Json| {
+                            value
+                                .as_str()
+                                .is_some_and(|text| text.contains(prompt.as_str()))
+                                || value.str("type") == Some("text")
+                                    && value
+                                        .str("text")
+                                        .is_some_and(|text| text.contains(prompt.as_str()))
+                        };
                         ty == "user"
                             && match content {
-                                Some(Json::String(text)) => text.contains(prompt.as_str()),
-                                Some(Json::Array(items)) => items.iter().any(|item| {
-                                    item.str("type") == Some("text")
-                                        && item
-                                            .str("text")
-                                            .is_some_and(|text| text.contains(prompt.as_str()))
-                                }),
-                                _ => false,
+                                Some(Json::Array(items)) => items.iter().any(contains),
+                                Some(value) => contains(value),
+                                None => false,
                             }
                     });
                 let call = matching
