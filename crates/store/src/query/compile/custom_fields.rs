@@ -4,7 +4,7 @@
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;
-use polylogue_model::{CallOutcome, LINK_KIND_NAMES, LINK_REASON_NAMES};
+use polylogue_model::{CallOutcome, LINK_KIND_NAMES, LINK_REASON_NAMES, query_objects::RunOutcome};
 use polylogue_query::filter::{Special, Test, TimeTest, closed_set_message};
 
 /// A special field's compile rule.
@@ -986,12 +986,11 @@ pub(crate) fn run_outcome(
     c: &mut Compiler<'_>,
     x: &Call<'_, '_, '_>,
 ) -> Result<String, QueryError> {
-    const STATES: [&str; 2] = ["ok", "error"];
     let mut parts = Vec::new();
     for value in x.values() {
         let value = value.to_ascii_lowercase();
-        if !STATES.contains(&value.as_str()) {
-            let message = format!("outcome is one of {}", STATES.join(", "));
+        if !RunOutcome::STATES.contains(&value.as_str()) {
+            let message = format!("outcome is one of {}", RunOutcome::STATES.join(", "));
             return Err(x.bad(value, message));
         }
         let p = c.text_param(&value);
