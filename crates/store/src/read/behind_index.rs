@@ -117,15 +117,15 @@ fn chain_rows() -> String {
     )
 }
 
-fn planning_sql(selected: bool, chains: RevisionChains) -> String {
+fn planning_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
     format!(
         "{} ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
-        behind_sql(selected, chains)
+        behind_sql(selected, chains, at_cut)
     )
 }
 
 /// The chains of the selected inputs with their parse states, in no order.
-fn behind_sql(selected: bool, chains: RevisionChains) -> String {
+fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
     // Restrict histories before aggregating them. All-input planning
     // keeps its existing source-view access.
     let (revisions, observations) = if selected {
@@ -135,8 +135,8 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
         )
     } else {
         (
-            "SELECT * FROM source_revision",
-            "SELECT * FROM source_observation",
+            "SELECT r.* FROM source_revision r",
+            "SELECT o.* FROM source_observation o",
         )
     };
     // Keep the selected chain lengths once: flattening the current-chain MAX
@@ -153,7 +153,22 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
             CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
             GROUP BY r.input,r.chain",
     };
-    let database = crate::source::database_original("c.input");
+    let (revisions, observations, database) = if at_cut {
+        (
+            format!("{revisions} WHERE r.commit_seq <= ?2"),
+            format!("{observations} WHERE o.commit_seq <= ?2"),
+            crate::source::database_original_from(
+                "c.input",
+                "(SELECT * FROM source_observation WHERE commit_seq <= ?2)",
+            ),
+        )
+    } else {
+        (
+            revisions.into(),
+            observations.into(),
+            crate::source::database_original("c.input"),
+        )
+    };
     let chain_rows = chain_rows();
     format!(
         "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?1)),
@@ -189,6 +204,42 @@ impl Reader<'_> {
         let ids = query
             .query_map(params![after, limit as u64], |row| row.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
+        token.check()?;
+        Ok(ids)
+    }
+
+    /// A page of inputs whose stored contents or observations changed in
+    /// (after, through]. A database row stream's observation can also change
+    /// whether its original database needs a reading.
+    pub fn changed_input_ids(
+        &self,
+        after: Position,
+        through: Position,
+        after_input: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let token = self.scope_token();
+        let database_rows = crate::source::database_rows("member");
+        let conn = self.conn()?;
+        let mut query = conn.prepare_cached(&format!(
+            "WITH changes AS MATERIALIZED (
+                SELECT input, id FROM source_observation WHERE commit_seq > ?1 AND commit_seq <= ?2
+             )
+             SELECT input FROM (
+                SELECT input FROM source_revision WHERE commit_seq > ?1 AND commit_seq <= ?2
+                UNION SELECT input FROM changes
+                UNION SELECT member.container_input FROM changes o
+                JOIN source_observation_container member ON member.observation_id = o.id
+                WHERE {database_rows}
+             )
+             WHERE ?3 IS NULL OR input > ?3 ORDER BY input LIMIT ?4"
+        ))?;
+        let ids = query
+            .query_map(
+                params![after.0, through.0, after_input, limit as u64],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         token.check()?;
         Ok(ids)
     }
@@ -233,8 +284,18 @@ impl Reader<'_> {
         versions: &[(String, String)],
         through: &str,
     ) -> Result<(u64, u64)> {
+        self.count_chains_behind_index_at(versions, through, None)
+    }
+
+    /// Counts only archive rows committed through the supplied position.
+    pub fn count_chains_behind_index_at(
+        &self,
+        versions: &[(String, String)],
+        through: &str,
+        cut: Option<Position>,
+    ) -> Result<(u64, u64)> {
         let (mut chains, mut bytes) = (0, 0);
-        self.visit_chain_rows(None, RevisionChains::All, &mut |row| {
+        self.visit_chain_rows(None, RevisionChains::All, cut, &mut |row| {
             if row.input.as_str() <= through
                 && parser(versions, &row.source.format).is_some()
                 && row.due(versions) != Due::No
@@ -255,8 +316,20 @@ impl Reader<'_> {
         chains: RevisionChains,
         selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
+        self.chains_behind_index_at(versions, chains, selected, None)
+    }
+
+    /// Like [Self::chains_behind_index], with revision lengths and parser
+    /// hints determined by rows committed through the supplied position.
+    pub fn chains_behind_index_at(
+        &self,
+        versions: &[(String, String)],
+        chains: RevisionChains,
+        selected: Option<&[String]>,
+        cut: Option<Position>,
+    ) -> Result<Vec<BehindChain>> {
         let mut found = Vec::new();
-        self.visit_chain_rows(selected, chains, &mut |row| {
+        self.visit_chain_rows(selected, chains, cut, &mut |row| {
             let due = row.due(versions);
             if due != Due::No {
                 found.push(BehindChain {
@@ -336,6 +409,7 @@ impl Reader<'_> {
         &self,
         selected: Option<&[String]>,
         chains: RevisionChains,
+        cut: Option<Position>,
         visit: &mut dyn FnMut(ChainRow) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
@@ -349,9 +423,12 @@ impl Reader<'_> {
             ),
         )?;
         let connection = self.conn()?;
-        let sql = planning_sql(selected.is_some(), chains);
+        let sql = planning_sql(selected.is_some(), chains, cut.is_some());
         let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params![selected_json])?;
+        let mut rows = match cut {
+            Some(cut) => statement.query(params![selected_json, cut.0])?,
+            None => statement.query(params![selected_json])?,
+        };
         while let Some(row) = rows.next()? {
             token.check()?;
             let path_bytes: Option<Vec<u8>> = row.get(6)?;

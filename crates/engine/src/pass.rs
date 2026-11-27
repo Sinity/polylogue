@@ -1631,6 +1631,78 @@ impl Engine {
         }
     }
 
+    /// Catches up a checked index reused from `after` on a sealed copy.
+    /// Call with the earlier cut supplied by the reuse operation and the
+    /// same reading contracts that built the checked index.
+    pub fn catch_up_archive_suffix(
+        &mut self,
+        after: polylogue_store::archive::writer::Position,
+        through: polylogue_store::archive::writer::Position,
+    ) -> Result<Pass, EngineError> {
+        if self.config.reads_sources
+            || self.requests.is_some()
+            || !self.archive.index_files()?.serves()
+        {
+            return Err(EngineError::internal(
+                "suffix catch-up needs an offline archive copy with its reused index",
+            ));
+        }
+        let index = polylogue_store::archive::open_read(&self.archive.index_db())?;
+        let from = polylogue_store::meta_get(&index, polylogue_store::index::file::REUSED_FROM)?
+            .and_then(|value| value.parse::<u64>().ok());
+        if from != Some(after.0) {
+            return Err(EngineError::internal(
+                "the index does not carry the requested checked archive cut",
+            ));
+        }
+        drop(index);
+        let position = self.reads.reader()?.change_position()?.archive;
+        if after > through || u64::try_from(position) != Ok(through.0) {
+            return Err(EngineError::internal(
+                "the archive does not end at the requested suffix position",
+            ));
+        }
+
+        let started = Instant::now();
+        let versions = crate::reading_contracts()
+            .into_iter()
+            .filter_map(|contract| match contract {
+                polylogue_store::ReadingContract::Expected { origin, version } => {
+                    Some((origin, version))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut pass = Pass::default();
+        self.refresh_import_assets(&mut pass)?;
+        let mut last = None::<String>;
+        loop {
+            self.archive.stop().check()?;
+            let reader = self.reads.reader()?;
+            let ids = reader.changed_input_ids(
+                after,
+                through,
+                last.as_deref(),
+                self.config.workers.max(1) * IN_POOL_PER_WORKER,
+            )?;
+            let Some(end) = ids.last().cloned() else {
+                break;
+            };
+            let behind = reader.chains_behind_index_at(
+                &versions,
+                RevisionChains::All,
+                Some(&ids),
+                Some(through),
+            )?;
+            drop(reader);
+            self.reparse_chains(behind, &mut pass)?;
+            last = Some(end);
+        }
+        pass.sessions_derived += self.derive()?;
+        pass.seconds = started.elapsed().as_secs_f64();
+        Ok(pass)
+    }
+
     /// Whether a live input written in the last minutes changed since it
     /// was read. Bulk work stops for it at its next page boundary.
     fn live_input_changed(&self) -> bool {

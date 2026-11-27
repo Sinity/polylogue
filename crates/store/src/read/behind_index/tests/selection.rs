@@ -129,7 +129,7 @@ fn newest_and_older_match_the_query_for_stored_histories() {
         for selection in [None, Some(selected.as_slice()), Some(&[][..])] {
             let actual = query(
                 &reader,
-                &planning_sql(selection.is_some(), chains),
+                &planning_sql(selection.is_some(), chains, false),
                 &[selection
                     .map(|ids| Value::Text(serde_json::to_string(ids).unwrap()))
                     .unwrap_or(Value::Null)],
@@ -168,12 +168,12 @@ fn compare_work(chains: usize, appends: usize) -> (usize, usize) {
     let values = [Value::Null];
     let newest = query(
         &reader,
-        &planning_sql(false, RevisionChains::Newest),
+        &planning_sql(false, RevisionChains::Newest, false),
         &values,
     );
     let older = query(
         &reader,
-        &planning_sql(false, RevisionChains::Older),
+        &planning_sql(false, RevisionChains::Older, false),
         &values,
     );
     assert_eq!(
