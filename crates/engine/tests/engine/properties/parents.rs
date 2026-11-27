@@ -12,48 +12,11 @@ const L4: &str = "claude-code:agent-a7f3a2c1000000104";
 const L5: &str = "claude-code:7f3a2c10-0105-4000-8000-000000000105";
 
 /// Facts that do not hold yet. Delete an entry when its assertion starts to match.
-const GAPS: &[(&str, &str, &str)] = &[
-    (
-        L1,
-        "spawn tree cost",
-        "L1 tree cost includes its fork; FACTS.md includes only spawn descendants",
-    ),
-    (
-        L5,
-        "own messages",
-        "L5 counts forkedFrom copies as own messages; FACTS.md assigns them to L1",
-    ),
-    (
-        L5,
-        "session message count",
-        "L5 query counts forkedFrom copies as own messages; FACTS.md assigns them to L1",
-    ),
-    (
-        L5,
-        "copied message identities",
-        "L5 gives forkedFrom copies new IDs; FACTS.md uses the original L1 IDs",
-    ),
-    (
-        L5,
-        "human prompts",
-        "L5 counts the copied human prompt again; FACTS.md counts only its own prompts",
-    ),
-    (
-        L1_SIDE,
-        "spawn link",
-        "the first sidechain record carries the open Task call's prompt; the link names no call yet",
-    ),
-    (
-        L1_SIDE,
-        "human prompts",
-        "L1-side counts a user record of a sidechain as human; FACTS.md says zero human prompts",
-    ),
-    (
-        L4,
-        "human prompts",
-        "L4 counts its delegated prompt as human; FACTS.md says zero human prompts",
-    ),
-];
+const GAPS: &[(&str, &str, &str)] = &[(
+    L1,
+    "spawn tree cost",
+    "L1 tree cost includes its fork; FACTS.md includes only spawn descendants",
+)];
 
 fn gap(id: &str, fact: &str) -> Option<&'static str> {
     GAPS.iter()
@@ -249,7 +212,7 @@ fn parents_set_lineage_matches_morrow_facts() {
     }
     // FACTS.md: provider links table, excluding the Codex pair absent here;
     // copied history creates no provider link, and the briefing is in the hook spool.
-    let mut expected_links: BTreeSet<_> = [
+    let expected_links: BTreeSet<_> = [
         (1, 2, "spawn", Some("toolu_0203")),
         (4, 5, "spawn", Some("toolu_1102")),
         (4, 6, "spawn", Some("toolu_1101")),
@@ -269,23 +232,6 @@ fn parents_set_lineage_matches_morrow_facts() {
     })
     .into_iter()
     .collect();
-    if gap(L1_SIDE, "spawn link").is_some() {
-        let wanted = expected_links
-            .iter()
-            .find(|link| link.1 == L1_SIDE)
-            .unwrap()
-            .clone();
-        let actual = links
-            .iter()
-            .find(|link| {
-                link.0 == wanted.0 && link.1 == wanted.1 && link.2 == wanted.2 && link.4 == wanted.4
-            })
-            .unwrap()
-            .clone();
-        assert_fact(L1_SIDE, "spawn link", &actual.3, &wanted.3);
-        links.remove(&actual);
-        expected_links.remove(&wanted);
-    }
     assert_eq!(links, expected_links, "provider links");
     // FACTS.md: a copied message is stored once; L4 and L5 have four copies,
     // #4 has eighteen, and L8 has three copies belonging to 0199.
