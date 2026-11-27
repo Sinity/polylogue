@@ -4,6 +4,10 @@ The browser extension captures web chats (ChatGPT, claude.ai, Grok, Gemini, AI S
 
 The extension is designed whole rather than adjusted.
 
+## Installation and updates
+
+The packaged manifest's public key gives Chrome the same extension ID at every path. The package publishes that ID at `share/polylogue/extension-id`. Its manifest's `version_name` names the source revision, which the extension writes into capture provenance. The native host reports its own revision in a status reply. When both revisions are known and differ, the extension reloads at most once for the pair, then installs the page scripts in the supported tabs already open. Keep the old installation available until its popup shows zero pending captures when moving from an installation with a different ID.
+
 ## Live capture
 
 Live capture is the core of the extension and works in about real time.

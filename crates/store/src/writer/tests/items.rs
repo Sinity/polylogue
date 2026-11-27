@@ -140,7 +140,7 @@ fn equal_length_context_boundary_changes_refresh_typed_event_items() {
         input.parse[0].output.events[0].data = after;
         input.parse[0].parse_version = "synthetic=2".into();
         let expected = input.parse[0].output.events[0].clone();
-        let mut reading = ChainParse::new().unwrap();
+        let mut reading = Replacement::new().unwrap();
         reading.push(&mut input.parse[0]).unwrap();
         w.writer
             .replace_chain(input.input.clone(), 1, 100, reading)
@@ -213,7 +213,7 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
         }
         input.parse[0].parse_version = "synthetic=2".into();
         let expected = input.parse[0].output.events[0].clone();
-        let mut reading = ChainParse::new().unwrap();
+        let mut reading = Replacement::new().unwrap();
         reading.push(&mut input.parse[0]).unwrap();
         w.writer
             .replace_chain(input.input, 1, 100, reading)
@@ -379,7 +379,7 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
         9
     );
     main.parse[0].order_from = Some(1);
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut main.parse[0]).unwrap();
     w.writer.replace_chain(main.input, 1, 100, reading).unwrap();
     w.writer.derive().unwrap();

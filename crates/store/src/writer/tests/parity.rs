@@ -327,7 +327,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
     }
     output.sessions = sessions.into_values().collect();
     let records = (to - from) as u64;
-    let mut step = ParseStep::new(
+    let mut step = ParsePart::new(
         output,
         counts(records),
         from as u64 * RECORD..to as u64 * RECORD,
@@ -572,10 +572,10 @@ fn build_from_record(
         let mut open = runs[i % 2]
             .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let paths = runs
         .into_iter()

@@ -1,6 +1,6 @@
 use super::*;
 use crate::summary::{Output, SessionWrite, Token, Write};
-use crate::writer::{ChainParse, InputKey, ParseStep};
+use crate::writer::{InputKey, ParsePart, Replacement};
 use rusqlite::{Connection, params};
 
 fn duplicate_write(
@@ -62,9 +62,9 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
         let (mut world, conn, session, message) = hidden();
         let reveal = duplicate_write(&conn, session, message, None);
         if retract {
-            let mut reading = ChainParse::new().unwrap();
+            let mut reading = Replacement::new().unwrap();
             reading
-                .push(&mut ParseStep::new(
+                .push(&mut ParsePart::new(
                     polylogue_model::Output::default(),
                     polylogue_model::RecordCounts::default(),
                     0..world.offset(),

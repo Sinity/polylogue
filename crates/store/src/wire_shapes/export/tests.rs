@@ -21,13 +21,13 @@ fn source(length: u64) -> Source<'static> {
         observed_at_ms: Some(100),
     }
 }
-fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobHash) -> ParseStep {
+fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobHash) -> ParsePart {
     let complete = matches!(delivery_source, ExportDeliverySource::Complete { .. });
     let end = match delivery_source {
         ExportDeliverySource::Complete { length, .. } => length,
         _ => 0,
     };
-    let mut step = ParseStep::new(Output::default(), RecordCounts::default(), 0..end, complete);
+    let mut step = ParsePart::new(Output::default(), RecordCounts::default(), 0..end, complete);
     step.parse_version = "crate::export::VERSION=2".into();
     step.reset = ordinal == 0;
     if matches!(delivery_source, ExportDeliverySource::Item { .. }) {
@@ -48,7 +48,7 @@ fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobH
         .unwrap();
     step
 }
-fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()> {
+fn apply_step(conn: &mut Connection, length: u64, step: &ParsePart) -> Result<()> {
     let tx = conn.transaction()?;
     apply(&tx, source(length), step)?;
     tx.commit()?;

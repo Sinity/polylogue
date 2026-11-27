@@ -55,6 +55,69 @@ function chatgptPage({ fileBytes = null } = {}) {
 }
 
 describe("a capture", () => {
+  it("capture_provenance_names_the_build", async () => {
+    const host = storingHost();
+    const chrome = fakeChrome({
+      operations: host.operations,
+      pages: { 1: chatgptPage().answer },
+      tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }],
+    });
+    const manifest = chrome.runtime.getManifest();
+    chrome.runtime.getManifest = () => ({ ...manifest, version_name: "extension-build" });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
+    expect(JSON.parse(host.stored[0]).provenance).toMatchObject({
+      extension_version: manifest.version, extension_revision: "extension-build",
+    });
+  });
+
+  it("host_reporting_a_different_build_reloads_the_extension", async () => {
+    const host = storingHost();
+    let hostRevision = "extension-build";
+    host.operations.status = () => ({ json: { revision: hostRevision } });
+    const chrome = fakeChrome({
+      operations: host.operations,
+      tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }],
+    });
+    const manifest = chrome.runtime.getManifest();
+    chrome.runtime.getManifest = () => ({ ...manifest, version_name: "extension-build" });
+    chrome.runtime.reload = vi.fn();
+    const indexedDB = new IDBFactory();
+    const before = start(chrome, { indexedDB });
+    await before.tick();
+    expect(chrome.runtime.reload).not.toHaveBeenCalled();
+
+    hostRevision = "host-build";
+    await Promise.all([before.tick(), before.tick()]);
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1);
+    expect(chrome.scripts).toEqual([]);
+
+    // The worker can start again without an install event or new files.
+    const after = start(chrome, { indexedDB });
+    await until(() => chrome.scripts.length === 1, "the open chat page refreshed");
+    expect(chrome.scripts[0]).toEqual({
+      target: { tabId: 1 }, files: ["src/content/chatgpt.js", "src/content/page.js"],
+    });
+    await after.tick();
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("a_failed_reload_does_not_stop_background_work", async () => {
+    const host = storingHost();
+    host.operations.status = () => ({ json: { revision: "host-build" } });
+    const chrome = fakeChrome({ operations: host.operations });
+    const manifest = chrome.runtime.getManifest();
+    chrome.runtime.getManifest = () => ({ ...manifest, version_name: "extension-build" });
+    chrome.runtime.reload = vi.fn(() => { throw new Error("reload refused"); });
+    const extension = start(chrome, { indexedDB: new IDBFactory() });
+    await extension.tick();
+
+    chrome.calls.length = 0;
+    await extension.tick();
+    expect(chrome.runtime.reload).toHaveBeenCalledTimes(1);
+    expect(chrome.calls).toContainEqual(expect.objectContaining({ operation: "internal import claim" }));
+  });
+
   it("holds the provider's JSON whole, with the bytes of the files it names", async () => {
     const body = await captureBody({
       provider: "chatgpt", conversation: "c1", url: "https://chatgpt.com/c/c1",

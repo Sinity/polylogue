@@ -8,6 +8,29 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+#[test]
+fn browser_install_writes_the_invoking_wrapper_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let wrapper = directory.path().join("polylogue");
+    std::os::unix::fs::symlink(crate::BIN, &wrapper).unwrap();
+    let output = crate::command(directory.path())
+        .env("PATH", directory.path())
+        .args(["install", "chrome", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let manifest: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(manifest["path"], wrapper.to_string_lossy().as_ref());
+    assert_eq!(
+        manifest["allowed_origins"],
+        serde_json::json!(["chrome-extension://pcfmanpibdomhkfjiginenedmjjfgned/"])
+    );
+}
+
 /// Execute the typed continuation as supplied by the daemon. CLI formatting
 /// and execution are tested in the binary through its actual declarations.
 fn follow(

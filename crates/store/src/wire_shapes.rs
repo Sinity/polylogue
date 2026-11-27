@@ -4,7 +4,7 @@
 //! cursor accepts each byte range once; a new parse version gets separate
 //! rows. Occurrences state order, identity and optional time.
 use crate::{OptionExt as _, ResultExt as _};
-use crate::{ParseStep, Result, StoreError};
+use crate::{ParsePart, Result, StoreError};
 use polylogue_model::WireShape;
 use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadRange};
 mod export;
@@ -298,13 +298,13 @@ fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<
 /// frontier is ignored as already counted (only the last range's hash is kept,
 /// so its bytes are not compared); a step that starts inside the frontier and
 /// extends past it, or repeats the last range with different bytes, fails.
-pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Result<()> {
+pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParsePart) -> Result<()> {
     apply_inner(tx, source, step, false)
 }
 
 /// A whole-chain replacement starts a new aggregate in its existing
 /// transaction. Parser reset flags alone do not grant this operation.
-pub(crate) fn replace(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Result<()> {
+pub(crate) fn replace(tx: &Transaction<'_>, source: Source<'_>, step: &ParsePart) -> Result<()> {
     if !step.reset || step.delivery.is_some() {
         return Err(StoreError::internal(
             "wire replacement requires its first reset step",
@@ -316,7 +316,7 @@ pub(crate) fn replace(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep
 fn apply_inner(
     tx: &Transaction<'_>,
     source: Source<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     replacement: bool,
 ) -> Result<()> {
     // A failed parse observed no records; its standing is the parse state's.

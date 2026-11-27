@@ -245,7 +245,7 @@ pub(super) fn write(
     tx: &Transaction<'_>,
     chain: &Chain<'_>,
     batch: &Batch,
-    step: &ParseStep,
+    step: &ParsePart,
     touched: &mut Touched,
 ) -> Result<()> {
     let key = params![chain.input_pk, chain.chain];
@@ -385,7 +385,7 @@ fn write_prefix_copy(
 fn write_sessions(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     touched: &mut Touched,
 ) -> Result<()> {
     for session in &step.output.sessions {
@@ -483,7 +483,7 @@ fn write_texts(
 fn write_messages(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     groups: &mut crate::content::Stored<'_>,
     touched: &mut Touched,
 ) -> Result<()> {
@@ -710,7 +710,7 @@ fn order_times(
 fn write_injection_fields(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     index: usize,
     message: &str,
 ) -> Result<()> {
@@ -757,7 +757,7 @@ fn write_injection_fields(
 fn write_documents(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     touched: &mut Touched,
 ) -> Result<()> {
     for (row, prepared) in step.output.documents.iter().zip(&step.prepared.documents) {
@@ -829,7 +829,7 @@ fn write_documents(
 fn write_events(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     groups: &mut crate::content::Stored<'_>,
     touched: &mut Touched,
 ) -> Result<()> {
@@ -944,7 +944,7 @@ fn write_events(
 fn write_links(
     tx: &Connection,
     chain: &Chain<'_>,
-    step: &ParseStep,
+    step: &ParsePart,
     touched: &mut Touched,
 ) -> Result<()> {
     for link in &step.output.links {

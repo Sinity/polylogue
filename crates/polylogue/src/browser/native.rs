@@ -14,6 +14,8 @@ use std::sync::Arc;
 const CHUNK: usize = 64 * 1024;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+pub const CHROME_EXTENSION_ID: &str = "pcfmanpibdomhkfjiginenedmjjfgned";
+
 pub fn read_frame(input: &mut impl Read) -> io::Result<Option<Value>> {
     let mut len = [0u8; 4];
     match input.read_exact(&mut len) {
@@ -116,6 +118,7 @@ fn read_message(input: &mut impl Read) -> Result<Option<Value>, crate::daemon::F
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
+    Status,
     Call {
         #[serde(flatten)]
         request: command_surface::RunnableRequest,
@@ -134,6 +137,9 @@ fn answer(host: &BrowserHost, mut message: Value) -> Result<Answer<Value>, crate
         object.remove("version");
     }
     match serde_json::from_value(message).map_err(invalid)? {
+        Message::Status => Ok(Answer::ok(json!({
+            "revision": option_env!("POLYLOGUE_REVISION").filter(|revision| *revision != "unavailable"),
+        }))),
         Message::Call { request } => Ok(std::os::unix::net::UnixStream::connect(&host.socket)
             .and_then(|socket| crate::client::Exchange::new(&request).on(socket, |_| Ok(false)))
             .map(|answer| answer.expect("events are consumed until the answer"))
@@ -205,8 +211,12 @@ pub fn run(
 }
 
 /// The manifest Chrome reads: this binary, allowing only `extension_id`.
+/// Keep the written key order so the installer still recognizes its earlier files.
 pub fn manifest(binary: &std::path::Path, extension_id: &str) -> Value {
-    json!({"name": super::HOST_NAME, "description": "Polylogue browser capture host",
-        "path": binary, "type": "stdio",
-        "allowed_origins": [format!("chrome-extension://{extension_id}/")]})
+    let mut host: Value =
+        serde_json::from_str(include_str!("../../../../extension/native-host.json"))
+            .expect("the shared native host manifest is valid JSON");
+    host["path"] = json!(binary);
+    host["allowed_origins"] = json!([format!("chrome-extension://{extension_id}/")]);
+    host
 }

@@ -304,7 +304,11 @@ impl Running {
 /// Archive figures with capture summaries for the status reply.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Store {
+    /// Visible logical sessions with a transcript.
     pub sessions: u64,
+    /// Visible physical sessions with a transcript, counted separately.
+    #[serde(default)]
+    pub sessions_physical: u64,
     pub messages: u64,
     pub documents: u64,
     pub tool_calls: u64,
@@ -369,6 +373,7 @@ impl Store {
         use polylogue_model::capture::Classification;
         Self {
             sessions: store.sessions,
+            sessions_physical: store.sessions_physical,
             messages: store.messages,
             documents: store.documents,
             tool_calls: store.tool_calls,

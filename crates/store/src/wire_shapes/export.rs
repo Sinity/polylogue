@@ -2,7 +2,7 @@
 use super::*;
 use crate::ConnExt as _;
 
-pub(crate) fn is_refusal(step: &ParseStep) -> bool {
+pub(crate) fn is_refusal(step: &ParsePart) -> bool {
     step.failure
         .as_ref()
         .is_some_and(|failure| failure.kind == polylogue_model::ChainFailureKind::Refused)
@@ -27,7 +27,7 @@ pub(crate) fn admit_export(
     input: &str,
     chain: i64,
     length: u64,
-    step: &ParseStep,
+    step: &ParsePart,
 ) -> Result<bool> {
     accept(
         load_prefix(conn, input, chain, &step.parse_version)?.as_ref(),
@@ -36,7 +36,7 @@ pub(crate) fn admit_export(
     )
 }
 
-fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<bool> {
+fn accept(previous: Option<&Reading>, length: u64, step: &ParsePart) -> Result<bool> {
     // A failure carries no records and moves no cursor, so it switches
     // neither an export reading nor a byte-range reading.
     if step.failure.is_some() && !is_refusal(step) {

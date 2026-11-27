@@ -3,7 +3,7 @@
 //! after a re-parse of the whole input, every stored summary equals what
 //! the same rows written in one step give.
 use crate::fixture::writer::{WriterArchive, message, sid};
-use crate::writer::{ChainParse, InputKey, ParseStep};
+use crate::writer::{InputKey, ParsePart, Replacement};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, MessageRow, Output, RecordCounts, RecordOutcome, Role,
     Session, SessionKind, Timestamp, ToolAction, ToolOutcome,
@@ -286,9 +286,9 @@ fn reparse(w: &WriterArchive, records: &[Record], stored: &[(usize, u64)]) {
     for _ in records {
         counts.add("record", &RecordOutcome::Used);
     }
-    let mut step = ParseStep::new(output(records, stored), counts, 0..length, true);
+    let mut step = ParsePart::new(output(records, stored), counts, 0..length, true);
     step.parse_version = "synthetic=1".into();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
         .replace_chain(

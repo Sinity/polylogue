@@ -65,7 +65,7 @@ export function exchange(runtime, message) {
   });
 }
 
-/** The three messages accepted by the host. Operations use the daemon's names. */
+/** Messages accepted by the host. Operations use the daemon's names. */
 export class Host {
   constructor(runtime) { this.runtime = runtime; }
 
@@ -79,6 +79,8 @@ export class Host {
     if (!["ok", "empty", "degraded"].includes(answer.outcome) || !("value" in answer)) throw new HostError("host_answer_unreadable");
     return answer.value;
   }
+
+  status() { return this.message({ type: "status" }); }
 
   call(operation, args = {}, request_id = crypto.randomUUID()) {
     return this.message({ type: "call", operation, arguments: args, request_id });
