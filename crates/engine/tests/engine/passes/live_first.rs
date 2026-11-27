@@ -42,8 +42,11 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     config.live_every = std::time::Duration::ZERO;
     let spool = config.spool_dir(polylogue_sources::hook_spool::ORIGIN);
     // Backlog files end in `.jsonl`; the hook spool file does not.
-    fault::arm("parse", ".jsonl", Action::Hold, HELD_AT, 1);
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
+    let writer = polylogue_store::Writer::start(&archive).unwrap();
+    polylogue_store::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
+    drop(writer);
+    fault::arm("parse", ".jsonl", Action::Hold, HELD_AT, 1);
     let mut engine = Engine::new(config, archive).unwrap();
     let pass = std::thread::spawn(move || {
         let pass = engine.run_pass();

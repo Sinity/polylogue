@@ -427,7 +427,7 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
             .expect("the import is answered")
             .unwrap();
         latencies.push(sent.elapsed());
-        if building {
+        if building && !archive.index_files().unwrap().serves() {
             assert!(
                 matches!(report.readable, crate::Readable::AfterBuild { .. }),
                 "{:?}",

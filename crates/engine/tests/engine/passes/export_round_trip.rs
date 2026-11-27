@@ -448,7 +448,7 @@ fn conflicting_forks_survive_bundle_export_and_import() {
     );
     let path = export_file(&original, &["claude-code:child"]);
     let receiving = ClaudeHome::new();
-    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
     let report = target.import(&[path]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -515,7 +515,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
     let whole = export_file(&original, &["chatgpt:parent", "chatgpt:child"]);
     let later = export_file(&original, &["chatgpt:parent"]);
     let receiving = ClaudeHome::new();
-    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
     for file in [whole, later] {
         let report = target.import(&[file]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
@@ -573,7 +573,7 @@ fn copied_file_subset_survives_export_with_parent() {
     assert_eq!(bodies(&original), ["copied first", "own child"]);
     let file = export_file(&original, &["claude-code:parent", "claude-code:child"]);
     let target = ClaudeHome::new();
-    let (mut engine, _target_lock) = target.engine(64 << 20);
+    let (mut engine, _target_lock) = target.installed_engine(64 << 20);
     let report = engine.import(&[file]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -648,7 +648,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         }
         drop(file);
         let receiving = ClaudeHome::new();
-        let (mut target, _target_lock) = receiving.engine(64 << 20);
+        let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
         let report = target.import(&[base]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
