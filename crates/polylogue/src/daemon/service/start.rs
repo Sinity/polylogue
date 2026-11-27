@@ -386,20 +386,6 @@ pub fn start(
         idle: Arc::new(tokio::sync::watch::channel(None).0),
         progress: progress.clone(),
     };
-    steps.next("reading the first status");
-    // The first status snapshot is read before any request is served, so
-    // status says it is warming only while no index can be read yet.
-    let commits_read = runtime
-        .daemon
-        .writes
-        .as_ref()
-        .map_or(0, WriterSender::commits_made);
-    if let Ok(reader) = runtime.daemon.reads.reader() {
-        runtime
-            .daemon
-            .status_snapshot
-            .refresh(&runtime.daemon, &reader, commits_read);
-    }
     steps.next("starting the scope worker");
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),

@@ -116,31 +116,34 @@ impl ScopeWorker {
                 TERMINATED,
                 Some(Arc::clone(&completed)),
             );
-            let expected = polylogue_store::follow::follow(
-                "scope index",
-                subscription.as_ref(),
-                &stopped,
-                || daemon.config.requests.now(),
-                || daemon.status.changed(),
-                || {
-                    let commits_read = daemon
-                        .writes
-                        .as_ref()
-                        .map_or(0, polylogue_store::WriterSender::commits_made);
-                    let result = daemon.reads.reader().and_then(|reader| {
-                        daemon.scope.refresh(&reader)?;
-                        daemon
-                            .status_snapshot
-                            .refresh(&daemon, &reader, commits_read);
+            let archive_stop = daemon.archive.stop();
+            let expected = polylogue_store::cancellation::under(archive_stop, || {
+                polylogue_store::follow::follow(
+                    "scope index",
+                    subscription.as_ref(),
+                    &stopped,
+                    || daemon.config.requests.now(),
+                    || daemon.status.changed(),
+                    || {
+                        let commits_read = daemon
+                            .writes
+                            .as_ref()
+                            .map_or(0, polylogue_store::WriterSender::commits_made);
+                        let result = daemon.reads.reader().and_then(|reader| {
+                            daemon.scope.refresh(&reader)?;
+                            daemon
+                                .status_snapshot
+                                .refresh(&daemon, &reader, commits_read);
+                            Ok(())
+                        });
+                        if matches!(result, Err(polylogue_store::StoreError::IndexBuilding(_))) {
+                            daemon.status_snapshot.clear(&daemon);
+                        }
+                        result?;
                         Ok(())
-                    });
-                    if matches!(result, Err(polylogue_store::StoreError::IndexBuilding(_))) {
-                        daemon.status_snapshot.clear(&daemon);
-                    }
-                    result?;
-                    Ok(())
-                },
-            );
+                    },
+                )
+            });
             completed.store(expected, Ordering::Release);
         })?;
         Ok(Self {
