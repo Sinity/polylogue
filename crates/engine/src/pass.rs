@@ -1154,22 +1154,25 @@ impl Engine {
 
     /// The chain a file holds fewer bytes of, each equal to the stored byte
     /// at its place: its input's current chain when it is longer than the
-    /// file and begins with the file's bytes.
+    /// file and begins with the file's bytes (an empty file included).
     fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
         let st = &self.inputs[path];
         let reader = self.reads.reader()?;
         let Some(progress) = reader.latest_chain(&st.input_id)? else {
             return Ok(None);
         };
-        if now.size == 0 || progress.stored <= now.size || progress.stored < st.stored {
+        if progress.stored <= now.size || progress.stored < st.stored {
             return Ok(None);
         }
-        let intact = reader
-            .stored_chain(&st.input_id, progress.chain, now.size)
-            .ok()
-            .is_some_and(|chain| {
-                read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
-            });
+        // An emptied file holds no byte that differs: the chain seen back
+        // holding nothing, never a new, empty current chain.
+        let intact = now.size == 0
+            || reader
+                .stored_chain(&st.input_id, progress.chain, now.size)
+                .ok()
+                .is_some_and(|chain| {
+                    read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
+                });
         Ok(intact.then_some(progress.chain))
     }
 

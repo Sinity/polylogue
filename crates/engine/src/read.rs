@@ -97,6 +97,10 @@ fn source_changed(reason: &'static str) -> io::Error {
 /// Whether the bytes just before `from` still equal `tail`, the end of what
 /// was stored. False means the file changed in place, not only grew.
 pub fn tail_intact(path: &Path, from: u64, tail: &[u8]) -> io::Result<bool> {
+    // A file shorter than the old end cannot hold it: changed, not grown.
+    if std::fs::metadata(path)?.len() < from {
+        return Ok(false);
+    }
     let len = tail.len() as u64;
     if len == 0 || from < len {
         return Ok(true);
