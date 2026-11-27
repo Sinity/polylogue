@@ -196,13 +196,14 @@ pub struct StepExplanation {
     pub access: ToolAccess,
 }
 
-/// What the selection is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SelectionForm {
-    None,
-    Query,
-    Reference,
-    References,
-    KeptResult,
+polylogue_model::stored_names! {
+    /// What the selection is.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SelectionForm {
+        None => "none",
+        Query => "query",
+        Reference => "reference",
+        References => "references",
+        KeptResult => "kept_result",
+    }
 }

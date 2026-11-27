@@ -4,12 +4,13 @@ use super::{TextCoverage, TextFragmentError};
 use crate::Reference;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TextField {
-    Text,
-    Thinking,
-    ToolOutput,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TextField {
+        Text => "text",
+        Thinking => "thinking",
+        ToolOutput => "tool_output",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

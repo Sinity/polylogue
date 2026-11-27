@@ -2,22 +2,20 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
-/// Storage identity: the mode the archive was created in. It survives
-/// replacing the derived index, and an archive is opened only in its recorded
-/// mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    Standalone,
-    Primary,
+polylogue_model::stored_names! {
+    /// Storage identity: the mode the archive was created in. It survives
+    /// replacing the derived index, and an archive is opened only in its recorded
+    /// mode.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Standalone => "standalone",
+        Primary => "primary",
+    }
 }
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Standalone => "standalone",
-            Self::Primary => "primary",
-        })
+        f.write_str(self.as_str())
     }
 }
 
