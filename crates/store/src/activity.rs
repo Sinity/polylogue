@@ -235,32 +235,33 @@ impl Drop for Doing {
 
 /// Records that the current thread is doing `what`.
 pub fn doing(what: &'static str) -> Doing {
-    begin(what, None, Instant::now())
+    begin(what, None, None)
 }
 
 /// Records that the current thread is doing `what` to or for `subject`.
 pub fn doing_on(what: &'static str, subject: impl Into<Cow<'static, str>>) -> Doing {
-    begin(what, Some(subject.into()), Instant::now())
+    begin(what, Some(subject.into()), None)
 }
 
 /// Records that the current thread is doing `what`, which began at `since`
 /// (a step that continues across several of the thread's turns).
 pub fn doing_since(what: &'static str, since: Instant) -> Doing {
-    begin(what, None, since)
+    begin(what, None, Some(since))
 }
 
-fn begin(what: &'static str, subject: Option<Cow<'static, str>>, since: Instant) -> Doing {
+fn begin(what: &'static str, subject: Option<Cow<'static, str>>, since: Option<Instant>) -> Doing {
     let record = RECORD.with(Arc::clone);
     let id = {
         let mut state = record.state.locked();
         let id = state.next_entry;
         state.next_entry += 1;
-        state.last_progress = Instant::now();
+        let now = Instant::now();
+        state.last_progress = now;
         state.doing.push(Entry {
             id,
             what,
             subject,
-            since,
+            since: since.unwrap_or(now),
         });
         id
     };

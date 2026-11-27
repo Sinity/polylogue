@@ -30,6 +30,40 @@ mod sampling;
 mod standings;
 
 #[test]
+fn finished_pass_times_its_work_in_execution_order() {
+    let home = ClaudeHome::new();
+    home.append("timed.jsonl", &claude_user("u1", "timed", "one message"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(pass.messages_written, 1, "{pass:?}");
+    let work: Vec<_> = pass
+        .phases
+        .iter()
+        .map(|phase| phase.phase.as_str())
+        .collect();
+    assert_eq!(
+        work,
+        [
+            "preparing the pass",
+            "loading source state",
+            "collecting source data",
+            "finding source files",
+            "checking database captures",
+            "planning file reads",
+            "storing and reading new files",
+            "planning file reads",
+            "committing changes",
+            "computing session figures",
+        ]
+    );
+    assert_eq!(
+        pass.seconds,
+        pass.phases.iter().map(|phase| phase.seconds).sum::<f64>()
+    );
+}
+
+#[test]
 fn extent_checkpoint_survives_a_rewrite_read_failure_before_same_inode_growth() {
     failed_rewrite_then_growth(false);
 }
