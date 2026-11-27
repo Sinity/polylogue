@@ -649,6 +649,10 @@ impl PreparedQuery<'_, '_> {
         self.answer.outcome == Outcome::Empty
     }
 
+    pub(super) fn without_count(self) -> QueryAnswer {
+        self.answer
+    }
+
     /// Completes a listing's page with its optional exact count, run on this
     /// reader after the page under the request's deadline less the time its
     /// reply needs. A count that runs out answers "count deferred" with the

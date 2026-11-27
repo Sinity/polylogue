@@ -876,13 +876,14 @@ pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Fai
 }
 
 /// The listing's page of rows, with the ranking the archive's settings
-/// allow. While a wait has no rows, its read phase stays open.
+/// allow, and whether an empty page should wait for another read. Only
+/// a terminal page hands over to the optional count.
 fn rows_page(
     call: &Call<'_>,
     rows: &Rows,
     query: &str,
     waiting: bool,
-) -> Result<Answer<LineAnswer>, Failure> {
+) -> Result<(Answer<LineAnswer>, bool), Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
@@ -905,46 +906,26 @@ fn rows_page(
                 fields: &rows.fields,
             };
             match crate::daemon::query::prepare(&reader, ask).and_then(|prepared| {
-                if !waiting || !prepared.is_empty() || !freshness.up_to_date() {
-                    call.hand_over("optional query count")?;
-                    prepared.complete_within(call.limit)
+                let wait_again = waiting
+                    && prepared.is_empty()
+                    && (freshness.up_to_date() || freshness.catching_up());
+                let answer = if wait_again {
+                    prepared.without_count()
                 } else {
-                    prepared.complete()
-                }
+                    call.hand_over("optional query count")?;
+                    prepared.complete_within(call.limit)?
+                };
+                Ok((answer, wait_again))
             }) {
-                Ok(answer) => super::query_outcome(answer, &freshness),
-                Err(failure) => failure.answer(),
+                Ok((answer, wait_again)) => (
+                    super::query_outcome(answer, &freshness)
+                        .map(|found| LineAnswer::Listing(Box::new(found))),
+                    wait_again,
+                ),
+                Err(failure) => (failure.answer(), false),
             }
         },
-    )
-    .map(|found| LineAnswer::Listing(Box::new(found))))
-}
-
-/// Whether a waiting listing waits on after this answer: it matched no
-/// rows, and either the index is up to date or it is catching up for
-/// reasons the daemon ends by itself, which may bring the rows. Rows, a
-/// failed part and a reason waiting does not end answer at once.
-fn keeps_waiting(answer: &Answer<LineAnswer>) -> bool {
-    match &answer.outcome {
-        command_surface::Outcome::Empty(_) => true,
-        command_surface::Outcome::Degraded {
-            value: LineAnswer::Listing(found),
-            ..
-        } => {
-            let crate::protocol::query::Answer::Rows(rows) = &**found else {
-                return false;
-            };
-            rows.rows.is_empty()
-                && rows.next.is_none()
-                && rows.incomplete.is_empty()
-                && rows
-                    .read_position
-                    .freshness
-                    .as_ref()
-                    .is_some_and(polylogue_model::freshness::ReadFreshness::catching_up)
-        }
-        _ => false,
-    }
+    ))
 }
 
 /// The selection alone: its rows, a page at a time.
@@ -960,7 +941,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let Some(wait) = rows.wait.as_deref() else {
         call.runs_query(&query);
         crate::daemon::query::prefetch_ranking(call, &query);
-        return rows_page(call, &rows, &query, false);
+        return rows_page(call, &rows, &query, false).map(|(answer, _)| answer);
     };
     let mut duration = listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
@@ -987,8 +968,8 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         if let Some(limit) = &limit {
             limit.check()?;
         }
-        let answer = rows_page(call, &rows, &query, true)?;
-        if !keeps_waiting(&answer) {
+        let (answer, wait_again) = rows_page(call, &rows, &query, true)?;
+        if !wait_again {
             return Ok(answer);
         }
         let left = until.saturating_duration_since(Instant::now());

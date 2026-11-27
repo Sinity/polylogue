@@ -487,6 +487,7 @@ fn a_waiting_listing_on_an_absent_id_returns_when_the_session_appears() {
             "{listing}"
         );
         assert_eq!(listing["reply"]["rows"][0]["id"], "claude-code:s2");
+        assert_eq!(listing["reply"]["count"], 1);
     });
 }
 
