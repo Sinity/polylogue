@@ -48,10 +48,12 @@ pub const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../../../../examples/morrow/codex/state_5.sqlite"),
     ),
     (
-        ".local/state/polylogue/hooks/carriers/claude-code/2026-10-03/4291-619650.ndjson",
-        include_bytes!(
-            "../../../../examples/morrow/hooks/carriers/claude-code/2026-10-03/4291-619650.ndjson"
-        ),
+        ".local/state/polylogue/hooks/4104.ndjson",
+        include_bytes!("../../../../examples/morrow/hooks/4104.ndjson"),
+    ),
+    (
+        "exports/polylogue/delivery.jsonl",
+        include_bytes!("../../../../examples/morrow/polylogue/delivery.jsonl"),
     ),
     (
         "exports/chatgpt/conversations.json",
