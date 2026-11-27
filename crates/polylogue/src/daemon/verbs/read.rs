@@ -146,9 +146,6 @@ fn check(step: &ReadStep) -> Result<Option<Format>, Failure> {
     if input.is_some() {
         return Err(Reason::InputNeedsAttachment {}.into());
     }
-    if options.from.as_deref().is_some_and(|from| from != "seen") {
-        return Err(unbuilt::refusal("read", "--from a message or a time").into());
-    }
     options
         .validate()
         .map_err(|error| Failure::from(Error::Layout(error)))?;
@@ -321,14 +318,28 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
         polylogue_model::read::View::Transcript => String::new(),
         view => format!(" --view {view}"),
     };
-    failure.error.message.push_str(&format!(
-        "; run `polylogue {} read{view}` again to start over",
+    let mut command = format!(
+        "polylogue {} read{view}",
         polylogue_render::shell_quote(&target)
-    ));
+    );
+    for (flag, value) in [
+        ("--from", request.options.from_position()),
+        ("--until", request.options.until.as_deref()),
+    ] {
+        if let Some(value) = value {
+            command.push_str(&format!(" {flag} {}", polylogue_render::shell_quote(value)));
+        }
+    }
+    failure
+        .error
+        .message
+        .push_str(&format!("; run `{command}` again to start over"));
     // "Start over" means the beginning, as the sentence says, not the seen
     // mark the stale cursor read from.
     let mut again = step_from(request, None);
-    again.options.from = None;
+    if again.options.from.as_deref() == Some("seen") {
+        again.options.from = None;
+    }
     let rows = Rows {
         selection: Some(target),
         steps: vec![Step::Read(Box::new(again))],

@@ -690,7 +690,7 @@ pub(super) fn runs(
     composed: &Composed,
     options: &ReadOptions,
 ) -> Result<Runs, Error> {
-    if options.view != View::Context || composed.parts.is_empty() {
+    if options.view != View::Context || composed.parts.iter().all(|part| part.start == part.end) {
         return Ok(Runs {
             spans: composed
                 .parts

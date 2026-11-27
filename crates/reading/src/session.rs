@@ -141,6 +141,8 @@ pub(super) fn header(
 pub(super) struct Reading {
     /// The request as accepted: its seen marks bound to every physical owner.
     request: ReadRequest,
+    /// An explicit start in the prefix makes that prefix part of the layout.
+    layout: Option<ReadOptions>,
     /// The request a continuation repeats: a historical context bound to
     /// its message, else the accepted request.
     continuation: ReadRequest,
@@ -191,8 +193,9 @@ impl Reading {
                 },
             };
         let mut composed = compose::compose(reader, &scope, options)?;
-        let mut accepted = bind::bind_seen(reader, request, operation, &composed)?;
-        range::trim_end(reader, &mut accepted, operation, &scope, &mut composed)?;
+        let mut accepted = request.clone();
+        let inherited_from = range::trim(reader, &mut accepted, operation, &scope, &mut composed)?;
+        let mut accepted = bind::bind_seen(reader, accepted, operation, &composed)?;
         let bound = if options.view == View::Context && options.annotation_at().is_some() {
             bind::bind_context(reader, &accepted, &mut composed)?
         } else {
@@ -200,6 +203,13 @@ impl Reading {
         };
         bind::trim_start(reader, &accepted, &mut composed)?;
         still_wanted()?;
+        let layout = (inherited_from && !options.inherited()).then(|| {
+            let mut options = options.clone();
+            options.hide.retain(|item| item != "inherited");
+            options.show.push("inherited".into());
+            options
+        });
+        let options = layout.as_ref().unwrap_or(options);
         let mut runs = compose::runs(reader, &composed, options)?;
         let omission = window::apply(reader, &composed, &mut runs, &mut accepted, &scope.session)?;
         still_wanted()?;
@@ -279,6 +289,7 @@ impl Reading {
         Ok(Self {
             continuation: bound.unwrap_or_else(|| accepted.clone()),
             request: accepted,
+            layout,
             scope,
             composed,
             runs,
@@ -288,13 +299,17 @@ impl Reading {
         })
     }
 
+    fn layout_options(&self) -> &ReadOptions {
+        self.layout.as_ref().unwrap_or(&self.request.options)
+    }
+
     /// The entries the reading shows, in order.
     fn shown<'r>(&'r self, reader: &'r Reader<'r>) -> Result<ShownEntries<'r, 'r>, Error> {
         ShownEntries::new(
             reader,
             &self.composed,
             &self.runs,
-            ShowProfile::of(&self.request.options),
+            ShowProfile::of(self.layout_options()),
         )
     }
 
@@ -312,7 +327,7 @@ impl Reading {
         cache: &mut Option<lay_out::PreparedRecord>,
         originals: bool,
     ) -> Result<lay_out::LaidOut, Error> {
-        let options = &self.request.options;
+        let options = self.layout_options();
         let mut laid = lay_out::lay_out(
             reader,
             services,
