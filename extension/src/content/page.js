@@ -76,7 +76,7 @@
       case "page":
         // `shown` lets the background tell whether the page changed since it
         // last captured the conversation, without fetching it.
-        return { status: 200, info: await provider.currentConversation(), shown: shownText() };
+        return { status: 200, info: await provider.currentConversation(), ...(request.shown ? { shown: await shownDigest() } : {}) };
       default:
         return { status: 400, error: "unknown_request" };
     }
@@ -106,21 +106,25 @@
   });
 
   // Change notices. A conversation that is still being written (the
-  // provider shows its stop button) is announced once it stops changing. Pages
-  // change their markup all the time (menus, animations); only a change of
-  // the conversation's text, or another page, is announced.
+  // provider shows its stop button) is announced once it stops changing.
   let timer = null;
   let lastUrl = location.href;
   let announced = null;
-  function shownText() {
+  function shownConversation() {
+    if (provider.shownMessages) return JSON.stringify([location.href, provider.shownMessages()]);
     const shown = document.querySelector("main") || document.body;
-    const text = shown?.innerText ?? shown?.textContent ?? "";
-    return `${location.href}\n${text.length}\n${text.slice(-2000)}`;
+    return JSON.stringify([location.href, shown?.innerText ?? shown?.textContent ?? ""]);
+  }
+  async function shownDigest() {
+    // Only the digest passes through the port, even for very long pages.
+    const bytes = new TextEncoder().encode(shownConversation());
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   }
   function announce(reason) {
     const id = provider.conversationId(location.href);
     if (!id && !provider.temporary?.(location.href)) return;
-    const shown = shownText();
+    const shown = shownConversation();
     if (shown === announced) return;
     announced = shown;
     chrome.runtime.sendMessage({ type: "polylogue.changed", provider: provider.name, reason }).catch(() => undefined);
@@ -135,19 +139,25 @@
       announce(reason);
     }, CHANGE_PAUSE_MS);
   }
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver((changes) => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       announceAfterPause("opened");
       return;
     }
-    announceAfterPause("changed");
+    if (!provider.messageChanged || changes.some(provider.messageChanged)) announceAfterPause("changed");
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  function observePage() {
+    observer.observe(document.documentElement, {
+      childList: true, subtree: true, characterData: true,
+      ...(provider.messageAttributes ? { attributeFilter: provider.messageAttributes } : {}),
+    });
+  }
+  observePage();
   window.addEventListener("pagehide", () => { clearTimeout(timer); observer.disconnect(); });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    observePage();
     announceAfterPause("opened");
   });
   announceAfterPause("opened");

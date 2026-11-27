@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProviderScheduler } from "../src/background/provider.js";
+import { start } from "../src/background/main.js";
 import { chatActionInPage } from "../src/actions/chatgpt.js";
 import { PROVIDERS } from "../src/background/tabs.js";
 import { JSDOM } from "jsdom";
-import { event, until } from "./support/fake_chrome.js";
+import { event, fakeChrome, json, portPair, until } from "./support/fake_chrome.js";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 const source = (path) => readFileSync(join(SRC, path), "utf8");
@@ -18,6 +21,8 @@ function page(url, scripts, { html = "<body></body>", routes = {}, resources = [
   for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   // Chrome's Blob reads its bytes; jsdom's does not.
   window.Blob = Blob;
+  window.TextEncoder = TextEncoder;
+  Object.defineProperty(window.crypto, "subtle", { value: webcrypto.subtle });
   const sent = [];
   const fetched = [];
   window.chrome = {
@@ -271,6 +276,70 @@ describe("the shared page script", () => {
     expect(sent).toHaveLength(2);
     expect(sent[1].reason).toBe("changed");
   }, 20_000);
+
+  it("captures an early same-length edit once and ignores an unrelated menu", async () => {
+    const url = "https://chatgpt.com/c/c1";
+    const tab = { id: 1, url };
+    const nativeUrl = "https://chatgpt.com/backend-api/conversation/c1";
+    const tail = "z".repeat(2100);
+    const snapshot = (text) => ({ conversation_id: "c1", mapping: {
+      first: { message: { id: "m1", author: { role: "user" }, content: { parts: [text] } } },
+      second: { message: { id: "m2", author: { role: "assistant" }, content: { parts: [tail] } } },
+    } });
+    const routes = Object.fromEntries([session, [nativeUrl, [200, snapshot("first")]]]);
+    const { window, sent, fetched } = page(url, ["content/chatgpt.js"], {
+      routes,
+      html: `<main><p data-message-id="m1">first</p><p data-message-id="m2">${tail}</p><div role="menu" id="menu"></div></main>`,
+    });
+    const stored = [];
+    const chrome = fakeChrome({ tabs: [tab], operations: {
+      capture: (bytes) => { stored.push(json(bytes)); return { json: { new: true } }; },
+      "internal capture-files": () => ({ json: { conversation: { provider: "chatgpt", id: "c1" }, files: [] } }),
+      "internal conversations": () => ({ json: { daemon: "running", conversations: [{ id: "c1", state: "archived", messages: 2 }] } }),
+    } });
+    chrome.tabs.connect = () => {
+      const [worker, contentPage] = portPair("polylogue");
+      window.chrome.runtime.onConnect.fire(contentPage);
+      return worker;
+    };
+    let timer = null;
+    window.setTimeout = (fn) => { timer = fn; };
+    window.clearTimeout = () => { timer = null; };
+    const settle = async () => {
+      await Promise.resolve();
+      const scheduled = timer;
+      timer = null;
+      scheduled?.();
+    };
+    try {
+      window.eval(source("content/page.js"));
+      await settle();
+      const extension = start(chrome, { indexedDB: new IDBFactory() });
+      const pageMessages = window.chrome.runtime.sendMessage;
+      window.chrome.runtime.sendMessage = (message) => {
+        void pageMessages(message);
+        return chrome.runtime.sendMessage(message, { tab });
+      };
+      expect((await extension.captureTab(tab.id, "opened")).outcome).toBe("stored");
+      const shown = "shown chatgpt:c1";
+      const original = (await chrome.storage.local.get(shown))[shown];
+
+      routes[nativeUrl][1] = snapshot("other");
+      window.document.querySelector('[data-message-id="m1"]').firstChild.data = "other";
+      await settle();
+      expect(sent.filter((message) => message.type === "polylogue.changed").map((message) => message.reason)).toEqual(["opened", "changed"]);
+      await until(() => stored.length === 2, "both native snapshots to be archived");
+      // Wait for the automatic capture to publish its observed page state.
+      await until(async () => (await chrome.storage.local.get(shown))[shown] !== original, "the renewed page state");
+
+      window.document.getElementById("menu").textContent = "Rename conversation";
+      await settle();
+      expect(sent.filter((message) => message.type === "polylogue.changed")).toHaveLength(2);
+      expect((await extension.captureTab(tab.id, "sweep")).outcome).toBe("unchanged");
+      expect(fetched.filter(({ href }) => href === nativeUrl)).toHaveLength(2);
+      expect(stored.map((capture) => capture.raw_provider_payload)).toEqual([snapshot("first"), snapshot("other")]);
+    } finally { window.close(); }
+  });
 });
 
 describe("the in-page panel", () => {
