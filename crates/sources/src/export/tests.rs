@@ -143,7 +143,7 @@ fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
         Err(ScanError::Callback(_))
     ));
     // Normal reads present the same bytes to Serde and the span reader.
-    for observed in [b'1', b'0'] {
+    for observed in *b"10" {
         let scan_state = Rc::new(RefCell::new(ScanState {
             last: Some((1, observed)),
             ..Default::default()
