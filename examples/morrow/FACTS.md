@@ -40,9 +40,7 @@ script calls, rather than model-response groups. Session #5 has ten response
 items and three command items; #6 has eight response items and two command
 items. Repeated user-message events add no messages.
 Usage observations do not combine items into model-response messages.
-The source story's prompts, calls and outcomes remain unchanged.
-Hook spool lines put `event_id`, `event_type` and `observed_at_ms` first,
-as current hook spool files do. Every field from the generated example is kept.
+The source story's calls, outcomes and prompt meanings remain unchanged.
 The testkit and query tests read these files through the real parsers.
 
 ## What happened (the story the examples rely on)
@@ -70,9 +68,8 @@ The testkit and query tests read these files through the real parsers.
   ×2, `src/lib.rs` ×1). For its takeover briefing (`spec/user-data.md`):
   files touched `src/parse.rs` (2 edits), `src/lib.rs` (1); branch `main`;
   last commit `4e1d2c9`; no unresolved failure (the clippy error has a later
-  success). Its second prompt (14:42) pastes #2's short ID `7f3a2c10-0002`;
-  a short ID makes no `mention` link, but the hook spool records the
-  briefing it caused ("Hook spool" below).
+  success). Its second prompt (14:42) names #2 and gets a session brief
+  from the hook ("Hook spool" below).
 - **#5** (Codex) reviews the parser, finds that `"next friday"` on a Friday
   returns today. Tool calls: `exec_command` (action shell, each run as the one child of a
   code-mode `exec` wrapper) ×3, all `ok`;
@@ -223,8 +220,7 @@ agent IDs establish copied history; they supply no continuation or resume
 marker and create no provider link. L4 has no spawning-call marker either;
 its file location alone establishes no spawn.
 
-The delivery row below addresses #4 from #2, the source of a separate
-`reference` relationship with `reason: briefing`.
+The briefing delivered to #4 refers to #2.
 
 Things the examples rely on:
 
@@ -263,28 +259,24 @@ these states at 15:00 and at 13:30.
 ## Hook spool
 
 The main archive includes one hook spool file,
-`hooks/carriers/claude-code/2026-10-03/4291-619650.ndjson`, named by the
-hook process that wrote it (PID 4291, start 619650), so each file has one
-writer; its lines carry the harness's identity (PID 4104, start 612000, boot
-`7b1e0000-0000-4000-8000-00000000b003`). It holds
-#4's `UserPromptSubmit` line for the prompt that pastes `7f3a2c10-0002`,
-and the delivery line of the briefing the hook handed over in reply:
+`hooks/4104.ndjson`. Its lines carry the harness's identity (PID 4104,
+start 612000, boot `7b1e0000-0000-4000-8000-00000000b003`). The
+`UserPromptSubmit` line records #4's prompt naming #2 by its full reference
+at 14:42:00 on October 3. The `ContextEmitted` line names that invocation and
+the delivery it handed over at 14:42:00.180. The `SessionEnd` line closes #4
+at 15:10:01, just after its last prompt.
 
-| Delivery ID | Recipient | Event | Refs | Outcome | Time |
+The daemon's delivery record and its outcome are imported from
+`polylogue/delivery.jsonl`. The daemon prepared the session brief 170 ms
+after the prompt and recorded the hook's delivered outcome 1 ms after
+handoff. The delivery row's `at` is the preparation time. Times below are local.
+
+| Delivery ID | Recipient | Event | Refs | Outcome | At |
 |---|---|---|---|---|---|
-| `01a101c9-1dc0-7000-8000-000000000d01` | #4 | `prompt_reference` (sender `hook`) | #2 | `delivered` | 10-03 14:42:00.180 |
+| `01a101c9-1dc0-7000-8000-000000000d01` | #4 | `session_brief` (sender `hook`) | #2 | `delivered` | 10-03 14:42:00.170 |
 
-This uses the old synchronous-hook format: the delivery envelope's
-`observed_at_ms`, `1791031320180`, records the handoff, 180 ms after the
-prompt and the clock used to make the UUID. Delivery time is never inferred
-from the UUID. Current records carry a nullable `delivery.handoff_at_ms`;
-delayed MCP and ping reports are not part of this fixture.
-
-So `deliveries where outcome:delivered refs:claude-code:7f3a2c10-0002`
-returns this one row, and #4 gains the `reference` link from #2 (Links,
-above). The line's `content_blake3` is a placeholder, not a real hash.
-The Claude-Code-only home has no hook spool. `check_facts.py`
-verifies the delivery and the pasted prompt.
+`deliveries where outcome:delivered` returns this one row.
+The Claude-Code-only home has no hook spool.
 
 ## Turns of #2 (joint #22)
 
