@@ -59,6 +59,38 @@ fn reimport_changes_nothing_in_archive_rows() {
 }
 
 #[test]
+fn conversations_recognized_by_shape_are_read_without_a_filename_extension() {
+    for (origin, expected, bytes) in [
+        (
+            "chatgpt",
+            "chatgpt:standalone",
+            r#"{"conversation_id":"standalone","title":"A saved chat","current_node":null,"mapping":{}}"#,
+        ),
+        (
+            "claude-ai",
+            "claude-ai:standalone",
+            r#"{"uuid":"standalone","name":"A saved chat","chat_messages":[]}"#,
+        ),
+    ] {
+        let w = ClaudeHome::new();
+        let path = w.dir.path().join("saved-chat");
+        std::fs::write(&path, bytes).unwrap();
+        let (mut e, _lock) = engine(&w, 64);
+        let report = e.import(std::slice::from_ref(&path)).unwrap();
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(report.imported, [path]);
+        assert_eq!(report.members[0].origin.as_deref(), Some(origin));
+        assert_eq!(report.members[0].class, "parsed");
+        assert_eq!(
+            w.count(&format!(
+                "SELECT count(*) AS n FROM session WHERE id = '{expected}'"
+            )),
+            1
+        );
+    }
+}
+
+#[test]
 fn declared_export_signatures_reach_scanners_unshaped() {
     for (name, raw, origin, complete) in [
         (

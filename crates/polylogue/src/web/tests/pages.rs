@@ -435,7 +435,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
         s["store"]["sessions_physical"]
             .as_u64()
             .is_some_and(|n| n >= 2)
-            && s["busy"] == false
+            && s["caught_up"] == true
     });
     rt().block_on(async {
         let mut cursor = None;
