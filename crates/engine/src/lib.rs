@@ -470,11 +470,24 @@ impl SharedLoopStatus {
         self.state.locked().1
     }
 
-    /// Waits until the count of changes passes `seen` or `until` comes, and
-    /// returns the count then.
-    pub fn wait_past(&self, seen: u64, until: Instant) -> u64 {
+    /// Waits until the count of changes passes `seen`, `until` comes, or
+    /// the caller cancels. A cancellation wakes the wait without counting
+    /// a status change.
+    pub fn wait_past(
+        self: &Arc<Self>,
+        seen: u64,
+        until: Instant,
+        cancellation: Option<&polylogue_store::cancellation::Cancellation>,
+    ) -> u64 {
+        let _wake = cancellation.map(|stop| {
+            let status = Arc::clone(self);
+            stop.on_cancel(move || {
+                let _state = status.state.locked();
+                status.signal.notify_all();
+            })
+        });
         let mut state = self.state.locked();
-        while state.1 <= seen {
+        while state.1 <= seen && cancellation.is_none_or(|stop| !stop.is_cancelled()) {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
