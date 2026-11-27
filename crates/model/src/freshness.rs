@@ -118,28 +118,27 @@ impl IndexFreshness {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CompletenessReason {
-    /// Some stored inputs are of an origin no reading declaration names.
-    MissingDeclaration,
-    MissingCheckpoint,
-    ParseVersionChanged,
-    ParserBehind,
-    /// Some stored inputs failed their origin's shape check.
-    Refused,
-    /// Some stored inputs' bytes could not be parsed under the current parser.
-    ParseFailed,
-    DerivationBehind,
-    SearchPending,
-    IndexBuilding,
-    /// Primary mode: the index has not yet applied the confirmed stream.
-    StreamNotApplied,
-    /// Primary mode: the index is behind Sinex's latest position; the lag is
-    /// in the read's position report.
-    StreamBehind,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum CompletenessReason {
+        /// Some stored inputs are of an origin no reading declaration names.
+        MissingDeclaration => "missing_declaration",
+        MissingCheckpoint => "missing_checkpoint",
+        ParseVersionChanged => "parse_version_changed",
+        ParserBehind => "parser_behind",
+        /// Some stored inputs failed their origin's shape check.
+        Refused => "refused",
+        /// Some stored inputs' bytes could not be parsed under the current parser.
+        ParseFailed => "parse_failed",
+        DerivationBehind => "derivation_behind",
+        SearchPending => "search_pending",
+        IndexBuilding => "index_building",
+        /// Primary mode: the index has not yet applied the confirmed stream.
+        StreamNotApplied => "stream_not_applied",
+        /// Primary mode: the index is behind Sinex's latest position; the lag is
+        /// in the read's position report.
+        StreamBehind => "stream_behind",
+    }
 }
 
 impl CompletenessReason {
