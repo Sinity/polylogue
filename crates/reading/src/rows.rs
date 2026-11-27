@@ -316,6 +316,41 @@ impl Walk<'_, '_, '_, '_> {
         };
         let options = self.rendering.options;
         let mixed = self.selection.direct_target().is_none();
+        let clock = &self.selection.cursor_context().clock;
+        if options.view == View::Live
+            && let ReadTarget::Session(id) = &target
+            && self.reader.session_commit(id)?.is_none()
+        {
+            let at = SelectionLocator {
+                row: ordinal,
+                record: ReadRecordLocator {
+                    kind: ReadRecordKind::Presentation,
+                    ordinal: 0,
+                },
+            };
+            if place.is_some_and(|place| place.selection != at || place.item != 0) {
+                return Err(missing_row(self.rendering.target));
+            }
+            let session = id.to_string();
+            let card = live::card(
+                self.reader,
+                &session,
+                clock.now.as_millisecond(),
+                clock.day.zone(),
+            )?;
+            return (self.emit)(
+                &ReadRecord::Presentation {
+                    parts: vec![ReadPart::Item(ReadItem {
+                        source: Source::record(target.to_string()),
+                        kind: ItemKind::Card {
+                            card: Box::new(card),
+                        },
+                    })],
+                },
+                at,
+                Some(0),
+            );
+        }
         if self.rendering.page
             && let ReadTarget::Document(id) = &target
         {
@@ -370,8 +405,8 @@ impl Walk<'_, '_, '_, '_> {
                 facts.cards.push(live::card(
                     reader,
                     &row.session.id.to_string(),
-                    selection.cursor_context().clock.now.as_millisecond(),
-                    selection.cursor_context().clock.day.zone(),
+                    clock.now.as_millisecond(),
+                    clock.day.zone(),
                 )?);
             }
             if options.annotations()

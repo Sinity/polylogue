@@ -389,6 +389,7 @@ impl<'a> Compiler<'a> {
                     OrderKey {
                         column: recency,
                         descending: true,
+                        ..Default::default()
                     },
                 ],
             );

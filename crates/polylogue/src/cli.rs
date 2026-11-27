@@ -575,6 +575,18 @@ pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
                 &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
                 policy,
             );
+            if cmd.name == "import" {
+                for next in &answer.envelope.next {
+                    let line = match crate::commands::declarations().cli_command(&next.request) {
+                        Ok(line) => line,
+                        Err(failure) => return fail_with(policy, json, &failure, &[]),
+                    };
+                    eprint!(
+                        "{}",
+                        print::diagnostic(&next.label, &line, None, policy.stderr_color())
+                    );
+                }
+            }
             ExitCode::from(outcome_code)
         }
     }
@@ -694,13 +706,13 @@ fn status_view(
     let problems = problems(answer);
     let width = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         // A terminal that reports no size (a pseudo-terminal nobody sized)
-        // gets the same width as no terminal.
+        // uses a conventional terminal width.
         crossterm::terminal::size()
             .ok()
             .filter(|(columns, _)| *columns > 0)
             .map_or(100, |(columns, _)| usize::from(columns))
     } else {
-        100
+        usize::MAX
     };
     status_view::render(
         status,

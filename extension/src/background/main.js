@@ -8,10 +8,13 @@ import { ImportJob } from "./import_job.js";
 import { Capturer } from "./capture.js";
 import { ChatActions } from "./chat_actions.js";
 import { Host } from "./host.js";
+import "../capture_state.js";
 import { notePayload } from "./notes.js";
 import { ProviderScheduler } from "./provider.js";
 import { Outbox } from "./outbox.js";
 import { addScripts, askPage, chatTabs, providerOf } from "./tabs.js";
+
+const captureState = globalThis.polylogueCaptureState;
 
 const TICK = "polylogue.tick";
 const SWEEP = "polylogue.sweep";
@@ -28,6 +31,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   const outbox = new Outbox(indexedDB);
   const session = chrome.storage.session;
   const local = chrome.storage.local;
+  const revision = chrome.runtime.getManifest().version_name;
 
   async function settings() {
     return { ...DEFAULT_SETTINGS, ...(await local.get({ settings: {} })).settings };
@@ -130,7 +134,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     let hostState = "ok";
     if (conversation) {
       try {
-        const answer = await host.conversations(provider, [conversation]);
+        const answer = await captureState.conversations(host, provider, [conversation]);
         held = { ...answer.conversations[0], daemon: answer.daemon };
       } catch (error) {
         hostState = error.code === "host_missing" ? "missing" : "failed";
@@ -147,13 +151,13 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
     let status;
     try {
-      status = { ...(await host.status()), host: "ok" };
+      status = { ...(await captureState.status(host)), host: "ok" };
     } catch (error) {
       status = { host: error.code === "host_missing" ? "missing" : "failed", daemon: "unknown" };
     }
     const daemonUp = status.daemon === "running";
-    const jobs = daemonUp ? (await host.importJobs().catch(() => ({ jobs: [] }))).jobs : [];
-    const actions = daemonUp ? (await host.chatActions().catch(() => ({ actions: [] }))).actions : [];
+    const jobs = daemonUp ? (await host.call("rows", { selection: "import_jobs" }).catch(() => null))?.reply?.rows || [] : [];
+    const actions = daemonUp ? (await host.call("rows", { selection: "chat_actions where state:awaiting_approval" }).catch(() => null))?.reply?.rows || [] : [];
     const { problems } = await session.get({ problems: [] });
     return {
       status,
@@ -171,8 +175,44 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     };
   }
 
+  let reloading = false;
+  let checkingRevision = null;
+  async function reloadForHostRevision() {
+    if (!revision) return false;
+    if (reloading) return true;
+    checkingRevision ||= (async () => {
+      const status = await host.status().catch(() => null);
+      if (!status?.revision || status.revision === revision) return false;
+      const pair = JSON.stringify([revision, status.revision]);
+      const { extension_reload_pairs: pairs } = await local.get({ extension_reload_pairs: [] });
+      if (pairs.includes(pair)) return false;
+      // This state survives reloading the unpacked files, even if the files
+      // still report the old revision afterward.
+      await local.set({ extension_reload_pairs: [...pairs, pair], extension_refresh_tabs: true });
+      chrome.runtime.reload();
+      reloading = true;
+      return true;
+    })().finally(() => { checkingRevision = null; });
+    return checkingRevision;
+  }
+
+  let refreshingTabs = null;
+  async function refreshPageScripts(installed = false) {
+    const { extension_refresh_tabs: afterReload } = await local.get({ extension_refresh_tabs: false });
+    if (!installed && !afterReload) return;
+    refreshingTabs ||= (async () => {
+      for (const tab of await chatTabs(chrome)) await addScripts(chrome, tab).catch(() => undefined);
+      if (afterReload) await local.set({ extension_refresh_tabs: false });
+    })().finally(() => { refreshingTabs = null; });
+    return refreshingTabs;
+  }
+
   async function tick() {
     await capturer.deliver().catch((error) => log(`Captures could not be stored: ${error.message}`));
+    if (await reloadForHostRevision().catch(async (error) => {
+      await log(`Extension could not reload: ${error.message}`);
+      return false;
+    })) return;
     await Promise.all([
       importJob.step().catch((error) => log(`Provider import: ${error.message}`)),
       chatActions.step().catch((error) => log(`Chat action: ${error.message}`)),
@@ -186,10 +226,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   async function wake(reason) {
     await chrome.alarms.create(TICK, { periodInMinutes: 1 });
     await chrome.alarms.create(SWEEP, { periodInMinutes: 15 });
-    if (reason === "installed") {
-      // Pages opened before this version loaded have no page script yet.
-      for (const tab of await chatTabs(chrome)) await addScripts(chrome, tab).catch(() => undefined);
-    }
+    await refreshPageScripts(reason === "installed");
     await tick();
     await sweep("opened");
   }
@@ -211,7 +248,10 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await captureTab(tabId, "asked", true);
       return pageState(await chrome.tabs.get(tabId));
     },
-    "polylogue.note": async (message, sender) => host.saveNote(notePayload(message.note, sender)),
+    "polylogue.note": async (message, sender) => {
+      const { request_id, body, quote, source } = notePayload(message.note, sender);
+      return { note: await host.call("internal selection-note", { body, quote, ...source }, request_id) };
+    },
     "polylogue.hide-panel": async (message) => {
       const now = await settings();
       await local.set({ settings: { ...now, hidden_sites: [...new Set([...now.hidden_sites, message.site])] } });
@@ -227,11 +267,15 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await local.set({ settings: next });
       return next;
     },
-    "polylogue.answer": async (message) => host.answerChatAction(message.id, message.value === "allow" ? "allow" : "deny"),
+    "polylogue.answer": async (message) => host.call("internal chat answer", { id: message.id, value: message.value === "allow" ? "allow" : "deny" }),
     "polylogue.reader": async () => {
-      const { url } = await host.reader();
-      await chrome.tabs.create({ url });
-      return { url };
+      try {
+        const { url } = await host.call("internal reader-url");
+        await chrome.tabs.create({ url });
+        return {};
+      } catch (error) {
+        return { error: error.code, message: error.message };
+      }
     },
   };
 
@@ -250,6 +294,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   chrome.tabs.onRemoved?.addListener((tabId) => running.delete(tabId));
   chrome.runtime.onInstalled.addListener(() => void wake("installed"));
   chrome.runtime.onStartup.addListener(() => void wake("started"));
+  if (revision) void refreshPageScripts().catch((error) => log(`Page scripts could not be refreshed: ${error.message}`));
 
   return { capturer, outbox, tick, changed, captureTab, pageState, popup, handlers };
 }

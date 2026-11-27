@@ -35,6 +35,9 @@ pub struct UnitSpec {
     /// Rows at the same time keep session order: the ordering input, the
     /// record's offset in it, then the message ID.
     pub session_order: bool,
+    /// The default order's terms when it is not the unit's time: the unit
+    /// has no time of its own, so a key its rows hold for good orders it.
+    pub order: Option<&'static [&'static str]>,
     /// `since:` and `until:`: a condition on `{v}`, the resolved instant.
     pub since: Option<&'static str>,
     pub until: Option<&'static str>,
@@ -187,7 +190,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
                SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
                CROSS JOIN session cs ON cs.pk=child.hit_session \
-               CROSS JOIN link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+               CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
              SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),
@@ -206,7 +209,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
            CROSS JOIN session cs ON cs.pk=child.session_pk \
-           CROSS JOIN link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+           CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
             h.block_kind("xb"),
@@ -321,7 +324,7 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         return None;
     }
     let from = format!(
-        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.call_block_pk OR (xb.idx = {t}.result_idx AND xb.message_pk = (SELECT xr.pk FROM message xr WHERE xr.id = {t}.result_message_id))",
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.call_block_pk OR (xb.position = {t}.result_position AND xb.message_pk = (SELECT xr.pk FROM message xr WHERE xr.id = {t}.result_message_id))",
         cte = h.cte,
         t = a.t
     );
@@ -378,6 +381,14 @@ pub fn expand_pair(template: &str, a: &Aliases, n: &Aliases) -> String {
 
 /// How the store reads each unit; exhaustive, so a declared unit fails the
 /// build until it has rows here.
+impl UnitSpec {
+    /// The unit's rows are a table's rows, read in an index's order, not
+    /// computed from other rows.
+    pub(crate) fn reads_a_table(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if !t.starts_with('('))
+    }
+}
+
 pub fn spec(unit: Unit) -> &'static UnitSpec {
     match unit {
         Unit::Sessions => &SESSIONS,
@@ -451,7 +462,7 @@ fn turns_from(a: &Aliases) -> String {
 pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
     let cmp = if previous { "<" } else { ">" };
     let dir = if previous { " DESC" } else { "" };
-    let order = ["qm.session_order", "qm.id", "qb.idx"];
+    let order = ["qm.session_order", "qm.id", "qb.position"];
     format!(
         "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {}.session_pk AND {} AND {} AND ({}) {cmp} ({}) ORDER BY {} LIMIT 1",
         a.t,
@@ -461,7 +472,7 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
         [
             format!("{}.session_order", a.m),
             format!("{}.id", a.m),
-            format!("{}.idx", a.cb)
+            format!("{}.position", a.cb)
         ]
         .join(", "),
         order
@@ -475,7 +486,7 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
 /// Position in the complete counted-call scope, before query filtering.
 pub fn call_position(a: &Aliases) -> String {
     format!(
-        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.session_order,pm.id,pb.idx) <= ({}.session_order,{}.id,{}.idx))",
+        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.session_order,pm.id,pb.position) <= ({}.session_order,{}.id,{}.position))",
         a.t,
         fields::own_messages("pm", None),
         fields::counts_as_action("pt"),
@@ -497,14 +508,15 @@ static SESSIONS: UnitSpec = UnitSpec {
         ("kind", T("{s}.kind"), Text),
         ("title", Expr::Fn(display_title), Text),
         ("started", T("{s}.started_at"), Time),
-        ("last_active", T("{s}.last_activity_at"), Time),
+        ("last_active", T("{s}.last_active_at"), Time),
         ("cwd", T("{s}.cwd"), Text),
         ("repo", T("{s}.repo"), Text),
     ],
-    time: "{s}.last_activity_at",
+    time: "{s}.last_active_at",
     newest_first: true,
     session_order: false,
-    since: Some("{s}.last_activity_at >= {v}"),
+    order: None,
+    since: Some("{s}.last_active_at >= {v}"),
     until: Some("{s}.started_at < {v}"),
     session_pk: "{r}.session_pk",
     session_scope: None,
@@ -524,14 +536,15 @@ static DOCUMENTS: UnitSpec = UnitSpec {
         ("origin", T("{r}.origin"), Text),
         ("purpose", T("{r}.purpose"), Text),
         ("title", T("{r}.title"), Text),
-        ("source_time", T("{r}.source_time"), Time),
+        ("source_time", T("{r}.at"), Time),
         ("authorship", T("{r}.authorship"), Text),
     ],
-    time: "{r}.source_time",
+    time: "{r}.at",
     newest_first: true,
     session_order: false,
-    since: Some("{r}.source_time >= {v}"),
-    until: Some("{r}.source_time < {v}"),
+    order: None,
+    since: Some("{r}.at >= {v}"),
+    until: Some("{r}.at < {v}"),
     session_pk: "",
     session_scope: None,
     search: Search::Hits {
@@ -556,6 +569,7 @@ static MESSAGES: UnitSpec = UnitSpec {
     time: "{m}.at",
     newest_first: false,
     session_order: true,
+    order: None,
     since: Some("{m}.at >= {v}"),
     until: Some("{m}.at < {v}"),
     session_pk: "{m}.session_pk",
@@ -569,20 +583,22 @@ static MESSAGES: UnitSpec = UnitSpec {
 
 static BLOCKS: UnitSpec = UnitSpec {
     from: Expr::Template(
-        "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+        // Messages drive, so a page reads blocks in message time order.
+        "message {m} CROSS JOIN block {b} ON {b}.message_pk = {m}.pk JOIN session {s} ON {s}.pk = {b}.session_pk",
     ),
     key: "{b}.pk",
-    identity: &["{m}.id", "{b}.idx"],
+    identity: &["{m}.id", "{b}.position"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("message", T("{m}.id"), Text),
         ("kind", T("{b}.kind"), Text),
-        ("idx", T("{b}.idx"), Number),
+        ("idx", T("{b}.position"), Number),
         ("at", T("{m}.at"), Time),
     ],
     time: "{m}.at",
     newest_first: false,
     session_order: true,
+    order: None,
     since: Some("{m}.at >= {v}"),
     until: Some("{m}.at < {v}"),
     session_pk: "{b}.session_pk",
@@ -595,7 +611,7 @@ static BLOCKS: UnitSpec = UnitSpec {
             "call",
             Unit::ToolCalls,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR ({nt}.result_idx = {b}.idx AND {nt}.result_message_id = (SELECT xr.id FROM message xr WHERE xr.pk = {b}.message_pk))) AND {cond})",
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR ({nt}.result_position = {b}.position AND {nt}.result_message_id = (SELECT xr.id FROM message xr WHERE xr.pk = {b}.message_pk))) AND {cond})",
                 value: None,
             },
         ),
@@ -609,7 +625,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
          JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
     ),
     key: "{t}.pk",
-    identity: &["{m}.id", "{cb}.idx"],
+    identity: &["{m}.id", "{cb}.position"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("message", T("{m}.id"), Text),
@@ -624,6 +640,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
     time: "{t}.at",
     newest_first: false,
     session_order: false,
+    order: None,
     since: Some("({t}.at >= {v} OR {t}.result_message_id IS NULL)"),
     until: Some("{t}.at < {v}"),
     session_pk: "{t}.session_pk",
@@ -638,7 +655,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
             "child",
             Unit::Sessions,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.id = lc.child_id \
+                cond: "EXISTS (SELECT 1 FROM session_link lc JOIN {from} ON {ns}.id = lc.child_id \
                        WHERE lc.kind = 'spawn' AND lc.parent_id = {s}.id \
                        AND lc.spawning_call = {t}.call_id AND {cond})",
                 value: None,
@@ -687,6 +704,7 @@ static FILES: UnitSpec = UnitSpec {
     time: "{r}.first_at",
     newest_first: false,
     session_order: false,
+    order: None,
     since: None,
     until: None,
     session_pk: "{r}.session_pk",
@@ -706,7 +724,7 @@ static EVENTS: UnitSpec = UnitSpec {
         ("id", T("{r}.id"), Text),
         ("session", Expr::Template("{s}.id"), Text),
         ("input", T("{r}i.id"), Text),
-        ("source", T("{r}i.format"), Text),
+        ("source", T("{r}i.origin"), Text),
         ("kind", T("{r}.kind"), Text),
         ("at", T("{r}.at"), Time),
         (
@@ -718,6 +736,7 @@ static EVENTS: UnitSpec = UnitSpec {
     time: "{r}.at",
     newest_first: false,
     session_order: false,
+    order: None,
     since: Some("{r}.at >= {v}"),
     until: Some("{r}.at < {v}"),
     session_pk: "{r}.session_pk",
@@ -759,6 +778,7 @@ static ANNOTATIONS: UnitSpec = UnitSpec {
     time: "{r}.created_at",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("{r}.created_at >= {v}"),
     until: Some("{r}.created_at < {v}"),
     session_pk: "{r}.session_pk",
@@ -780,7 +800,7 @@ static LINKS: UnitSpec = UnitSpec {
         "{r}.parent_id",
         "{r}.child_id",
         "{r}.kind",
-        "{r}.how",
+        "{r}.reason",
         "{r}.branch_point",
         "{r}.spawning_call",
     ],
@@ -788,14 +808,30 @@ static LINKS: UnitSpec = UnitSpec {
         ("parent", Expr::Template("{r}.parent_id"), Text),
         ("child", Expr::Template("{r}.child_id"), Text),
         ("kind", T("{r}.kind"), Text),
-        ("how", T("{r}.how"), Text),
-        ("copies_prefix", T("{r}.copies_prefix"), Bool),
+        ("reason", T("{r}.reason"), Text),
+        (
+            "copies_prefix",
+            T(
+                "({r}.copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))",
+            ),
+            Bool,
+        ),
         ("evidence", T("{r}.evidence"), Text),
         ("pending", T("({r}p.pk IS NULL)"), Bool),
     ],
-    time: "{r}p.last_activity_at",
+    time: "{r}p.last_active_at",
     newest_first: false,
     session_order: false,
+    // A link has no time; its identity orders it, so a parent's links are
+    // listed together.
+    order: Some(&[
+        "{r}.parent_id",
+        "{r}.child_id",
+        "{r}.kind",
+        "{r}.reason",
+        "{r}.branch_point",
+        "{r}.spawning_call",
+    ]),
     since: None,
     until: None,
     session_pk: "{r}.session_pk",
@@ -834,6 +870,7 @@ static TURNS: UnitSpec = UnitSpec {
     time: "{r}.start",
     newest_first: false,
     session_order: false,
+    order: None,
     since: None,
     until: None,
     session_pk: "{r}.session_pk",
@@ -862,6 +899,7 @@ static DELIVERIES: UnitSpec = UnitSpec {
     time: "{r}.at",
     newest_first: false,
     session_order: false,
+    order: None,
     since: None,
     until: None,
     session_pk: "{s}.pk",
@@ -877,21 +915,22 @@ static DELIVERIES: UnitSpec = UnitSpec {
 static LIVE_INTERVALS: UnitSpec = UnitSpec {
     from: Expr::Template("live_interval {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
     key: "{r}.rowid",
-    identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
+    identity: &["{s}.id", "{r}.aspect", "{r}.started_at"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("aspect", T("{r}.aspect"), Text),
         ("value", T("{r}.value"), Text),
-        ("start", T("{r}.start_at"), Time),
-        ("end", T("{r}.end_at"), Time),
-        ("duration_ms", T("({r}.end_at - {r}.start_at)"), Number),
+        ("start", T("{r}.started_at"), Time),
+        ("end", T("{r}.ended_at"), Time),
+        ("duration_ms", T("({r}.ended_at - {r}.started_at)"), Number),
         ("closed_by", T("{r}.closed_by"), Text),
     ],
-    time: "{r}.start_at",
+    time: "{r}.started_at",
     newest_first: false,
     session_order: false,
-    since: Some("{r}.end_at >= {v}"),
-    until: Some("{r}.start_at < {v}"),
+    order: None,
+    since: Some("{r}.ended_at >= {v}"),
+    until: Some("{r}.started_at < {v}"),
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
@@ -924,6 +963,7 @@ static PROCESSES: UnitSpec = UnitSpec {
     time: "{r}.started_at",
     newest_first: false,
     session_order: false,
+    order: None,
     since: Some("{r}.started_at >= {v}"),
     until: Some("{r}.started_at < {v}"),
     session_pk: "{r}.session_pk",
@@ -936,8 +976,8 @@ static PROCESSES: UnitSpec = UnitSpec {
 static CHANGES: UnitSpec = UnitSpec {
     from: Expr::Template(
         "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
-           MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
-           cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
+           MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.summary_changed, 0)) AS seq, \
+           cs.changed AS changed, cs.live_changed AS live_changed, cs.summary_changed AS summary_changed, \
            NULL AS annotation_kind FROM session cs \
          UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
            FROM removed_session rs \
@@ -956,6 +996,7 @@ static CHANGES: UnitSpec = UnitSpec {
     time: "{r}.seq",
     newest_first: false,
     session_order: false,
+    order: None,
     since: None,
     until: None,
     session_pk: "{r}.session_pk",
@@ -992,6 +1033,7 @@ static ALTERNATES: UnitSpec = UnitSpec {
     time: "CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)>={v}"),
     until: Some("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)<{v}"),
     session_pk: "",
@@ -1032,6 +1074,7 @@ static QUERIES: UnitSpec = UnitSpec {
     time: "coalesce({r}.saved_at,{r}.commit_seq)",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("{r}.saved_at>={v}"),
     until: Some("{r}.saved_at<{v}"),
     session_pk: "",
@@ -1058,6 +1101,7 @@ static RUNS: UnitSpec = UnitSpec {
     time: "(CAST({r}.at AS INTEGER)/1000000)",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("(CAST({r}.at AS INTEGER)/1000000)>={v}"),
     until: Some("(CAST({r}.at AS INTEGER)/1000000)<{v}"),
     session_pk: "",
@@ -1084,6 +1128,7 @@ static RESULTS: UnitSpec = UnitSpec {
     time: "{r}.ran_at",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("{r}.ran_at>={v}"),
     until: Some("{r}.ran_at<{v}"),
     session_pk: "",
@@ -1173,6 +1218,7 @@ static IMPORT_JOBS: UnitSpec = UnitSpec {
     time: "{r}.created_at",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("{r}.created_at>={v}"),
     until: Some("{r}.created_at<{v}"),
     session_pk: "",
@@ -1212,6 +1258,7 @@ static CHAT_ACTIONS: UnitSpec = UnitSpec {
     time: "{r}.created_at",
     newest_first: true,
     session_order: false,
+    order: None,
     since: Some("{r}.created_at>={v}"),
     until: Some("{r}.created_at<{v}"),
     session_pk: "",
@@ -1273,11 +1320,29 @@ pub fn turns() -> String {
 #[cfg(test)]
 mod tests;
 
+/// The sessions the `sessions` unit lists with no filter, with a
+/// transcript and not hidden: with `logical`, each logical session once (its
+/// root), as the default lists them; otherwise every session, as
+/// `sessions where physical:true` lists them. Status counts both, so each of its
+/// figures, a listing and that listing's count agree.
+pub fn listed_sessions(a: &Aliases, logical: bool) -> String {
+    let visible = format!(
+        "{} AND {}",
+        default_sql(DefaultId::NotStub, a),
+        default_sql(DefaultId::SessionsVisible, a),
+    );
+    if logical {
+        format!("{}.pk = {} AND {visible}", a.s, fields::logical_root(&a.s))
+    } else {
+        visible
+    }
+}
+
 /// The SQL of a default filter over a unit's aliases.
 pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
     match id {
         DefaultId::LogicalSessions => "1".into(),
-        DefaultId::NotStub => a.expand("{s}.stub = 0"),
+        DefaultId::NotStub => a.expand("{s}.has_transcript = 1"),
         DefaultId::SessionsVisible | DefaultId::Visible => not_hidden(a),
         DefaultId::NotDuplicate => a.expand("{m}.duplicate_of IS NULL"),
         DefaultId::OnActivePath => a.expand("COALESCE({m}.on_active_path, 1) = 1"),

@@ -137,7 +137,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let position = frames.last().unwrap()["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
-            "UPDATE meta SET value=?1 WHERE key='generation'",
+            "UPDATE meta SET value=?1 WHERE key='index_instance'",
             [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
@@ -151,7 +151,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let frames = feed_frames(&body);
-        assert_eq!(frames[0]["generation_changed"], true);
+        assert_eq!(frames[0]["index_instance_changed"], true);
         assert_eq!(frames[0]["replacement"], true);
     });
 }
@@ -211,13 +211,13 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
                     from,
                     to,
                     relation,
-                    how,
+                    reason,
                     ..
                 } = card.as_ref()
             {
                 assert_eq!(from, "session:claude-code:s1");
                 assert_eq!(relation, "fork");
-                assert_eq!(how.as_deref(), None);
+                assert_eq!(reason.as_deref(), None);
                 assert!(seen.insert(to.clone()), "relationship repeated");
             }
         }
@@ -431,7 +431,12 @@ fn live_initial_queries_page_through_the_real_http_api() {
         polylogue_testkit::claude_user("second", "s2", "second synthetic prompt"),
     )
     .unwrap();
-    r.w.wait_for(|s| s["store"]["sessions"].as_u64().is_some_and(|n| n >= 2) && s["busy"] == false);
+    r.w.wait_for(|s| {
+        s["store"]["sessions_physical"]
+            .as_u64()
+            .is_some_and(|n| n >= 2)
+            && s["caught_up"] == true
+    });
     rt().block_on(async {
         let mut cursor = None;
         let mut ids = Vec::new();
@@ -459,7 +464,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
             assert_eq!(status, StatusCode::OK, "{body}");
             let page: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert!(
-                page["read_at"]["cursor"]
+                page["read_position"]["cursor"]
                     .as_str()
                     .and_then(polylogue_model::ChangePosition::parse)
                     .is_some(),

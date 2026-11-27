@@ -27,7 +27,7 @@ A page holds references, never copies of captured text. Its content is the archi
 
 ### Slot
 
-`slot` is one placed item: an annotation linked `slot_of page:<root>`, whose `about` link names what it holds (any reference, [references.md](references.md#forms)), with value `{parent?, pos, mode: current|fixed, form?, heading?: {text, level}, query?, caption?, x?, y?, w?, h?}`. What kind of slot it is follows from its fields:
+`slot` is one placed item: an annotation linked `slot_of page:<root>`, whose `about` link names what it holds (any reference, [references.md](references.md#forms)), with value `{parent?, position, mode: current|fixed, form?, heading?: {text, level}, query?, caption?, x?, y?, w?, h?}`. What kind of slot it is follows from its fields:
 
 | Slot | Fields | Holds | Shown as (default form) |
 |---|---|---|---|
@@ -48,7 +48,7 @@ A page holds references, never copies of captured text. Its content is the archi
 - **The section tree.** A slot's `parent` is the heading slot it sits under; no parent means the top of the page. Renaming a section is one revision of its heading; moving a heading carries its children in order; two sections may share a title without becoming one.
 - **Naming a section.** Lines and markers name a section by its heading text (`--section Findings`, `section=Findings`), resolved when written to the current heading slot with that text, case-insensitively. A title that matches no heading creates one at the end of the page; two matches are refused `ambiguous`, listing both.
 - **Anchors.** `page:NAME#ANCHOR` addresses a section or slot: ANCHOR is a heading's slug (`#open-questions`) or a slot's short ID (`#7q2m`). It is stored as `page:<root>#<slot root>` and printed with the current slug, so renaming a heading breaks no link ([references.md](references.md#forms)).
-- **Order.** `pos` is a fractional key from the common `authored::order`, so inserting between two siblings never rewrites either. Two writers inserting into the same gap get distinct keys; equal keys, which only imports can produce, sort by slot root.
+- **Order.** `position` is a fractional key from the common `authored::order`, so inserting between two siblings never rewrites either. Two writers inserting into the same gap get distinct keys; equal keys, which only imports can produce, sort by slot root.
 
 ### Forms
 

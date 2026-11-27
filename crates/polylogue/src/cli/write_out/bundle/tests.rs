@@ -14,8 +14,8 @@ fn begin() -> ReadHeader {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
             ran_at: Timestamp::from_unix_ms(1).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
             },

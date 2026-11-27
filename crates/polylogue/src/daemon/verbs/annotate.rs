@@ -216,23 +216,26 @@ fn each(
         }
         .into());
     }
-    let mut committed = Vec::new();
+    let mut written = Vec::new();
+    let mut position = None;
     let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
         write,
         Some(scope),
-        |receipt| {
-            committed = receipt.written;
-            polylogue_model::user::AssertQueryOutcome::new(
-                receipt.outcome,
-                targets,
-                committed.len(),
-                receipt.already,
-            )
-        },
-    );
+    )
+    .map(|committed| {
+        position = Some(committed.position);
+        let result = committed.outcome;
+        written = result.written;
+        polylogue_model::user::AssertQueryOutcome::new(
+            result.outcome,
+            targets,
+            written.len(),
+            result.already,
+        )
+    });
     let answer = if targets == 0 {
         match answer.outcome {
             command_surface::Outcome::Ok(value) => command_surface::Answer {
@@ -245,8 +248,8 @@ fn each(
         answer
     };
     let mut done = StepDone::from(answer.map(StepAnswer::WroteEach)).checked()?;
-    done.undo
-        .extend(undo_line(call.call.request_id, &committed)?);
+    done.position = position;
+    done.undo.extend(undo_line(call.call.request_id, &written)?);
     Ok(done)
 }
 
@@ -340,21 +343,24 @@ fn wrote(
     call: &StepCall<'_>,
     scope: Option<polylogue_store::ReadScopeToken>,
 ) -> Result<StepDone, Failure> {
-    let mut committed = Vec::new();
+    let mut written = Vec::new();
+    let mut position = None;
     let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
         write,
         scope,
-        |receipt| {
-            committed = receipt.written;
-            receipt.outcome
-        },
-    );
+    )
+    .map(|committed| {
+        position = Some(committed.position);
+        let result = committed.outcome;
+        written = result.written;
+        result.outcome
+    });
     let mut done = StepDone::from(answer.map(StepAnswer::Wrote)).checked()?;
-    done.undo
-        .extend(undo_line(call.call.request_id, &committed)?);
+    done.position = position;
+    done.undo.extend(undo_line(call.call.request_id, &written)?);
     Ok(done)
 }
 

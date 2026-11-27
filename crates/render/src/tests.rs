@@ -634,7 +634,7 @@ fn budget() -> PageBudget {
 }
 fn framing() -> ReadFraming {
     ReadFraming::Query {
-        question: QuestionId([7; 32]),
+        query_id: QuestionId([7; 32]),
     }
 }
 fn selection() -> SelectionLocator {
@@ -3324,7 +3324,7 @@ fn html_relationship_links_encode_only_recorded_session_references() {
                         branch_point: Some("message:claude-code:<branch>".into()),
                         spawning_call: Some("call <marker>".into()),
                         copies_prefix: true,
-                        how: Some("fork <marker>".into()),
+                        reason: Some("fork <marker>".into()),
                         cross_link: false,
                     }),
                 },
@@ -3923,9 +3923,9 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
             source: Source::record("run:018f0000-0000-7000-8000-000000000001"),
             kind: ItemKind::Card {
                 card: Box::new(Card::Run {
-                    question: None,
-                    read_at: ChangePosition {
-                        generation: "synthetic".into(),
+                    query_id: None,
+                    read_position: ChangePosition {
+                        index_instance: "synthetic".into(),
                         index: 3,
                         archive: 7,
                     },
@@ -3942,7 +3942,7 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
                 format!(
                     concat!(
                         "session:test:session\nsession:test:session · transcript\n\nRun\n",
-                        "Question: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
+                        "Query: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
                         "{}\n{}\n"
                     ),
                     wanted_count, wanted_outcome
@@ -3953,7 +3953,7 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
                 format!(
                     concat!(
                         "# session:test:session\nsession:test:session · transcript\n\nRun\n",
-                        "Question: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
+                        "Query: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
                         "{}\n{}\n"
                     ),
                     wanted_count, wanted_outcome
@@ -3966,7 +3966,7 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
                         "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
                         "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
                         "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"run:018f0000-0000-7000-8000-000000000001\">",
-                        "<section class=\"read-card\"><p>Run</p><p>Question: not applicable (object read)</p>",
+                        "<section class=\"read-card\"><p>Run</p><p>Query: not applicable (object read)</p>",
                         "<p>Read position: synthetic:3:7</p><p>Author: operator</p><p>{}</p><p>{}</p>",
                         "</section></section></article>"
                     ),

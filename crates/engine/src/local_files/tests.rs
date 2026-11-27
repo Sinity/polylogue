@@ -240,6 +240,7 @@ fn fifo_local_reference_child() {
     engine
         .capture_local_files(
             std::io::Cursor::new(format!("{row}\n")),
+            polylogue_sources::codex::LOCAL_REFERENCES,
             0,
             &mut || Ok(None),
             "fifo-source",
@@ -349,7 +350,7 @@ fn a_local_fifo_without_a_writer_is_reported_unreadable() {
 
 fn visited(value: Json) -> Vec<String> {
     let mut found = Vec::new();
-    visit(&value, &mut |raw| {
+    (polylogue_sources::codex::LOCAL_REFERENCES.each)(&value, &mut |raw| {
         found.push(raw.to_owned());
         Ok(())
     })
@@ -401,6 +402,7 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
     let (mut e, _lock) = engine(&w, 64);
     e.capture_local_files(
         std::io::Cursor::new(text.into_bytes()),
+        polylogue_sources::codex::LOCAL_REFERENCES,
         0,
         &mut || Ok(None),
         "cwd-tracking",

@@ -730,7 +730,7 @@ fn context(
                         "internal delivery-event",
                         json!({
                             "delivery": format!("{request_id}-1"),
-                            "what": DeliveryOutcome::NotSent,
+                            "outcome": DeliveryOutcome::NotSent,
                             "detail": "timeout",
                         }),
                         id,
@@ -797,7 +797,7 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
                 "internal delivery-event",
                 json!({
                     "delivery": delivery,
-                    "what": DeliveryOutcome::Delivered,
+                    "outcome": DeliveryOutcome::Delivered,
                     "detail": "written to the harness hook output",
                 }),
                 request_id,
@@ -1215,12 +1215,18 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value, until: In
     };
     if let Some(output) = permission_output(&data) {
         let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(
+        let written = writeln!(
             stdout,
             "{}",
             polylogue_render::terminal::json(&output, false)
-        );
-        let _ = stdout.flush();
+        )
+        .and_then(|()| stdout.flush());
+        drop(stdout);
+        if written.is_ok()
+            && let Some(delivery) = data["delivery"].as_str()
+        {
+            delivered(startup, delivery, DELIVERED_BUDGET);
+        }
     }
 }
 

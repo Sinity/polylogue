@@ -296,7 +296,7 @@ pub(super) fn page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        read_at: positions,
+        read_position: positions,
         freshness: services.freshness(reader)?,
         incomplete: Vec::new(),
     };

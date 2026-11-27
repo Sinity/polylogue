@@ -1,31 +1,23 @@
-//! `xtask bench`: the first build measured on a fixed, representative
-//! sample of the operator's corpus instead of the whole of it.
+//! `xtask bench`: builds of `first_build` compared on a fixed sample of the
+//! operator's real inputs, under a memory limit.
 //!
-//! `bench sample` draws the sample (devkit's stratified draw: by origin and
-//! file kind, by year for session files, with each stratum's size spread)
-//! and writes its manifest under the configured benchmark root.
-//! `bench run` copies the sample into the bench directory once, runs the
-//! release `first_build` over it under the real-data lock, records the
-//! per-stage result with periodic host-load observations, and prints an
-//! uncalibrated linear input-byte estimate. `--incremental` appends the rest
-//! of every session file and measures the incremental pass. `--name` keeps
-//! samples of several sizes apart; `bench estimate` fits each stage over the
-//! latest runs of one build at two or more sizes and predicts the whole
-//! corpus stage by stage, and `bench validate` compares that prediction with
-//! a full run's result, stage by stage. `bench pair` runs two builds at once
-//! over one sample, so both see the same load. `bench tails` times the last
-//! pages of the largest sessions, and of any named sessions, in a sample
-//! run's archive.
-//!
-//! `--target largest` does the same over the largest Claude Code session and
-//! the largest Codex database, which a sample of a few GB cannot hold; it
-//! measures peak memory and throughput on one huge input and predicts
-//! nothing.
-mod fit;
+//! `bench sample` lists the inputs with the engine's own discovery
+//! (`first_build --list-inputs`), groups each Claude Code session with its
+//! subagents and tool results, draws whole groups with devkit's stratified
+//! draw (by origin and year), copies them into the sample's home in the
+//! default layout, and writes the manifest. The sample is drawn once and
+//! reused: it is the fixed corpus for iteration and for comparisons.
+//! `bench run` measures this checkout's build, and `bench pair` two given
+//! builds, each repetition a fresh first build over the sample in its own
+//! systemd unit with `MemoryMax`, the builds in turn (A B A B); the result,
+//! with every repetition's unit accounting and host load and the comparison
+//! per figure, is recorded in the history store. `bench tails` times the
+//! last pages of the largest sessions in a run's archive, and `bench reads`
+//! the interactive reads over synthetic inputs.
 mod reads;
 mod tails;
 
-use devkit::bench::{self, Candidate as SampleFile, LoadMonitor, Manifest};
+use devkit::bench::{self, Arm, Candidate, Figure, Limit, Manifest, Process, Repetition};
 use devkit::history::Store;
 use serde_json::{Value, json};
 use std::{
@@ -36,7 +28,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-/// One root for manifests, copies, reports and the benchmark lock.
+/// One root for manifests, sample homes, archives and the benchmark lock.
 fn bench_root(explicit: Option<PathBuf>) -> PathBuf {
     explicit
         .or_else(|| env::var_os("POLYLOGUE_BENCH_HOME").map(PathBuf::from))
@@ -59,64 +51,39 @@ fn sample_name(value: &str) -> Result<String, String> {
     }
 }
 
-/// What a bench runs over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Target {
-    /// The stratified sample; its run permits an uncalibrated linear estimate.
-    Sample,
-    /// The largest Claude Code session and the largest Codex database,
-    /// which the sample cannot hold: memory and throughput on one huge
-    /// input. Nothing is predicted from it.
-    Largest,
-}
-
-impl Target {
-    fn name(self) -> &'static str {
-        match self {
-            Target::Sample => "sample",
-            Target::Largest => "largest",
-        }
-    }
-
-    /// The name runs are recorded under.
-    fn recorded_name(self) -> &'static str {
-        match self {
-            Target::Sample => "first_build",
-            Target::Largest => "first_build-largest",
-        }
-    }
-}
-
 /// Where a run keeps its archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Storage {
     /// Under the benchmark root.
     Disk,
-    /// In /dev/shm, measuring the pipeline alone.
+    /// In /dev/shm, measuring the pipeline alone. The archive's pages count
+    /// against the unit's memory limit.
     Memory,
 }
 
-/// A drawn sample: its target and the name its manifest, copy and runs go
-/// under (the target's name unless several sizes are kept).
+/// A drawn sample: the name its manifest, home and archives go under.
 #[derive(Debug, Clone)]
 struct Drawn {
     root: PathBuf,
-    target: Target,
     name: String,
 }
 
 impl Drawn {
-    fn new(root: &Path, target: Target, name: Option<String>) -> Self {
-        let name = name.unwrap_or_else(|| target.name().to_owned());
+    fn new(root: &Path, name: Option<String>) -> Self {
         Self {
             root: root.to_owned(),
-            target,
-            name,
+            name: name.unwrap_or_else(|| "sample".into()),
         }
     }
 
     fn dir(&self) -> PathBuf {
         self.root.join(&self.name)
+    }
+
+    /// The sample's files, laid out as a home whose tools keep their
+    /// default directories.
+    fn home(&self) -> PathBuf {
+        self.dir().join("home")
     }
 
     fn manifest(&self) -> PathBuf {
@@ -126,9 +93,28 @@ impl Drawn {
     }
 }
 
+/// What every measured repetition runs under.
+#[derive(Debug, clap::Args)]
+pub struct Conditions {
+    #[arg(long)]
+    #[arg(value_parser = sample_name)]
+    name: Option<String>,
+    /// `disk` keeps each archive under the benchmark root; `memory` puts it
+    /// in /dev/shm and measures the pipeline alone.
+    #[arg(long, value_enum, default_value = "disk")]
+    storage: Storage,
+    /// Measured first builds per build.
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+    repetitions: u32,
+    /// The memory limit of each measured build (systemd `MemoryMax`, no
+    /// swap); a build that exceeds it is killed and reported.
+    #[arg(long, default_value = "4G")]
+    memory_max: String,
+}
+
 #[derive(Debug, clap::Args)]
 pub struct Bench {
-    /// Root for benchmark manifests, copies, reports and the lock.
+    /// Root for benchmark manifests, sample homes, archives and the lock.
     /// Defaults to POLYLOGUE_BENCH_HOME, then XDG_DATA_HOME/polylogue-bench.
     #[arg(long, global = true)]
     root: Option<PathBuf>,
@@ -138,12 +124,10 @@ pub struct Bench {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum BenchCommand {
-    /// Draw a representative sample of the corpus and write its manifest.
+    /// Draw a sample of the inputs the engine discovers and write its
+    /// manifest; it is kept and reused until drawn again.
     Sample {
-        #[arg(long, value_enum, default_value = "sample")]
-        target: Target,
-        /// The sample's name, for keeping samples of several sizes
-        /// (default: the target's name).
+        /// The sample's name, for keeping several (default: `sample`).
         #[arg(long)]
         #[arg(value_parser = sample_name)]
         name: Option<String>,
@@ -152,53 +136,34 @@ pub enum BenchCommand {
         mb: u64,
         #[arg(long, default_value_t = 1)]
         seed: u64,
-        /// Session files are cut to this fraction for the first build; the
-        /// rest is appended for the incremental pass.
-        #[arg(long, default_value_t = 0.9)]
-        cut: f64,
-    },
-    /// Run the first build over the sample and record it.
-    Run {
-        #[arg(long, value_enum, default_value = "sample")]
-        target: Target,
+        /// The `first_build` whose discovery lists the inputs, instead of
+        /// this checkout's.
         #[arg(long)]
-        #[arg(value_parser = sample_name)]
-        name: Option<String>,
+        binary: Option<PathBuf>,
+    },
+    /// Measure this checkout's first build over the sample and record it.
+    Run {
+        #[command(flatten)]
+        conditions: Conditions,
         /// A `first_build` built elsewhere, instead of this checkout's.
         #[arg(long, requires = "build")]
         binary: Option<PathBuf>,
-        /// The name the run's build is recorded and fitted under (default:
-        /// the checkout's commit).
+        /// The name the build is recorded under (default: the checkout's
+        /// commit).
         #[arg(long)]
         build: Option<String>,
-        /// `disk` keeps the archive under the benchmark root; `memory`
-        /// puts it in /dev/shm and measures the pipeline alone.
-        #[arg(long, value_enum, default_value = "disk")]
-        storage: Storage,
-        /// Also append the rest of each session file and measure the
-        /// incremental pass.
-        #[arg(long)]
-        incremental: bool,
     },
-    /// Two builds' first builds at once over one sample, so both see the same
-    /// load; records both and prints their differences per stage.
+    /// Two builds' first builds over one sample in turn (A B A B), compared
+    /// per figure.
     Pair {
-        #[arg(long)]
-        #[arg(value_parser = sample_name)]
-        name: Option<String>,
-        /// `LABEL=PATH` of the first `first_build`.
+        #[command(flatten)]
+        conditions: Conditions,
+        /// `LABEL=PATH` of the first `first_build`, the base.
         #[arg(long)]
         a: String,
-        /// `LABEL=PATH` of the second.
+        /// `LABEL=PATH` of the second, compared against the first.
         #[arg(long)]
         b: String,
-    },
-    /// Fits each stage over the latest runs of one build at two or more sample
-    /// sizes and predicts the whole corpus stage by stage.
-    Estimate {
-        /// The build (default: the checkout's commit).
-        #[arg(long)]
-        build: Option<String>,
     },
     /// Cold and warm times of the last pages of a sample run's largest
     /// sessions and of any named ones, through the daemon and CLI.
@@ -225,17 +190,7 @@ pub enum BenchCommand {
         #[arg(long)]
         full_walk: bool,
     },
-    /// Compare a build's estimate with a supplied full-run result, stage by
-    /// stage: the fit over two or more sample sizes, or else the latest
-    /// linear estimate. That the full run used the same build and input is
-    /// not checked.
-    Validate {
-        result: PathBuf,
-        /// The build (default: the checkout's commit).
-        #[arg(long)]
-        build: Option<String>,
-    },
-    /// Recorded runs and comparisons (devkit's shared commands).
+    /// Recorded results (devkit's shared commands).
     #[command(flatten)]
     Shared(devkit::cli::Bench),
 }
@@ -250,47 +205,46 @@ pub fn execute(options: Bench) -> ExitCode {
     };
     let result = match options.command {
         BenchCommand::Sample {
-            target,
             name,
             mb,
             seed,
-            cut,
+            binary,
         } => mb
             .checked_mul(1_000_000)
             .ok_or_else(|| format!("--mb {mb} is too large"))
-            .and_then(|bytes| sample(&Drawn::new(&root, target, name), bytes, seed, cut)),
+            .and_then(|bytes| sample(&Drawn::new(&root, name), bytes, seed, binary)),
         BenchCommand::Run {
-            target,
-            name,
+            conditions,
             binary,
             build,
-            storage,
-            incremental,
-        } => run(
-            &Drawn::new(&root, target, name),
-            binary,
-            build,
-            storage,
-            incremental,
-        ),
-        BenchCommand::Pair { name, a, b } => pair(&Drawn::new(&root, Target::Sample, name), &a, &b),
-        BenchCommand::Estimate { build } => fit::estimate(build),
+        } => (|| {
+            let binary = match binary {
+                Some(binary) => binary,
+                None => first_build_binary()?,
+            };
+            let build = match build {
+                Some(build) => sample_name(&build)?,
+                None => head()?,
+            };
+            measure_builds(&root, &conditions, &[(build, binary)])
+        })(),
+        BenchCommand::Pair { conditions, a, b } => (|| {
+            let builds = [labelled(&a)?, labelled(&b)?];
+            if builds[0].0 == builds[1].0 {
+                return Err("the two builds need different labels".into());
+            }
+            measure_builds(&root, &conditions, &builds)
+        })(),
         BenchCommand::Tails {
             name,
             largest,
             session,
             binary,
-        } => tails::run(
-            &Drawn::new(&root, Target::Sample, name),
-            largest,
-            &session,
-            binary,
-        ),
+        } => tails::run(&Drawn::new(&root, name), largest, &session, binary),
         BenchCommand::Reads {
             repetitions,
             full_walk,
         } => return reads::execute(&root, repetitions, full_walk),
-        BenchCommand::Validate { result, build } => fit::validate(&result, build),
         BenchCommand::Shared(b) => return devkit::cli::bench("polylogue", b),
     };
     match result {
@@ -306,153 +260,164 @@ fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// The tools' own directories, as their override variables name them.
-fn claude_dir() -> PathBuf {
-    env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".claude"))
+/// One file `first_build --list-inputs` printed.
+#[derive(Debug, Clone, PartialEq)]
+struct Listed {
+    path: PathBuf,
+    origin: String,
+    layout: PathBuf,
+    bytes: u64,
+    database: bool,
 }
 
-fn codex_dir() -> PathBuf {
-    env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".codex"))
-}
-
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
+fn listed(line: &str) -> Result<Listed, String> {
+    let value: Value = serde_json::from_str(line).map_err(|e| format!("{line}: {e}"))?;
+    let text = |key: &str| {
+        value[key]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("listed input without {key}: {line}"))
     };
-    for e in entries.flatten() {
-        let Ok(kind) = e.file_type() else { continue };
-        if kind.is_dir() {
-            walk(&e.path(), out);
-        } else if kind.is_file() {
-            out.push(e.path());
+    Ok(Listed {
+        path: text("path")?.into(),
+        origin: text("origin")?,
+        layout: text("layout")?.into(),
+        bytes: value["bytes"]
+            .as_u64()
+            .ok_or_else(|| format!("listed input without bytes: {line}"))?,
+        database: value["database"] == true,
+    })
+}
+
+/// The inputs the engine discovers under this environment's home and the
+/// tools' own root variables, read through `binary`'s discovery.
+fn discovered(binary: &Path) -> Result<Vec<Listed>, String> {
+    let output = Command::new(binary)
+        .arg("--list-inputs")
+        .arg("--home")
+        .arg(home())
+        .output()
+        .map_err(|e| format!("{}: {e}", binary.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "first_build --list-inputs failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(listed)
+        .collect()
+}
+
+/// The group a file is drawn with: a Claude Code session's file, its
+/// subagents, workflows and tool results share the session's directory.
+/// Every other file is drawn alone.
+fn session_group(layout: &Path) -> Option<String> {
+    let parts: Vec<&str> = layout.iter().filter_map(|p| p.to_str()).collect();
+    match parts.as_slice() {
+        [".claude", "projects", project, session, rest @ ..] => {
+            let session = match rest {
+                [] => session.strip_suffix(".jsonl")?,
+                _ => session,
+            };
+            Some(format!(".claude/projects/{project}/{session}"))
+        }
+        _ => None,
+    }
+}
+
+fn year(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        // Seconds to calendar years, close enough for an era bucket.
+        .map(|d| 1970 + d.as_secs() / 31_556_952)
+}
+
+/// The draw's candidates: each listed file with its group, and the stratum
+/// of its group (the origin of the group's own file, nearest the root, and
+/// the year its newest file was written).
+fn candidates(listed: &[Listed]) -> Vec<Candidate> {
+    let mut groups: BTreeMap<String, Vec<&Listed>> = BTreeMap::new();
+    let mut alone = Vec::new();
+    for file in listed {
+        match session_group(&file.layout) {
+            Some(group) => groups.entry(group).or_default().push(file),
+            None => alone.push((None, vec![file])),
         }
     }
-}
-
-fn year(meta: &fs::Metadata) -> String {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        // Seconds to calendar years, close enough for an era bucket.
-        .map(|d| (1970 + d.as_secs() / 31_556_952).to_string())
-        .unwrap_or_else(|| "unknown".into())
-}
-
-/// Every file the first build reads, with its stratum, in the layout the
-/// engine expects under a home directory (`.claude/…`, `.codex/…`).
-pub fn input_files() -> Vec<SampleFile> {
-    let mut out = Vec::new();
-    let claude = claude_dir();
-    let mut files = Vec::new();
-    for sub in [
-        "projects",
-        "todos",
-        "plans",
-        "tasks",
-        "jobs",
-        "file-history",
-    ] {
-        walk(&claude.join(sub), &mut files);
-    }
-    files.push(claude.join("history.jsonl"));
-    for path in files {
-        let Ok(meta) = fs::metadata(&path) else {
-            continue;
-        };
-        let rel = path.strip_prefix(&claude).unwrap_or(&path);
-        let s = rel.to_string_lossy();
-        let (stratum, grows) = if s.contains("/tool-results/") {
-            ("claude/tool-results".to_owned(), false)
-        } else if s.contains("/subagents/") && s.ends_with(".jsonl") {
-            (format!("claude/subagent@{}", year(&meta)), true)
-        } else if s.starts_with("projects/")
-            && s.ends_with(".jsonl")
-            && rel.components().count() == 3
-        {
-            (format!("claude/main@{}", year(&meta)), true)
-        } else {
-            ("claude/side".to_owned(), false)
-        };
-        out.push(SampleFile {
-            rel: Path::new(".claude").join(rel),
-            path,
-            stratum,
-            size: meta.len(),
-            grows,
-        });
-    }
-    let codex = codex_dir();
-    let mut files = Vec::new();
-    walk(&codex.join("sessions"), &mut files);
-    if let Ok(entries) = fs::read_dir(&codex) {
-        files.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_file()));
-    }
-    for path in files {
-        let Ok(meta) = fs::metadata(&path) else {
-            continue;
-        };
-        let rel = path.strip_prefix(&codex).unwrap_or(&path);
-        let s = rel.to_string_lossy();
-        let stratum = if s.starts_with("sessions/") && s.ends_with(".jsonl") {
-            format!("codex/rollout@{}", year(&meta))
-        } else if s.ends_with(".sqlite") {
-            "codex/database".to_owned()
-        } else if s.ends_with(".jsonl") {
-            "codex/index".to_owned()
-        } else {
-            // Configuration, logs, WAL side files: the engine does not read
-            // them as inputs.
-            continue;
-        };
-        out.push(SampleFile {
-            rel: Path::new(".codex").join(rel),
-            path,
-            grows: stratum.starts_with("codex/rollout"),
-            stratum,
-            size: meta.len(),
-        });
-    }
-    out
-}
-
-/// The largest file of each of these stratum families.
-const LARGEST: &[&str] = &["claude/main", "codex/database"];
-
-/// The largest file of every family; a family with no file is an error, so
-/// a run recorded as `largest` measures all of them.
-fn largest(all: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
-    LARGEST
-        .iter()
-        .map(|family| {
-            all.iter()
-                .filter(|c| c.stratum.starts_with(family))
-                .max_by_key(|c| c.size)
-                .cloned()
-                .ok_or_else(|| format!("no {family} input file found"))
+    groups
+        .into_iter()
+        .map(|(group, files)| (Some(group), files))
+        .chain(alone)
+        .flat_map(|(group, mut files)| {
+            files.sort_by(|a, b| a.layout.cmp(&b.layout));
+            let year = files.iter().filter_map(|f| year(&f.path)).max();
+            // The session's own file is the one nearest the root.
+            let origin = &files
+                .iter()
+                .min_by_key(|f| f.layout.components().count())
+                .expect("a group has a file")
+                .origin;
+            let stratum = match year {
+                Some(year) => format!("{origin}@{year}"),
+                None => origin.clone(),
+            };
+            files
+                .into_iter()
+                .map(|f| Candidate {
+                    path: f.path.clone(),
+                    rel: f.layout.clone(),
+                    stratum: stratum.clone(),
+                    size: f.bytes,
+                    group: group.clone(),
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
 
-fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> {
-    let all = input_files();
-    if all.is_empty() {
-        return Err(
-            "no input files found; check CLAUDE_CONFIG_DIR and CODEX_HOME (or the default directories)"
-                .into(),
-        );
-    }
-    let chosen = match drawn.target {
-        Target::Sample => bench::select(&all, bytes, seed),
-        Target::Largest => largest(&all)?,
+/// The benchmark root's lock, held for a whole command: runs and draws that
+/// share a root exclude one another.
+fn lock(root: &Path) -> Result<fs::File, String> {
+    fs::create_dir_all(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let path = root.join("bench.lock");
+    let file = fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    file.lock()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file)
+}
+
+fn sample(drawn: &Drawn, bytes: u64, seed: u64, binary: Option<PathBuf>) -> Result<(), String> {
+    let binary = match binary {
+        Some(binary) => binary,
+        None => first_build_binary()?,
     };
-    // Hash copies, so a session that keeps growing cannot invalidate the
-    // sample between drawing it and starting the measured build.
-    let chosen = copy_sample(&drawn.dir().join("source"), &chosen)?;
-    let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed, cut)
+    let listed = discovered(&binary)?;
+    if listed.is_empty() {
+        return Err("discovery found no inputs under this home and its tools' directories".into());
+    }
+    let databases: Vec<&Path> = listed
+        .iter()
+        .filter(|f| f.database)
+        .map(|f| f.layout.as_path())
+        .collect();
+    let all = candidates(&listed);
+    let chosen = bench::select(&all, bytes, seed);
+    let _lock = lock(&drawn.root)?;
+    let home = drawn.home();
+    if home.exists() {
+        fs::remove_dir_all(&home).map_err(|e| format!("{}: {e}", home.display()))?;
+    }
+    // Hash copies, so a session that keeps growing cannot change the sample
+    // between drawing it and measuring a build.
+    let chosen = copy_sample(&home, &chosen, &databases)?;
+    let manifest = Manifest::build("polylogue", &all, &chosen, bytes, seed)
         .map_err(|e| format!("hash the sample: {e}"))?;
     let path = drawn.manifest();
     manifest
@@ -462,8 +427,11 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
         "{}",
         serde_json::to_string_pretty(&json!({
             "manifest": path,
+            "home": home,
             "id": manifest.id(),
             "files": manifest.entries.len(),
+            "bytes": manifest.bytes(),
+            "discovered_files": listed.len(),
             "representativeness": manifest.representativeness(),
         }))
         .unwrap_or_default()
@@ -471,15 +439,19 @@ fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> 
     Ok(())
 }
 
-/// Copies the selected files before the manifest hashes them. Its source
-/// paths then name these fixed bytes, rather than files writers still change.
-fn copy_sample(directory: &Path, chosen: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
+/// Copies the selected files into `home` at their layouts before the
+/// manifest hashes them; the copies are what every measured build reads.
+fn copy_sample(
+    home: &Path,
+    chosen: &[Candidate],
+    databases: &[&Path],
+) -> Result<Vec<Candidate>, String> {
     chosen
         .iter()
         .map(|file| {
-            let path = directory.join(&file.rel);
-            fs::create_dir_all(path.parent().unwrap_or(directory)).map_err(|e| e.to_string())?;
-            copy_input(&file.path, &path, file.stratum == "codex/database")?;
+            let path = home.join(&file.rel);
+            fs::create_dir_all(path.parent().unwrap_or(home)).map_err(|e| e.to_string())?;
+            copy_input(&file.path, &path, databases.contains(&file.rel.as_path()))?;
             let mut file = file.clone();
             file.size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
             file.path = path;
@@ -540,61 +512,7 @@ fn first_build_binary() -> Result<PathBuf, String> {
     let target = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target"));
-    Ok(target.join("release/examples/first_build"))
-}
-
-/// Runs `first_build` under the real-data lock (`flock -o`: the lock is not
-/// inherited by anything the run starts) and returns its JSON line.
-fn first_build(
-    binary: &Path,
-    home: &Path,
-    out: &Path,
-    messages_required: bool,
-    lock: &Path,
-) -> Result<Value, String> {
-    first_build_locked(binary, home, out, messages_required, false, lock)
-}
-
-/// As [`first_build`], sharing the lock with the other run of a pair.
-fn first_build_shared(
-    binary: &Path,
-    home: &Path,
-    out: &Path,
-    lock: &Path,
-) -> Result<Value, String> {
-    first_build_locked(binary, home, out, true, true, lock)
-}
-
-fn first_build_locked(
-    binary: &Path,
-    home: &Path,
-    out: &Path,
-    messages_required: bool,
-    shared: bool,
-    lock: &Path,
-) -> Result<Value, String> {
-    // Runs sharing a benchmark root exclude one another; a paired run shares its lock.
-    let output = Command::new("flock")
-        .args(if shared {
-            ["-s", "-o"].as_slice()
-        } else {
-            ["-o"].as_slice()
-        })
-        .arg(lock)
-        .arg(binary)
-        .arg("--home")
-        .arg(home)
-        .arg("--dir")
-        .arg(out)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "first_build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    first_build_result(&String::from_utf8_lossy(&output.stdout), messages_required)
+    std::path::absolute(target.join("release/examples/first_build")).map_err(|e| e.to_string())
 }
 
 fn first_build_result(stdout: &str, messages_required: bool) -> Result<Value, String> {
@@ -646,16 +564,47 @@ fn first_build_result(stdout: &str, messages_required: bool) -> Result<Value, St
     Ok(result)
 }
 
-fn stages_of(result: &Value) -> BTreeMap<String, f64> {
-    result
-        .get("stages")
-        .and_then(Value::as_object)
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_f64()?)))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The figures one repetition gives, from the unit and from `first_build`'s
+/// own result. Per-input figures divide by the sample's bytes. Stage times
+/// are thread-seconds for pool stages.
+fn figures(unit: &[Figure], result: &Value, input_bytes: u64) -> Vec<Figure> {
+    let per_input = |bytes: Option<f64>| bytes.map(|b| b / input_bytes.max(1) as f64);
+    let unit_value = |name: &str| unit.iter().find(|f| f.name == name).and_then(|f| f.value);
+    let number = |key: &str| result[key].as_f64();
+    let mb = |key: &str| number(key).map(|mb| mb * 1e6);
+    let mut figures = vec![
+        Figure::work("cpu_seconds", unit_value("cpu_seconds")),
+        // Linux reports process CPU in ticks of 1/100 s.
+        Figure::work(
+            "process_cpu_seconds",
+            number("cpu_ticks").map(|t| t / 100.0),
+        ),
+        Figure::work(
+            "written_per_input_byte",
+            per_input(unit_value("written_bytes")),
+        ),
+        Figure::work(
+            "process_written_per_input_byte",
+            per_input(mb("disk_written_mb")),
+        ),
+        Figure::work("read_per_input_byte", per_input(unit_value("read_bytes"))),
+        Figure::work("memory_peak_bytes", unit_value("memory_peak_bytes")),
+        Figure::work("peak_rss_bytes", mb("peak_rss_mb")),
+        Figure::work("index_per_input_byte", per_input(mb("index_mb"))),
+        Figure::work("stored_per_input_byte", per_input(mb("stored_mb"))),
+        Figure::work("messages_written", number("messages_written")),
+        Figure::time("wall_seconds", unit_value("wall_seconds")),
+        Figure::time("ingest_seconds", number("ingest_seconds")),
+        Figure::time("checkpoint_seconds", number("checkpoint_seconds")),
+    ];
+    if let Some(stages) = result["stages"].as_object() {
+        figures.extend(
+            stages
+                .iter()
+                .map(|(stage, seconds)| Figure::time(format!("stage.{stage}"), seconds.as_f64())),
+        );
+    }
+    figures
 }
 
 /// Bytes free in the filesystem holding `path`.
@@ -673,30 +622,39 @@ fn available(path: &Path) -> Option<u64> {
         .ok()
 }
 
-/// The sample's manifest and its copy, made once.
-fn materialized(drawn: &Drawn) -> Result<(Manifest, PathBuf), String> {
+/// The sample's manifest, with its home checked against it.
+fn drawn_sample(drawn: &Drawn) -> Result<Manifest, String> {
     let path = drawn.manifest();
     let manifest = Manifest::read(&path).map_err(|e| {
         format!(
-            "{}: {e} (run `xtask bench sample --target {} --name {}` first)",
+            "{}: {e} (run `xtask bench sample --name {}` first)",
             path.display(),
-            drawn.target.name(),
             drawn.name
         )
     })?;
-    let home = drawn.dir().join("home");
-    let fresh = manifest
-        .materialize(&home)
-        .map_err(|e| format!("materialize the sample: {e}"))?;
-    eprintln!(
-        "sample {} {} ({} files, {:.0} MB){}",
-        drawn.name,
-        manifest.id(),
-        manifest.entries.len(),
-        manifest.bytes() as f64 / 1e6,
-        if fresh { ", copied" } else { "" }
-    );
-    Ok((manifest, home))
+    let home = drawn.home();
+    for entry in &manifest.entries {
+        let at = home.join(&entry.rel);
+        if fs::metadata(&at).map(|m| m.len()).ok() != Some(entry.size) {
+            return Err(format!(
+                "{} does not match the manifest; draw the sample again",
+                at.display()
+            ));
+        }
+    }
+    Ok(manifest)
+}
+
+/// Reads every sample file once, so each repetition starts with the same
+/// page cache rather than the first paying for cold reads.
+fn warm(home: &Path, manifest: &Manifest) -> Result<(), String> {
+    for entry in &manifest.entries {
+        let path = home.join(&entry.rel);
+        let mut file = fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        std::io::copy(&mut file, &mut std::io::sink())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// The checkout the runs are recorded against.
@@ -716,209 +674,150 @@ fn head() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// The metrics a sample run records: the result, its build, the linear
-/// estimate and the corpus input it stands for.
-fn run_metrics(drawn: &Drawn, manifest: &Manifest, build: &str, result: &Value) -> Value {
-    let mut metrics = result.clone();
-    metrics["build"] = json!(build);
-    if drawn.target == Target::Sample {
-        let scale = manifest.representativeness()["scale"].as_f64();
-        metrics["linear_estimate"] =
-            bench::linear_estimate(result["seconds"].as_f64(), &stages_of(result), scale);
-        metrics["corpus_input_mb"] =
-            json!(scale.zip(result["input_mb"].as_f64()).map(|(s, mb)| s * mb));
-    }
-    metrics
-}
-
-fn run(
-    drawn: &Drawn,
-    binary: Option<PathBuf>,
-    build: Option<String>,
-    storage: Storage,
-    incremental: bool,
-) -> Result<(), String> {
-    let (manifest, sample_home) = materialized(drawn)?;
-    let out = match storage {
-        Storage::Disk => drawn.dir().join("out"),
-        Storage::Memory => PathBuf::from("/dev/shm/polylogue-bench-out"),
-    };
-    // The previous archive goes first: it is replaced by this run, so it
-    // must not count against the free space.
-    if out.exists() {
-        fs::remove_dir_all(&out).map_err(|e| e.to_string())?;
-    }
-    // An archive in memory takes about its input's size again; filling
-    // /dev/shm would push the desktop into swap, so unknown free space
-    // refuses too.
-    if storage == Storage::Memory {
-        let needed = manifest.bytes().saturating_mul(3);
-        match available(Path::new("/dev/shm")) {
-            Some(free) if free >= needed => {}
-            _ => {
-                return Err(format!(
-                    "/dev/shm does not report at least three times the input ({:.0} MB) free; use --storage disk",
-                    manifest.bytes() as f64 / 1e6
-                ));
-            }
-        }
-    }
-    let binary = match binary {
-        Some(binary) => binary,
-        None => first_build_binary()?,
-    };
-    let build = match build {
-        Some(build) => build,
-        None => head()?,
-    };
-    let load = LoadMonitor::start()?;
-    let result = first_build(
-        &binary,
-        &sample_home,
-        &out,
-        true,
-        &drawn.root.join("bench.lock"),
-    )?;
-    let load = load.finish()?;
-    let metrics = run_metrics(drawn, &manifest, &build, &result);
-    let store = Store::open().map_err(|e| e.to_string())?;
-    let checkout = checkout()?;
-    let id = bench::record(
-        &store,
-        &checkout,
-        "polylogue",
-        drawn.target.recorded_name(),
-        &manifest.id(),
-        &out,
-        &load,
-        &metrics,
-    )
-    .map_err(|e| e.to_string())?;
-    println!(
-        "{}",
-        json!({"run": id, "build": build, "storage": bench::storage_of(&out),
-               "load_checks_passed": load.checks_passed(), "load": load.to_json(),
-               "result": result, "linear_estimate": metrics.get("linear_estimate")})
-    );
-    if incremental {
-        let appended = manifest
-            .grow(&sample_home)
-            .map_err(|e| format!("append: {e}"))?;
-        let load = LoadMonitor::start()?;
-        let result = first_build(
-            &binary,
-            &sample_home,
-            &out,
-            false,
-            &drawn.root.join("bench.lock"),
-        )?;
-        let load = load.finish()?;
-        let seconds = result["seconds"]
-            .as_f64()
-            .filter(|n| n.is_finite() && *n > 0.0);
-        let mut metrics = result.clone();
-        metrics["build"] = json!(build);
-        metrics["appended_mb"] = json!(appended as f64 / 1e6);
-        metrics["appended_mb_per_s"] =
-            json!(seconds.map(|seconds| appended as f64 / 1e6 / seconds));
-        let id = bench::record(
-            &store,
-            &checkout,
-            "polylogue",
-            &format!("{}-incremental", drawn.target.recorded_name()),
-            &manifest.id(),
-            &out,
-            &load,
-            &metrics,
-        )
-        .map_err(|e| e.to_string())?;
-        println!(
-            "{}",
-            json!({"run": id, "incremental": metrics, "load": load.to_json()})
-        );
-    }
-    if storage == Storage::Memory {
-        let _ = fs::remove_dir_all(&out);
-    }
-    Ok(())
-}
-
 /// Splits `LABEL=PATH`.
 fn labelled(spec: &str) -> Result<(String, PathBuf), String> {
     let (label, path) = spec
         .split_once('=')
         .filter(|(label, path)| !label.is_empty() && !path.is_empty())
         .ok_or_else(|| format!("{spec:?} is not LABEL=PATH"))?;
-    Ok((sample_name(label)?, PathBuf::from(path)))
+    let path = std::path::absolute(path).map_err(|e| e.to_string())?;
+    Ok((sample_name(label)?, path))
 }
 
-/// Both builds' first builds at once over one sample, on disk.
-fn pair(drawn: &Drawn, a: &str, b: &str) -> Result<(), String> {
-    let builds = [labelled(a)?, labelled(b)?];
-    if builds[0].0 == builds[1].0 {
-        return Err("the two builds need different labels".into());
-    }
-    let (manifest, sample_home) = materialized(drawn)?;
+/// Measures each build's first build over the sample `repetitions` times,
+/// in turn, each in a fresh archive, and records the result. A single build
+/// keeps its last archive in `<sample>/out` for `bench tails`; builds of a
+/// pair keep theirs in `<sample>/out-<label>`.
+fn measure_builds(
+    root: &Path,
+    conditions: &Conditions,
+    builds: &[(String, PathBuf)],
+) -> Result<(), String> {
+    let drawn = Drawn::new(root, conditions.name.clone());
+    let _lock = lock(root)?;
+    let manifest = drawn_sample(&drawn)?;
+    let home = drawn.home();
     let outs: Vec<PathBuf> = builds
         .iter()
-        .map(|(label, _)| drawn.dir().join(format!("out-{label}")))
+        .map(|(label, _)| {
+            let name = if builds.len() == 1 {
+                "out".to_owned()
+            } else {
+                format!("out-{label}")
+            };
+            match conditions.storage {
+                Storage::Disk => drawn.dir().join(name),
+                Storage::Memory => {
+                    PathBuf::from("/dev/shm").join(format!("polylogue-bench-{}-{name}", drawn.name))
+                }
+            }
+        })
         .collect();
-    for out in &outs {
-        if out.exists() {
-            fs::remove_dir_all(out).map_err(|e| e.to_string())?;
+    // An archive in memory takes about its input's size again for each
+    // build; filling /dev/shm would push the desktop into swap, so unknown
+    // free space refuses too.
+    if conditions.storage == Storage::Memory {
+        let needed = manifest
+            .bytes()
+            .saturating_mul(3)
+            .saturating_mul(builds.len() as u64);
+        match available(Path::new("/dev/shm")) {
+            Some(free) if free >= needed => {}
+            _ => {
+                return Err(format!(
+                    "/dev/shm does not report at least three times the input ({:.0} MB) per build free; use --storage disk",
+                    manifest.bytes() as f64 / 1e6
+                ));
+            }
         }
     }
-    let load = LoadMonitor::start()?;
-    // Both run at once, so both see the same host load; the real-data lock
-    // is shared between them.
-    let lock = drawn.root.join("bench.lock");
-    let results: Vec<Result<Value, String>> = std::thread::scope(|scope| {
-        let runs: Vec<_> = builds
-            .iter()
-            .zip(&outs)
-            .map(|((_, binary), out)| {
-                let home = &sample_home;
-                let lock = &lock;
-                scope.spawn(move || first_build_shared(binary, home, out, lock))
+    let arms: Vec<Arm> = builds
+        .iter()
+        .map(|(label, binary)| {
+            Ok(Arm {
+                label: label.clone(),
+                build: json!({
+                    "binary": binary,
+                    "blake3": bench::hash_file(binary).map_err(|e| format!("{}: {e}", binary.display()))?,
+                }),
             })
-            .collect();
-        runs.into_iter()
-            .map(|run| {
-                run.join()
-                    .unwrap_or_else(|_| Err("a build panicked".into()))
-            })
-            .collect()
-    });
-    let load = load.finish()?;
-    let store = Store::open().map_err(|e| e.to_string())?;
-    let checkout = checkout()?;
-    let mut recorded = Vec::new();
-    for (((label, _), out), result) in builds.iter().zip(&outs).zip(results) {
-        let result = result?;
-        let mut metrics = run_metrics(drawn, &manifest, label, &result);
-        metrics["paired"] = json!(true);
-        let id = bench::record(
-            &store,
-            &checkout,
-            "polylogue",
-            "first_build-pair",
-            &manifest.id(),
-            out,
-            &load,
-            &metrics,
-        )
-        .map_err(|e| e.to_string())?;
-        recorded.push((label.clone(), id, result));
+        })
+        .collect::<Result<_, String>>()?;
+    warm(&home, &manifest)?;
+    let limit = Limit::memory(&conditions.memory_max);
+    let input_bytes = manifest.bytes();
+    eprintln!(
+        "sample {} {} ({} files, {:.0} MB), {} repetitions per build under MemoryMax={}",
+        drawn.name,
+        manifest.id(),
+        manifest.entries.len(),
+        input_bytes as f64 / 1e6,
+        conditions.repetitions,
+        conditions.memory_max
+    );
+    let repetitions = bench::interleave(builds.len(), conditions.repetitions, |arm, round| {
+        let (label, binary) = &builds[arm];
+        let out = &outs[arm];
+        if out.exists() {
+            fs::remove_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+        }
+        let process = Process::new(binary)
+            .arg("--home")
+            .arg(&home)
+            .arg("--dir")
+            .arg(out);
+        let measured = bench::measure(&process, &limit)?;
+        if !measured.succeeded() {
+            return Err(format!(
+                "{label}, round {}: first_build ended with {} ({}): {}",
+                round + 1,
+                measured.outcome,
+                measured.accounting.to_json(),
+                measured.last_error_line()
+            ));
+        }
+        let result = first_build_result(&String::from_utf8_lossy(&measured.stdout), true)?;
+        let figures = figures(&Figure::of_unit(&measured), &result, input_bytes);
+        eprintln!(
+            "{label}, round {}: {:.1} s, {:.1} CPU-s",
+            round + 1,
+            measured.accounting.wall_seconds.unwrap_or(f64::NAN),
+            measured.accounting.cpu_seconds.unwrap_or(f64::NAN)
+        );
+        Ok(Repetition {
+            arm,
+            round,
+            figures,
+            record: json!({"measured": measured.to_json(), "first_build": result}),
+        })
+    })?;
+    if conditions.storage == Storage::Memory {
+        for out in &outs {
+            let _ = fs::remove_dir_all(out);
+        }
     }
+    let result = bench::report(
+        json!({"name": drawn.name, "id": manifest.id(), "files": manifest.entries.len(),
+               "bytes": input_bytes}),
+        &limit,
+        &arms,
+        &repetitions,
+    );
+    let store = Store::open().map_err(|e| e.to_string())?;
+    let id = bench::record(
+        &store,
+        &checkout()?,
+        "polylogue",
+        "first_build",
+        &manifest.id(),
+        &outs[0],
+        &result,
+    )
+    .map_err(|e| e.to_string())?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({
-            "runs": recorded.iter().map(|(label, id, _)| json!({"build": label, "run": id})).collect::<Vec<_>>(),
-            "load_checks_passed": load.checks_passed(), "load": load.to_json(),
-            "difference": fit::difference(&recorded[0].2, &recorded[1].2),
-            "results": recorded.iter().map(|(label, _, result)| json!({"build": label, "result": result})).collect::<Vec<_>>(),
-        }))
-        .unwrap_or_default()
+        serde_json::to_string_pretty(&json!({"result": id, "headline": result["headline"]}))
+            .unwrap_or_default()
     );
     Ok(())
 }

@@ -165,7 +165,7 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
     manifest.validate().unwrap();
     eprintln!(
         "bundle snapshot: positions={:?}, caught_up={}, freshness={:?}, incomplete={:?}, coverage={:?}",
-        manifest.read_at,
+        manifest.read_position,
         manifest.freshness.up_to_date(),
         manifest.freshness.sinex,
         manifest.incomplete,

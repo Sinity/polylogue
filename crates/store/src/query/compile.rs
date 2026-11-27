@@ -194,19 +194,45 @@ impl SessionRows {
 
 /// One term of an answer's order: a column of the answer and its
 /// direction. SQLite sorts NULL first in ascending order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OrderKey {
     pub column: String,
     pub descending: bool,
+    /// The key is `<the next key> IS NULL`: it splits the rows into those
+    /// with a value and those without, and a page reads each part in the
+    /// order of the keys after it, so one index on the next key serves both.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partition: bool,
+    /// The key's values are bytes, which a page carries as hexadecimal text.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bytes: bool,
 }
 
 impl OrderKey {
     fn ascending(column: &str) -> Self {
         Self {
             column: column.to_owned(),
-            descending: false,
+            ..Self::default()
         }
     }
+
+    /// The bound parameter `?{n}` as this key's stored value.
+    pub(crate) fn bound(&self, n: usize) -> String {
+        if self.bytes {
+            format!("unhex(?{n})")
+        } else {
+            format!("?{n}")
+        }
+    }
+}
+
+/// Whether a row with these order `values` is in the second part of a
+/// partitioned `order` ([`OrderKey::partition`]): the rows without a value.
+pub fn in_second_part(order: &[OrderKey], values: &[serde_json::Value]) -> bool {
+    order.first().is_some_and(|key| key.partition)
+        && values
+            .first()
+            .is_some_and(|value| value.as_i64() == Some(1) || value.as_bool() == Some(true))
 }
 
 /// Splits an ORDER BY term into its expression and direction.
@@ -226,9 +252,18 @@ fn hidden_order(order: &[String], prefix: &str) -> (Vec<String>, Vec<OrderKey>) 
         .map(|(i, term)| {
             let (expr, descending) = order_term(term);
             let column = format!("{prefix}{i}");
+            let partition = i == 0
+                && order
+                    .get(1)
+                    .is_some_and(|next| expr == format!("{} IS NULL", order_term(next).0));
             (
                 format!("{expr} AS {column}"),
-                OrderKey { column, descending },
+                OrderKey {
+                    column,
+                    descending,
+                    partition,
+                    bytes: expr.ends_with(".session_order"),
+                },
             )
         })
         .unzip()

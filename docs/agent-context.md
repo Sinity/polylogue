@@ -155,23 +155,23 @@ Each harness's inline cap is declared with its hooks. A brief larger than the ca
 A **delivery** records each time prepared content is handed to a session or a person: the hooks' injected briefs, advisories, notices to sessions, sent messages, live-session acts, the first turn of a session Polylogue starts, and turns written into web chats. A delivery records:
 - `delivery:<id>`; sender (`hook`, `mcp`, `signal`, `send`, `act`); event (`session_start`, `resume`, `compaction`, `session_brief`, `search_brief`, `signal`, `advice`, `message`, `notice`, `control`, `first_turn`);
 - its computed author; recipient kind and reference (session, role instance, web conversation, or the operator when a brief names no recipient session; the operator has no reference); `cwd`;
-- the delivered bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
+- the delivered bytes, `refs`, `left_out` (each an `item` and its `reason`), `content_hash`, the read position it was prepared at (`prepared_position`), and its outcome events (each with its `outcome`).
 
 **Outcomes** (one vocabulary for deliveries and notices):
 
 | Outcome | Meaning |
 |---|---|
 | `prepared` | no send attempted yet |
-| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, the harness command exited 0 |
-| `failed(<first stderr line>)` | a handed-over run that then exited unsuccessfully, recorded after `delivered` |
-| `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
+| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, or the headless harness process started with it |
+| `failed` | a handed-over run that then failed, recorded after `delivered` with the exit status and the end of standard error when the process exited unsuccessfully |
+| `not_sent:<reason>` | `timeout`, `empty`, `failed` with the cause, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 
 **A delivery acknowledges a handing over.** A harness may store a tool result outside its inline output, apply its own output cap, or later compact the context. The `delivered` outcome alone does not show that the whole text remains in the model's current context. The [context view](transcripts.md#the-context-view) reconstructs what the captured harness records show, and a caller can read any passage again.
 
 - The delivery reference appears in the delivered text.
 - **Uncertain sends are reconciled, never resent.** For `unknown`, the daemon looks for the delivery's reference line in the recipient's transcript and records `delivered` when it finds it.
-- While a brief's delivery is pending, the writer also holds the read counter of the snapshot used to prepare it, so annotations committed after preparation remain in the next brief's delta. This counter is discarded when the delivery commits. Committed briefs use the delivery's own write counter for their delta start.
+- A delivery records the archive write counter of the read its content was prepared from (`prepared_position`), and the next brief's delta starts there, whether the delivery is still queued or committed: annotations committed after the brief was prepared remain in the next brief. A delivery recorded without it (written before it was kept) starts its delta at its own write counter.
 - High-frequency deliveries (advisories) are recorded once per session, advisory and target.
 - Deliveries are user state: they survive rebuilds, travel in `read --to` bundles, and in primary mode go to Sinex as `polylogue.delivery` ([primary-mode.md](primary-mode.md)).
 

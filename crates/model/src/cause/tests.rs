@@ -38,15 +38,32 @@ fn the_panic_hook_gives_caught_its_location_and_reports_only_uncaught_panics() {
 }
 
 #[test]
-fn a_chain_failure_is_content_and_a_panic_is_a_bug() {
+fn chain_failures_name_content_stored_data_and_bugs() {
     let failure = ChainFailure::from(caught(|| -> () { panic!("bad") }).unwrap_err());
     assert_eq!(failure.kind, ChainFailureKind::ParserPanicked);
-    assert_eq!(failure.cause(), Cause::Content);
+    assert_eq!(
+        (failure.cause(), failure.code()),
+        (Cause::Bug, Code::Internal)
+    );
     let mismatch = ChainFailure::from(crate::CountMismatch {
         records: 3,
         counted: 2,
     });
     assert_eq!(mismatch.kind, ChainFailureKind::CountsDiffer);
+    assert_eq!(
+        (mismatch.cause(), mismatch.code()),
+        (Cause::Bug, Code::Internal)
+    );
+    let bytes = ChainFailure::bytes_differ();
+    assert_eq!(
+        (bytes.cause(), bytes.code()),
+        (Cause::StoredData, Code::Internal)
+    );
+    let malformed = ChainFailure::malformed("invalid JSON");
+    assert_eq!(
+        (malformed.cause(), malformed.code()),
+        (Cause::Content, Code::Import)
+    );
     assert_eq!(
         Panicked {
             message: "m".into(),

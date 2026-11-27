@@ -311,10 +311,18 @@ fn a_rebuild_leaves_one_index() {
     fs::remove_file(&index).unwrap();
     w.run_pass();
     let counts = |w: &Morrow| -> Vec<i64> {
-        ["session", "message", "block", "tool_call", "link", "event"]
-            .iter()
-            .map(|t| count(w, &format!("SELECT count(*) AS n FROM {t}")))
-            .collect()
+        [
+            "session",
+            "message",
+            "block",
+            "tool_call",
+            "link_statement",
+            "session_link",
+            "event",
+        ]
+        .iter()
+        .map(|t| count(w, &format!("SELECT count(*) AS n FROM {t}")))
+        .collect()
     };
     let after_rebuild = counts(&w);
     w.run_pass();

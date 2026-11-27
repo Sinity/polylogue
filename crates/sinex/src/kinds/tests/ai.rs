@@ -198,7 +198,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
             ]
         }
     })).unwrap());
-    let mut step = polylogue_store::ParseStep::new(output, Default::default(), 0..150, true);
+    let mut step = polylogue_store::ParsePart::new(output, Default::default(), 0..150, true);
     step.parse_version = "reader-3".into();
     step.prepare();
     let input = reading("input-a", 0).input;

@@ -275,14 +275,7 @@ fn install_with_output(
         };
     }
     if target == "chrome" {
-        return install_chrome(
-            startup,
-            json,
-            arguments.extension_id.as_deref(),
-            arguments.remove,
-            arguments.dry_run,
-            output,
-        );
+        return install_chrome(startup, &arguments, json, output);
     }
     if target == "drive" {
         return install_drive(v, startup, &arguments, json, output, drive);
@@ -525,26 +518,29 @@ pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 fn install_chrome(
     startup: &crate::config::Startup,
+    arguments: &arguments::Install,
     json: bool,
-    extension_id: Option<&str>,
-    remove: bool,
-    dry_run: bool,
     output: &mut dyn std::io::Write,
 ) -> ExitCode {
+    let remove = arguments.remove;
+    let dry_run = arguments.dry_run;
     let manifest = if remove {
         None
     } else {
-        let Some(id) =
-            extension_id.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
-        else {
+        let id = arguments
+            .extension_id
+            .as_deref()
+            .unwrap_or(crate::browser::native::CHROME_EXTENSION_ID);
+        if id.len() != 32 || !id.bytes().all(|byte| (b'a'..=b'p').contains(&byte)) {
             return fail(
                 startup.client.output,
                 json,
                 polylogue_model::Code::BadRequest,
-                "`--extension-id` (the ID chrome://extensions shows) is required",
+                "`--extension-id` uses the 32 letters a through p shown in chrome://extensions",
             );
-        };
-        let binary = match std::env::current_exe().and_then(std::fs::canonicalize) {
+        }
+        let program = arguments.program.as_deref().unwrap_or("polylogue");
+        let binary = match browser_program(program) {
             Ok(binary) => binary,
             Err(error) => {
                 return fail(
@@ -578,7 +574,7 @@ fn install_chrome(
             let file = crate::installation::File::read(&path).map_err(|error| {
                 if path.is_symlink() {
                     std::io::Error::other(format!(
-                        "{error}; print the managed manifest with `polylogue install chrome --extension-id ID --dry-run`"
+                        "{error}; print the managed manifest with `polylogue install chrome --dry-run`"
                     ))
                 } else {
                     error
@@ -637,6 +633,32 @@ fn install_chrome(
             &error.to_string(),
         ),
     }
+}
+
+fn browser_program(program: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    let executable = |path: &Path| {
+        std::fs::metadata(path)
+            .is_ok_and(|file| file.is_file() && file.permissions().mode() & 0o111 != 0)
+    };
+    let path = if program.contains('/') {
+        let path = PathBuf::from(program);
+        executable(&path).then_some(path)
+    } else {
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&search_path)
+            .map(|directory| directory.join(program))
+            .find(|path| executable(path))
+    };
+    // Keep the wrapper's path even if it is a profile symlink.
+    path.map(std::path::absolute).transpose()?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("executable browser host `{program}` was not found; use --program to name its wrapper"),
+        )
+    })
 }
 
 fn installed_chrome_manifest(bytes: &[u8]) -> bool {

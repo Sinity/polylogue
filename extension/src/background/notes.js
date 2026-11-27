@@ -1,6 +1,6 @@
 // A note on a selected passage, as the in-page panel sends it. The note is
 // accepted only from the chat page it names, so a page cannot write a note
-// about another conversation; the host then checks the message belongs to
+// about another conversation; the daemon then checks the message belongs to
 // that archived conversation.
 
 import { PROVIDERS } from "./providers.js";

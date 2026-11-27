@@ -533,7 +533,7 @@ fn every_input_identity_contains_its_machine_or_is_its_content_hash() {
                 "{}",
                 origin.name
             ),
-            InputIdentity::ProviderId => {
+            InputIdentity::ProviderId(_) => {
                 let one = InputIdentity::provider_named("codex:rollout:session", "machine-one");
                 let two = InputIdentity::provider_named("codex:rollout:session", "machine-two");
                 assert_ne!(one, two, "{}", origin.name);
@@ -542,4 +542,172 @@ fn every_input_identity_contains_its_machine_or_is_its_content_hash() {
             InputIdentity::Content => {}
         }
     }
+}
+
+/// A stored rollout read at its first record, then grown by two.
+fn stored_then_grown(
+    w: &ClaudeHome,
+    native: &str,
+) -> (Engine, polylogue_store::ArchiveLock, Vec<String>) {
+    let sessions = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(w.home.join(".codex/archived_sessions")).unwrap();
+    let path = sessions.join("rollout-live.jsonl");
+    let first = rollout(native);
+    std::fs::write(&path, &first).unwrap();
+    let (mut e, lock) = engine(w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let turns: Vec<String> = ["second turn", "third turn"]
+        .iter()
+        .enumerate()
+        .map(|(i, text)| format!("{{\"type\":\"response_item\",\"payload\":{{\"id\":\"m{}\",\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n", i + 2))
+        .collect();
+    let mut live = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    for turn in &turns {
+        live.write_all(turn.as_bytes()).unwrap();
+    }
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    (e, lock, [vec![first], turns].concat())
+}
+
+fn session_texts(e: &Engine, native: &str) -> Vec<String> {
+    let id = polylogue_model::SessionId::parse(&format!("codex:{native}")).unwrap();
+    e.reads
+        .reader()
+        .unwrap()
+        .messages(&id, false)
+        .unwrap()
+        .iter()
+        .map(polylogue_model::Message::text)
+        .collect()
+}
+
+/// A compressed copy of a rollout holding only the first bytes of the chain
+/// already stored, ending at no revision's length, is the stored chain seen
+/// back with what it held: it starts no chain and no revision, and the
+/// session keeps every message.
+#[test]
+fn a_shorter_compressed_copy_is_seen_back_and_starts_no_chain() {
+    let w = ClaudeHome::new();
+    let (mut e, _lock, parts) = stored_then_grown(&w, "shorter-native");
+    let stale = format!("{}{}", parts[0], parts[1]);
+    std::fs::write(
+        w.home
+            .join(".codex/archived_sessions/rollout-stale.jsonl.zst"),
+        zstd::stream::encode_all(stale.as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let input = "codex:rollout:shorter-native@test-machine";
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='{input}'"
+        )),
+        1
+    );
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) AS n FROM a.revision WHERE input='{input}'"
+        )),
+        2
+    );
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) AS n FROM a.observation WHERE input='{input}' AND class='back'
+               AND revision IS NULL AND chain=1 AND length={}",
+            stale.len()
+        )),
+        1
+    );
+    assert_eq!(captured(&e, input), parts.concat().into_bytes());
+    assert_eq!(
+        session_texts(&e, "shorter-native"),
+        ["independent payload", "second turn", "third turn"]
+    );
+    // The copy written again whole is the stored chain at its length: still
+    // one chain, the same current revision, nothing rewritten.
+    std::fs::write(
+        w.home
+            .join(".codex/archived_sessions/rollout-stale.jsonl.zst"),
+        zstd::stream::encode_all(parts.concat().as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) AS n FROM a.revision WHERE input='{input}'"
+        )),
+        2
+    );
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) AS n FROM a.revision WHERE input='{input}' AND produced='rewritten'"
+        )),
+        0
+    );
+    assert_eq!(
+        session_texts(&e, "shorter-native"),
+        ["independent payload", "second turn", "third turn"]
+    );
+}
+
+/// A shorter copy that differs from the stored chain in one byte inside the
+/// stored length is another reading of the rollout: it starts a chain.
+#[test]
+fn a_shorter_copy_differing_inside_the_stored_length_starts_a_chain() {
+    let w = ClaudeHome::new();
+    let (mut e, _lock, parts) = stored_then_grown(&w, "differing-native");
+    let stale = format!(
+        "{}{}",
+        parts[0],
+        parts[1].replace("second turn", "SECOND turn")
+    );
+    std::fs::write(
+        w.home
+            .join(".codex/archived_sessions/rollout-stale.jsonl.zst"),
+        zstd::stream::encode_all(stale.as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:differing-native@test-machine'"),
+        2
+    );
+}
+
+/// A compressed copy that decodes to nothing names no session (a rollout
+/// is named by its first record), so nothing is stored for it and the
+/// stored chain stays current.
+#[test]
+fn an_empty_compressed_copy_stores_nothing() {
+    let w = ClaudeHome::new();
+    let (mut e, _lock, parts) = stored_then_grown(&w, "empty-native");
+    std::fs::write(
+        w.home
+            .join(".codex/archived_sessions/rollout-empty.jsonl.zst"),
+        zstd::stream::encode_all(&b""[..], 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let input = "codex:rollout:empty-native@test-machine";
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='{input}'"
+        )),
+        1
+    );
+    assert_eq!(captured(&e, input), parts.concat().into_bytes());
+    assert_eq!(
+        session_texts(&e, "empty-native"),
+        ["independent payload", "second turn", "third turn"]
+    );
 }

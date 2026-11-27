@@ -44,7 +44,7 @@ pub struct ReadPage {
 pub struct ReadPageSnapshot {
     pub query: String,
     pub ran_at: crate::Timestamp,
-    pub read_at: crate::ChangePosition,
+    pub read_position: crate::ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
     /// A semantic ranking that could not run.
     pub incomplete: Vec<String>,
@@ -54,7 +54,7 @@ impl From<&crate::bundle::ReadSnapshot> for ReadPageSnapshot {
         Self {
             query: snapshot.query.clone(),
             ran_at: snapshot.ran_at,
-            read_at: snapshot.read_at.clone(),
+            read_position: snapshot.read_position.clone(),
             freshness: snapshot.freshness.clone(),
             incomplete: snapshot.incomplete.clone(),
         }

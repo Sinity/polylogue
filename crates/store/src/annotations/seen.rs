@@ -97,7 +97,7 @@ fn later_item(
     if let (Some((previous, previous_block)), Some((next, next_block))) =
         (message_item(&previous), message_item(&next))
     {
-        let coordinate = |id: &polylogue_model::MessageId| -> Result<(i64, String, String)> {
+        let coordinate = |id: &polylogue_model::MessageId| -> Result<(i64, Vec<u8>, String)> {
             let resolved = crate::chain_names::resolved_message(conn, id)?;
             conn.query_row(
                 "SELECT session_pk,session_order,id FROM message WHERE id=?1 AND duplicate_of IS NULL",
@@ -141,7 +141,7 @@ fn later_item(
 }
 
 fn advances(conn: &Connection, previous: &SeenMark, next: &SeenMark) -> Result<bool> {
-    if previous.at.generation != next.at.generation {
+    if previous.at.index_instance != next.at.index_instance {
         // The caller validated the incoming generation against the active index.
         later_item(conn, &next.target, None, next.item.as_deref())?;
         return Ok(true);
@@ -169,7 +169,7 @@ pub(crate) fn advancing(
     proposed: &[SeenMark],
 ) -> Result<Vec<SeenMark>> {
     let generation: String = index.query_row(
-        "SELECT value FROM main.meta WHERE key='generation'",
+        "SELECT value FROM main.meta WHERE key='index_instance'",
         [],
         |row| row.get(0),
     )?;
@@ -213,7 +213,7 @@ pub(crate) fn advancing(
     }
     let mut accepted = BTreeMap::new();
     for mark in &proposed {
-        if mark.at.generation != generation {
+        if mark.at.index_instance != generation {
             return Err(polylogue_model::Reason::SeenFromAnotherGeneration {}.into());
         }
         if ChangePosition::parse(&mark.at.to_string()).is_none() {

@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod extents;
+#[cfg(test)]
+pub(crate) use extents::declared_rows;
 mod reader;
 pub use extents::CHAIN_CACHE_KIB;
 use extents::ExtentList;

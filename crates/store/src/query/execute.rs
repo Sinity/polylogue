@@ -270,7 +270,7 @@ impl Reader<'_> {
         let page = program.statements.page(
             &program.order,
             program.params.len(),
-            after.is_some(),
+            after.map(|after| super::compile::in_second_part(&program.order, after)),
             reverse,
             if row_at.is_some() {
                 PageColumns::Order
@@ -305,7 +305,7 @@ impl Reader<'_> {
                         &scope.by_scope,
                         &program.order,
                         program.params.len(),
-                        after.is_some(),
+                        after.map(|after| super::compile::in_second_part(&program.order, after)),
                         reverse,
                         PageColumns::All,
                     ),
@@ -402,7 +402,7 @@ impl Reader<'_> {
                 source,
                 &program.order,
                 params,
-                after.is_some(),
+                after.map(|after| super::compile::in_second_part(&program.order, after)),
                 false,
                 PageColumns::All,
             )
@@ -477,7 +477,7 @@ impl Reader<'_> {
             &search.by_index,
             &program.order,
             program.params.len() + 1,
-            after.is_some(),
+            after.map(|after| super::compile::in_second_part(&program.order, after)),
             false,
             PageColumns::All,
         );
@@ -1058,10 +1058,12 @@ pub fn prepare_measure(
                 super::OrderKey {
                     column: "family".into(),
                     descending: false,
+                    ..Default::default()
                 },
                 super::OrderKey {
                     column: "value".into(),
                     descending: false,
+                    ..Default::default()
                 },
             ];
         }
@@ -1083,6 +1085,7 @@ pub fn prepare_measure(
                 .map(|column| super::OrderKey {
                     column: column.into(),
                     descending: false,
+                    ..Default::default()
                 })
                 .collect();
         }

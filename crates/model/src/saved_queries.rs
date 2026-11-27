@@ -64,7 +64,7 @@ pub const SHIPPED_QUERIES: &[ShippedQuery] = &[
 pub struct SavedQueryRecord {
     pub name: String,
     pub revisions: Vec<SavedRevision>,
-    pub kept: Vec<KeptSummary>,
+    pub saved_rows: Vec<KeptSummary>,
     pub watch: Option<String>,
     pub dependents: Vec<String>,
 }

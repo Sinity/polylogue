@@ -80,10 +80,11 @@ let
       }
       ''
         node ${../extension}/scripts/validate-manifest.mjs
-        node ${../extension}/scripts/build.mjs --out "$out"
+        node ${../extension}/scripts/build.mjs --revision ${lib.escapeShellArg revision} --out "$out"
         mkdir -p "$out/share/polylogue/extension"
         chrome=$(jq -r '.artifacts.chrome' "$out/build-manifest.json")
         unzip -q "$out/$chrome" -d "$out/share/polylogue/extension"
+        jq -er '.chrome_extension_id' "$out/build-manifest.json" > "$out/share/polylogue/extension-id"
       '';
   checks = {
     settings = import ./checks/settings.nix { inherit pkgs; };

@@ -621,7 +621,7 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
     let reader = d.daemon.reads.reader().unwrap();
     let seal = polylogue_model::read::CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     };
     let mut old = polylogue_model::read::PageCursor::open(
         cursor.arguments["steps"][0]["cursor"].as_str().unwrap(),
@@ -656,7 +656,7 @@ fn links_cursor_with_a_forged_past_direction_is_refused() {
     let reader = d.daemon.reads.reader().unwrap();
     let seal = polylogue_model::read::CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     };
     let mut forged = polylogue_model::read::PageCursor::open(
         cursor.arguments["steps"][0]["cursor"].as_str().unwrap(),

@@ -5,18 +5,18 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserManifest, browserVersion, FIREFOX_GECKO_ID, runtimeFiles } from "./package.mjs";
+import { browserManifest, browserVersion, chromeExtensionId, FIREFOX_GECKO_ID, runtimeFiles } from "./package.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const args = { out: join(root, "dist"), version: null };
+const args = { out: join(root, "dist"), version: null, revision: null };
 for (let at = 2; at < process.argv.length; at += 1) {
   const flag = process.argv[at];
   if (flag === "--help" || flag === "-h") {
-    process.stdout.write("Usage: build.mjs [--version VERSION] [--out DIR]\n");
+    process.stdout.write("Usage: build.mjs [--version VERSION] [--revision COMMIT] [--out DIR]\n");
     process.exit(0);
   }
   const value = process.argv[at + 1];
-  if (!["--version", "--out"].includes(flag) || !value || value.startsWith("--")) {
+  if (!["--version", "--revision", "--out"].includes(flag) || !value || value.startsWith("--")) {
     throw new Error(`invalid argument: ${flag}`);
   }
   args[flag.slice(2)] = value;
@@ -25,7 +25,9 @@ for (let at = 2; at < process.argv.length; at += 1) {
 const out = resolve(args.out);
 const rawVersion = args.version ?? JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const version = browserVersion(rawVersion);
+const revision = args.revision === "unavailable" ? null : args.revision;
 const source = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
+const chromeId = chromeExtensionId(source.key);
 for (const file of runtimeFiles) {
   if (!existsSync(join(root, file))) throw new Error(`missing runtime file: ${file}`);
 }
@@ -38,7 +40,7 @@ try {
     for (const file of runtimeFiles) {
       mkdirSync(dirname(join(stage, file)), { recursive: true });
       if (file === "manifest.json") {
-        writeFileSync(join(stage, file), JSON.stringify(browserManifest(source, version, browser), null, 2) + "\n");
+        writeFileSync(join(stage, file), JSON.stringify(browserManifest(source, version, browser, revision), null, 2) + "\n");
       } else copyFileSync(join(root, file), join(stage, file));
     }
     const filename = `polylogue-browser-capture-${version}-${browser}.${suffix}`;
@@ -60,7 +62,8 @@ with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
     artifacts[browser] = filename;
   }
   writeFileSync(join(out, "build-manifest.json"), JSON.stringify({
-    version, raw_version: rawVersion, artifacts, firefox_gecko_id: FIREFOX_GECKO_ID,
+    version, raw_version: rawVersion, revision, artifacts,
+    chrome_extension_id: chromeId, firefox_gecko_id: FIREFOX_GECKO_ID,
   }, null, 2) + "\n");
 } finally {
   rmSync(stageRoot, { recursive: true, force: true });

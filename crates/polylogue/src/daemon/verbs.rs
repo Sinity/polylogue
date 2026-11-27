@@ -167,6 +167,7 @@ pub(crate) enum RowRule {
 pub(crate) struct StepDone {
     pub answer: Answer<StepAnswer>,
     pub undo: Vec<String>,
+    pub position: Option<polylogue_store::archive::writer::Position>,
 }
 
 impl StepDone {
@@ -197,6 +198,7 @@ impl From<Answer<StepAnswer>> for StepDone {
         Self {
             answer,
             undo: Vec::new(),
+            position: None,
         }
     }
 }
@@ -229,7 +231,7 @@ pub(crate) struct Selection {
     /// does not resolve (a single read-only step streams as it reads).
     pub resolved: Option<Vec<Reference>>,
     /// The query text when the selection is a query.
-    pub question: Option<String>,
+    pub query: Option<String>,
     pub retained: Option<Box<polylogue_model::user::LineSelection>>,
 }
 

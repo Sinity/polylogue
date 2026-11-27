@@ -72,8 +72,8 @@ fn a_session_without_a_title_is_named_by_its_first_prompt() {
         prose("a", 1, 1_000, "\n  Fix the flaky crash test\nplease"),
     );
     assert_eq!(
-        one(&w, "SELECT title, derived_title FROM session"),
-        json!({"title": null, "derived_title": "Fix the flaky crash test"})
+        one(&w, "SELECT title, prompt_title FROM session"),
+        json!({"title": null, "prompt_title": "Fix the flaky crash test"})
     );
 }
 
@@ -282,7 +282,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
         links: vec![polylogue_model::Link {
             kind: polylogue_model::LinkKind::Spawn,
             copies_prefix: true,
-            how: None,
+            reason: None,
             parent: sid("parent"),
             child,
             branch_point: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),
@@ -312,9 +312,9 @@ fn a_display_title_without_a_prose_prompt_is_unknown() {
         assert_eq!(
             one(
                 &w,
-                "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:agent-fork'"
             ),
-            json!({"derived_title": null})
+            json!({"prompt_title": null})
         );
     }
 }
@@ -709,7 +709,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     let title = |id: &str| -> Option<String> {
         index()
             .query_row(
-                "SELECT derived_title FROM session WHERE id = ?1",
+                "SELECT prompt_title FROM session WHERE id = ?1",
                 [format!("claude-code:{id}")],
                 |r| r.get(0),
             )
@@ -930,11 +930,11 @@ fn a_call_lookup_reads_no_line_of_its_session() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     for (sql, wanted) in [
         (
-            "SELECT seq FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+            "SELECT position FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY position",
             "SEARCH transcript_call USING PRIMARY KEY (session_pk=? AND call_id=?)",
         ),
         (
-            "SELECT c.call_id, c.seq, c.class
+            "SELECT c.call_id, c.position, c.class
              FROM json_each(?2) j CROSS JOIN transcript_call c
              WHERE c.session_pk = ?1 AND c.call_id = j.value",
             "SEARCH c USING PRIMARY KEY (session_pk=? AND call_id=?)",

@@ -1,148 +1,123 @@
-//! Real shell callbacks over an offline synthetic catalog.
+//! Real shell callbacks: the archive's values come from the daemon, and
+//! without it the grammar alone.
 use crate::{BIN, process};
 
-use polylogue_model::ChangePosition;
-use polylogue_store::completion::{CatalogWriter, Kept, Metadata, Saved, Session, Setting};
-use query_language::catalog::{Field, FieldKind, OutputSchema};
+use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use std::{
-    collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
 };
-fn seed(root: &Path, cache: &Path, model: &str) {
-    let key = blake3::hash(root.canonicalize().unwrap().as_os_str().as_encoded_bytes()).to_hex()
-        [..12]
-        .to_owned();
-    let catalog = polylogue_query::catalog::catalog(&["codex".into()]);
-    CatalogWriter::fixture(
-        &cache.join("polylogue").join(&key).join("catalog"),
-        &Metadata {
-            archive: key,
-            position: ChangePosition {
-                generation: "g".into(),
-                index: 1,
-                archive: 1,
-            },
-            written_at: 100,
-        },
-        |writer| {
-            writer.put_catalog(&catalog)?;
-            writer.put_session(&Session {
-                id: "codex:abc123".into(),
-                native_id: "abc123".into(),
-                prefix: String::new(),
-                title: "A neutral title".into(),
-                origin: "codex".into(),
-                repo: Some("two words".into()),
-                last_activity: Some(100),
-                first_prompt: Some("A neutral prompt".into()),
-                values: BTreeMap::from([
-                    (
-                        "repo".into(),
-                        BTreeMap::from([("two words".into(), 3), ("żółw".into(), 2)]),
-                    ),
-                    ("model".into(), BTreeMap::from([(model.into(), 2)])),
-                ]),
-            })?;
-            let field = |name: &str, kind| Field {
-                name: name.into(),
-                kind,
+
+/// A synthetic archive: two sessions with titles, repositories, a model and
+/// a tool call, and the saved query `by-action`.
+fn seed(root: &Path, model: &str) {
+    let mut fixture = Fixture::new(root).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "codex:abc123",
+            title: Some("A neutral title"),
+            repo: Some("two words"),
+            last: Some(100),
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "codex:other",
+            repo: Some("żółw"),
+            last: Some(50),
+            ..Default::default()
+        })
+        .unwrap();
+    let message = fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "codex:m1",
+                role: "assistant",
+                written_by: "model",
+                model: Some(model),
                 ..Default::default()
-            };
-            let mut saved = Saved {
-                relation_scope: None,
-                family: "saved-family".into(),
-                revision: "saved-revision".into(),
-                name: "by-action".into(),
-                text: "tool_calls | group by action | count".into(),
-                parameters: vec![],
-                help: "Count native actions".into(),
-                schema: Some(OutputSchema {
-                    match_units: None,
-                    unit: Some("tool_calls".into()),
-                    fields: vec![
-                        field("action", FieldKind::Text),
-                        field("count", FieldKind::Number),
-                    ],
-                    main_time: None,
-                }),
-            };
-            saved.relation_scope = saved.schema.clone();
-            writer.put_saved(&saved)?;
-            writer.put_kept(&Kept {
-                id: "kept-id".into(),
-                name: Some("Kept calls".into()),
-                unit: Some("tool_calls".into()),
-                row_count: Some(3),
-                rows: Some(OutputSchema {
-                    match_units: None,
-                    unit: Some("tool_calls".into()),
-                    fields: vec![field("count", FieldKind::Number)],
-                    main_time: None,
-                }),
-                matches: Some(OutputSchema {
-                    match_units: None,
-                    unit: Some("tool_calls".into()),
-                    fields: vec![field("tool", FieldKind::Text)],
-                    main_time: None,
-                }),
-            })?;
-            for (key, choices) in [
-                ("embed.model", vec![]),
-                ("browser.actions", vec!["on".into(), "off".into()]),
-            ] {
-                writer.put_setting(&Setting {
-                    key: key.into(),
-                    value: {
-                        use polylogue_model::settings::{self, Current, SettingMode};
-                        let declaration = settings::declaration(key).unwrap();
-                        let value = settings::current(key, None, SettingMode::Standalone).unwrap();
-                        Current {
-                            key: key.into(),
-                            kind: declaration.kind,
-                            default: value.clone(),
-                            scope: declaration.scope,
-                            supplier: "polylogue".into(),
-                            value,
-                            authored: None,
-                            conflicts: vec![],
-                        }
-                    },
-                    choices,
-                })?;
-            }
-            Ok(())
-        },
+            },
+        )
+        .unwrap();
+    fixture
+        .tool_call(
+            session,
+            message,
+            CallFacts {
+                tool: "Bash",
+                action: "shell",
+                outcome: "ok",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture.derive().unwrap();
+    let plan = polylogue_query::plan::prepare(
+        "tool_calls | group by action | count",
+        &polylogue_query::Bindings::default(),
+        |_| Ok(()),
     )
     .unwrap();
+    fixture.saved_query("by-action", &plan).unwrap();
 }
+
+/// The fixture's environment for an archive in `base`, its own home beside it.
+fn environment(base: &Path, root: &Path) -> process::Fixture {
+    let name = root.file_name().unwrap().to_string_lossy();
+    process::Fixture::new(
+        root,
+        &base.join(format!("home-{name}")),
+        &base.join("config"),
+    )
+}
+
+/// Keeps the rows of a query through the daemon, as `QUERY save` does,
+/// and returns the kept result's ID.
+fn keep(environment: &process::Fixture) -> String {
+    let output = environment
+        .command()
+        .args([
+            "--json",
+            "--request-id",
+            "kept",
+            "sessions where exists tool_calls()",
+            "save",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let reply = answer.value().unwrap();
+    let saved = reply["reply"]["steps"][0]["outcome"]["reply"]["reply"]["saved_rows"]["result"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{reply}"));
+    saved.strip_prefix("result:").unwrap().to_owned()
+}
+
 fn callback(
-    root: &Path,
-    cache: &Path,
+    environment: &process::Fixture,
     shell: &str,
     words: &[&str],
     program: &str,
 ) -> (String, Duration) {
     let at = Instant::now();
-    let output = process::Fixture::new(
-        root,
-        &root.parent().unwrap().join("home"),
-        &root.parent().unwrap().join("config"),
-    )
-    .native_command()
-    .env("COMPLETE", shell)
-    .env("XDG_CACHE_HOME", cache)
-    .env("_CLAP_COMPLETE_INDEX", (words.len() + 2).to_string())
-    .env("_CLAP_IFS", "\n")
-    .arg("--")
-    .arg(program)
-    .arg("--archive")
-    .arg(root)
-    .args(words)
-    .output()
-    .unwrap();
+    let output = environment
+        .native_command()
+        .env("COMPLETE", shell)
+        .env("_CLAP_COMPLETE_INDEX", (words.len() + 2).to_string())
+        .env("_CLAP_IFS", "\n")
+        .arg("--")
+        .arg(program)
+        .arg("--archive")
+        .arg(environment.archive())
+        .args(words)
+        .output()
+        .unwrap();
     assert!(
-        output.status.success(),
+        output.status.success() && output.stderr.is_empty(),
         "{shell} {words:?}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -153,121 +128,113 @@ fn callback(
         at.elapsed(),
     )
 }
+
 #[test]
-fn completion_matrix_thirteen_positions_three_shells_empty_and_seeded() {
+fn completion_matrix_thirteen_positions_three_shells_daemon_down_and_up() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("archive");
-    let cache = directory.path().join("cache");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(
-        root.join("index.db"),
-        b"archive must never be opened by completion",
-    )
-    .unwrap();
-    let cases: [(&str, &[&str], &str, bool); 13] = [
-        ("commands", &["sta"], "status", false),
-        ("session fields", &["sessions where ti"], "title", false),
-        ("message fields", &["messages where mo"], "model", false),
-        ("tool fields", &["tool_calls where ou"], "outcome", false),
-        (
-            "observed value",
-            &["messages where model:alp"],
-            "model:alpha",
-            true,
-        ),
-        (
-            "quoted value",
-            &["sessions where repo:\"two"],
-            "two words",
-            true,
-        ),
-        ("pipe stage", &["messages | gr"], "group by", false),
-        (
-            "group alias",
-            &["sessions | group by repo | sort by co"],
-            "count",
-            false,
-        ),
-        (
-            "nested scope",
-            &["sessions where exists (tool_calls where ou"],
-            "outcome",
-            false,
-        ),
-        (
-            "saved source",
-            &["query:by-action | where co"],
-            "count",
-            true,
-        ),
-        (
-            "kept matches",
-            &["result:kept-id.matches | where to"],
-            "tool",
-            true,
-        ),
-        ("session reference", &["abc"], "codex:a", true),
-        ("setting key", &["set", "browser."], "browser.actions", true),
-    ];
+    seed(&root, "alpha");
+    let environment = environment(directory.path(), &root);
     let mut timings = vec![];
-    for seeded in [false, true] {
-        if seeded {
-            seed(&root, &cache, "alpha");
+    let mut kept = String::new();
+    let mut daemon = None;
+    for up in [false, true] {
+        if up {
+            daemon = Some(crate::cli::start_daemon(&environment));
+            kept = keep(&environment);
         }
+        let kept_rows = format!("result:{kept} | where ti");
+        let cases: [(&str, Vec<&str>, &str, bool); 13] = [
+            ("commands", vec!["sta"], "status", false),
+            ("session fields", vec!["sessions where ti"], "title", false),
+            ("message fields", vec!["messages where mo"], "model", false),
+            ("tool fields", vec!["tool_calls where ou"], "outcome", false),
+            (
+                "observed value",
+                vec!["messages where model:alp"],
+                "model:alpha",
+                true,
+            ),
+            (
+                "quoted value",
+                vec!["sessions where repo:\"two"],
+                "two words",
+                true,
+            ),
+            ("pipe stage", vec!["messages | gr"], "group by", false),
+            (
+                "group alias",
+                vec!["sessions | group by repo | sort by co"],
+                "count",
+                false,
+            ),
+            (
+                "nested scope",
+                vec!["sessions where exists (tool_calls where ou"],
+                "outcome",
+                false,
+            ),
+            (
+                "saved source",
+                vec!["query:by-action | where co"],
+                "count",
+                true,
+            ),
+            ("kept rows", vec![&kept_rows], "title", true),
+            ("session reference", vec!["abc"], "codex:a", true),
+            // Setting keys are the CLI's own table, offered without the daemon.
+            (
+                "setting key",
+                vec!["set", "browser."],
+                "browser.actions",
+                false,
+            ),
+        ];
         for shell in ["bash", "zsh", "fish"] {
-            for (name, words, expected, needs_catalog) in cases {
-                let (output, took) = callback(&root, &cache, shell, words, "polylogue");
+            for (name, words, expected, needs_daemon) in &cases {
+                if !up && *name == "kept rows" {
+                    continue;
+                }
+                let (output, took) = callback(&environment, shell, words, "polylogue");
                 timings.push(took);
-                if seeded || !needs_catalog {
+                if up || !needs_daemon {
                     assert!(
                         output.contains(expected),
-                        "{shell}/{name}/seeded={seeded}: {output:?}"
+                        "{shell}/{name}/daemon up={up}: {output:?}"
                     );
                 } else {
                     assert!(
                         !output.contains(expected),
-                        "{shell}/{name}: missing cache invented a value: {output:?}"
+                        "{shell}/{name}: no daemon, yet a value was offered: {output:?}"
                     );
                 }
             }
         }
     }
-    assert_eq!(
-        std::fs::read(root.join("index.db")).unwrap(),
-        b"archive must never be opened by completion"
-    );
-    assert_eq!(
-        std::fs::read_dir(&root).unwrap().count(),
-        1,
-        "completion wrote inside the archive"
-    );
+    drop(daemon);
     timings.sort();
     eprintln!(
-        "78 shell callbacks: median {:?}, p95 {:?}, maximum {:?}",
+        "{} shell callbacks: median {:?}, p95 {:?}, maximum {:?}",
+        timings.len(),
         timings[timings.len() / 2],
         timings[timings.len() * 95 / 100],
         timings.last().unwrap()
     );
 }
+
 #[test]
-fn wrapper_unicode_and_setting_values_use_the_same_offline_provider() {
+fn wrapper_unicode_and_setting_values_come_from_the_daemon() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("archive");
-    let cache = directory.path().join("cache");
-    std::fs::create_dir(&root).unwrap();
-    seed(&root, &cache, "alpha");
+    seed(&root, "alpha");
+    let environment = environment(directory.path(), &root);
+    let _daemon = crate::cli::start_daemon(&environment);
     for shell in ["bash", "zsh", "fish"] {
-        let (output, _) = callback(&root, &cache, shell, &["sessions where repo:żó"], "plg");
+        let (output, _) = callback(&environment, shell, &["sessions where repo:żó"], "plg");
         assert!(output.contains("żółw"), "{shell}: {output}");
-        let (output, _) = callback(&root, &cache, shell, &["ntrl"], "plg");
+        let (output, _) = callback(&environment, shell, &["ntrl"], "plg");
         assert!(output.contains("codex:a"), "{shell}: {output}");
-        let (output, _) = callback(
-            &root,
-            &cache,
-            shell,
-            &["set", "browser.actions", "o"],
-            "plg",
-        );
+        let (output, _) = callback(&environment, shell, &["set", "browser.actions", "o"], "plg");
         assert!(
             output.contains("on") && output.contains("off"),
             "{shell}: {output}"
@@ -276,24 +243,46 @@ fn wrapper_unicode_and_setting_values_use_the_same_offline_provider() {
 }
 
 #[test]
-fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
+fn a_saved_name_as_first_word_runs_once_the_daemon_answers() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("archive");
+    seed(&root, "alpha");
+    let environment = environment(directory.path(), &root);
+    let run = |words: &[&str]| environment.command().args(words).output().unwrap();
+    let daemon = crate::cli::start_daemon(&environment);
+    let saved = run(&["--json", "by-action"]);
+    assert!(saved.status.success(), "{saved:?}");
+    // The saved query's one group: the tool call's action.
+    let shown = String::from_utf8_lossy(&saved.stdout);
+    assert!(shown.contains("\"shell\""), "{shown}");
+    drop(daemon);
+    // With the daemon down the word is a search, and the line fails as any
+    // line does then.
+    let down = run(&["by-action"]);
+    let sessions = run(&["sessions"]);
+    assert!(!down.status.success(), "{down:?}");
+    assert_eq!(down.status.code(), sessions.status.code(), "{down:?}");
+}
+
+#[test]
+fn named_wrappers_keep_their_registration_and_selected_archive() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let base = directory.path();
-    let cache = base.join("cache");
     let default = base.join("default");
     let first = base.join("first archive");
     let second = base.join("selected config/second archive");
+    let mut daemons = Vec::new();
     for (archive, model) in [
         (&default, "default_value"),
         (&first, "first_value"),
         (&second, "second_value"),
     ] {
-        std::fs::create_dir_all(archive).unwrap();
-        std::fs::write(archive.join("index.db"), b"must remain unopened").unwrap();
-        seed(archive, &cache, model);
+        std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        seed(archive, model);
+        daemons.push(crate::cli::start_daemon(&environment(base, archive)));
     }
-    let fixture = process::Fixture::new(&default, &base.join("home"), &base.join("config"));
+    let fixture = environment(base, &default);
     let first_config = base.join("first.toml");
     std::fs::write(
         &first_config,
@@ -340,7 +329,7 @@ fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
         let command = |shell: &str| {
             let mut command = std::process::Command::new(&wrapper);
             fixture.environment(&mut command);
-            command.env("COMPLETE", shell).env("XDG_CACHE_HOME", &cache);
+            command.env("COMPLETE", shell);
             command
         };
         let registration = command("bash").output().unwrap();
@@ -396,56 +385,24 @@ fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
         functions[0], functions[1],
         "wrapper registrations must coexist"
     );
-    for archive in [&default, &first, &second] {
-        assert_eq!(
-            std::fs::read(archive.join("index.db")).unwrap(),
-            b"must remain unopened"
-        );
-        assert_eq!(std::fs::read_dir(archive).unwrap().count(), 1);
-    }
+    drop(daemons);
 }
 
 #[test]
 fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("archive");
-    let cache = directory.path().join("cache");
-    let mut source = polylogue_store::fixture::Fixture::new(&root).unwrap();
+    let mut source = Fixture::new(&root).unwrap();
     source
-        .session(polylogue_store::fixture::SessionFacts {
+        .session(SessionFacts {
             id: "codex:completion-latency",
             repo: Some("neutral-repository"),
             ..Default::default()
         })
         .unwrap();
     drop(source);
-    let environment = process::Fixture::new(
-        &root,
-        &directory.path().join("home"),
-        &directory.path().join("config"),
-    );
+    let environment = environment(directory.path(), &root);
     let mut daemon = Some(crate::cli::start_daemon(&environment));
-    crate::cli::wait_status(&environment, |status| {
-        status["store"]["sessions"].as_u64().is_some_and(|n| n > 0)
-    });
-    let ready = Instant::now();
-    loop {
-        let (output, _) = callback(
-            &root,
-            &cache,
-            "zsh",
-            &["sessions where repo:neutral"],
-            "polylogue",
-        );
-        if output.contains("neutral-repository") {
-            break;
-        }
-        assert!(
-            ready.elapsed() < Duration::from_secs(10),
-            "startup catalog did not write the committed repository; callback={output:?}"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
     for mode in ["up", "down"] {
         if mode == "down" {
             drop(daemon.take());
@@ -454,14 +411,14 @@ fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
             let mut samples = Vec::new();
             for _ in 0..10 {
                 let (output, elapsed) = callback(
-                    &root,
-                    &cache,
+                    &environment,
                     shell,
                     &["sessions where repo:neutral"],
                     "polylogue",
                 );
-                assert!(
+                assert_eq!(
                     output.contains("neutral-repository"),
+                    mode == "up",
                     "daemon {mode}, {shell}: {output}"
                 );
                 samples.push(elapsed.as_micros());
@@ -469,7 +426,8 @@ fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
             let mut sorted = samples.clone();
             sorted.sort_unstable();
             eprintln!(
-                "completion daemon={mode} shell={shell} samples_us={samples:?} p95_us={} maximum_us={}",
+                "completion daemon={mode} shell={shell} samples_us={samples:?} median_us={} p95_us={} maximum_us={}",
+                sorted[sorted.len() / 2],
                 sorted[sorted.len() * 95 / 100],
                 sorted.last().unwrap()
             );

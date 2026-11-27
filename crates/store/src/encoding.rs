@@ -111,6 +111,49 @@ pub(crate) fn time_bytes(
     Ok(serde_json::to_vec(&(at, accuracy))?)
 }
 
+/// A source time as the columns a condition tests (docs/query.md, times):
+/// its start in milliseconds, the exclusive end of its period when it is not
+/// an instant, and its precision. A second or a minute ends one second or
+/// one minute after it starts; a calendar grain without a stated bound has
+/// no end the reader's zone may supply, so its end stays unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct TimeColumns {
+    pub at: Option<i64>,
+    pub until: Option<i64>,
+    pub precision: Option<polylogue_model::Precision>,
+}
+
+impl TimeColumns {
+    pub(crate) fn of(at: Option<Timestamp>, accuracy: polylogue_model::TimeAccuracy) -> Self {
+        use polylogue_model::Precision;
+        let Some(at) = at else {
+            return Self::default();
+        };
+        // A known time states its precision; one that does not is read as
+        // what it most narrowly can be, an instant.
+        let precision = accuracy.precision.unwrap_or(Precision::Instant);
+        let ceil_ms = |ns: i128| i64::try_from((ns + 999_999).div_euclid(1_000_000)).ok();
+        let until = match (precision, accuracy.until) {
+            (Precision::Instant, _) => None,
+            (_, Some(until)) => ceil_ms(until.unix_ns()),
+            (Precision::Second, None) => ceil_ms(at.unix_ns() + 1_000_000_000),
+            (Precision::Minute, None) => ceil_ms(at.unix_ns() + 60_000_000_000),
+            (_, None) => None,
+        };
+        let start = at.unix_ms();
+        Self {
+            at: Some(start),
+            // A period shorter than a millisecond is stored as one.
+            until: until.map(|until| until.max(start + 1)),
+            precision: Some(precision),
+        }
+    }
+
+    pub(crate) fn precision_name(&self) -> Option<&'static str> {
+        self.precision.map(polylogue_model::Precision::as_str)
+    }
+}
+
 /// A stored value the model cannot read back.
 #[derive(Debug, thiserror::Error)]
 enum Unreadable {
@@ -777,27 +820,37 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
-/// A message's place in its session (docs/sessions.md, messages), written so
-/// that comparing the text compares (order time, input ID, sequence, record
-/// position): `0` for an unknown order time or `1` and the time, then the
-/// input ID ended by U+0001 (below every character an ID holds, so a shorter
-/// ID sorts before a longer one it begins), then the sequence and the record
-/// position. Each number is sixteen lowercase hexadecimal digits of its value
-/// with the sign bit flipped. Text, not bytes, because query pages carry their
-/// sort keys as text.
+/// A message's place in its session (docs/sessions.md, messages), as
+/// [`ORDER_LENGTH`] bytes that compare as (order time, input, sequence,
+/// record position): `00` and eight zero bytes for an unknown order time, or
+/// `01` and the time; then the first sixteen bytes of the BLAKE3 hash of the
+/// input's ID, which orders inputs by their content and never by arrival;
+/// then the sequence and the record position. Each number is eight
+/// big-endian bytes of its value with the sign bit flipped. Every order has
+/// the same length, so a key may follow it directly.
 pub(crate) fn session_order(
     order_time: Option<i64>,
     input: &str,
     seq: i64,
     position: i64,
-) -> String {
-    let sortable = |n: i64| format!("{:016x}", (n as u64) ^ (1 << 63));
-    let time = match order_time {
-        None => "0".to_owned(),
-        Some(ms) => format!("1{}", sortable(ms)),
-    };
-    format!("{time}{input}\u{1}{}{}", sortable(seq), sortable(position))
+) -> Vec<u8> {
+    let sortable = |n: i64| ((n as u64) ^ (1 << 63)).to_be_bytes();
+    let mut bytes = Vec::with_capacity(ORDER_LENGTH);
+    match order_time {
+        None => bytes.extend_from_slice(&[0; 9]),
+        Some(ms) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&sortable(ms));
+        }
+    }
+    bytes.extend_from_slice(&blake3::hash(input.as_bytes()).as_bytes()[..16]);
+    bytes.extend_from_slice(&sortable(seq));
+    bytes.extend_from_slice(&sortable(position));
+    bytes
 }
+
+/// The length of every session order.
+pub(crate) const ORDER_LENGTH: usize = 1 + 8 + 16 + 8 + 8;
 
 #[cfg(test)]
 mod tests;

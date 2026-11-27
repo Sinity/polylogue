@@ -19,7 +19,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         let pool = home.reads();
         run(&pool.reader().unwrap(), ask("sessions", T0)).unwrap()
     };
-    let cursor = initial["read_at"]["cursor"].as_str().unwrap();
+    let cursor = initial["read_position"]["cursor"].as_str().unwrap();
     engine
         .writer()
         .archive()
@@ -37,7 +37,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
                     query: format!("feed where after:{cursor}"),
                     denominator: None,
                     rows_json: r#"{"unit":"feed","columns":[],"rows":[]}"#.into(),
-                    read_at: "{}".into(),
+                    read_position: "{}".into(),
                     watch: None,
                     outcomes: None,
                 })),
@@ -85,12 +85,12 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     }
     let fresh = run(&reader, ask("sessions", T0)).unwrap();
     assert_ne!(
-        fresh["read_at"]["generation"],
-        initial["read_at"]["generation"]
+        fresh["read_position"]["index_instance"],
+        initial["read_position"]["index_instance"]
     );
     let after = format!(
         "feed where after:{}",
-        fresh["read_at"]["cursor"].as_str().unwrap()
+        fresh["read_position"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
 }
@@ -109,7 +109,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let initial = run(&pinned, ask("sessions", T0)).unwrap();
     let after = format!(
         "feed where after:{}",
-        initial["read_at"]["cursor"].as_str().unwrap()
+        initial["read_position"]["cursor"].as_str().unwrap()
     );
     engine
         .writer()
@@ -139,16 +139,16 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
     assert_eq!(
-        changes["read_at"]["generation"],
-        initial["read_at"]["generation"]
+        changes["read_position"]["index_instance"],
+        initial["read_position"]["index_instance"]
     );
     assert!(
-        changes["read_at"]["index"].as_i64().unwrap()
-            > initial["read_at"]["index"].as_i64().unwrap()
+        changes["read_position"]["index"].as_i64().unwrap()
+            > initial["read_position"]["index"].as_i64().unwrap()
     );
     assert!(
-        changes["read_at"]["archive"].as_i64().unwrap()
-            > initial["read_at"]["archive"].as_i64().unwrap()
+        changes["read_position"]["archive"].as_i64().unwrap()
+            > initial["read_position"]["archive"].as_i64().unwrap()
     );
     let rows = changes["rows"].as_array().unwrap();
     let mut changed: Vec<(&str, &str)> = rows
@@ -166,7 +166,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     );
     let after = format!(
         "feed where after:{}",
-        changes["read_at"]["cursor"].as_str().unwrap()
+        changes["read_position"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
 }

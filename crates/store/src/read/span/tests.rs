@@ -296,7 +296,7 @@ fn replay_seeks_by_field_past_a_bad_earlier_body() {
     crate::content::poison_bodies(
         &conn,
         "block",
-        "message_pk=(SELECT pk FROM message WHERE id='claude-code:s-resume') AND idx=0",
+        "message_pk=(SELECT pk FROM message WHERE id='claude-code:s-resume') AND position=0",
         [],
     )
     .unwrap();
@@ -452,7 +452,7 @@ fn document_replay_seeks_the_source_block_ordinal() {
     let conn =
         crate::archive::open_write(&archive.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    conn.execute("UPDATE document_block SET body=?1 WHERE document_pk=(SELECT pk FROM document WHERE id='claude-ai:resume') AND idx=0", [vec![255u8]]).unwrap();
+    conn.execute("UPDATE document_block SET body=?1 WHERE document_pk=(SELECT pk FROM document WHERE id='claude-ai:resume') AND position=0", [vec![255u8]]).unwrap();
     drop(conn);
     let reader = pool.reader().unwrap();
     let source = reader.resume_span_source(&origin, &version, seek).unwrap();

@@ -92,7 +92,7 @@ fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
             "SELECT rg.body, rt.start, rt.length, rb.content_group, rb.content_start,
                  rb.content_length, rb.data_length FROM tool_call t
              LEFT JOIN message rm ON rm.id = t.result_message_id
-             LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.idx = t.result_idx
+             LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.position = t.result_position
              LEFT JOIN text rt ON rt.id = rb.text_id
              LEFT JOIN content_group rg ON rg.id = rt.group_id WHERE t.pk = ?1",
         )?
@@ -174,7 +174,7 @@ pub(super) fn apply(
     )?
     .execute(params![session_pk, after.0])?;
     tx.prepare_cached(
-        "DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND row_key > ?2",
+        "DELETE FROM pull_request_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND row_key > ?2",
     )?
     .execute(params![session_pk, after.0])?;
     let mut commit = tx.prepare_cached(
@@ -185,7 +185,7 @@ pub(super) fn apply(
         commit.execute(params![session_pk, hash, block, at.0])?;
     }
     let mut pull = tx.prepare_cached(
-        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence, row_key)
+        "INSERT OR IGNORE INTO pull_request_link(session_pk, repo, number, url, evidence, row_key)
          VALUES (?1, ?2, ?3, ?4, 'gh-output', ?5)",
     )?;
     for ((repo, n, url), at) in &found.pulls {

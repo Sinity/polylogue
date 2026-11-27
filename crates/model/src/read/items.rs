@@ -184,7 +184,7 @@ pub enum HeaderKind {
 pub struct SavedQueryHeader {
     pub name: String,
     pub selected_revision: String,
-    pub question: crate::Reference,
+    pub query_id: crate::Reference,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -434,8 +434,8 @@ pub enum Card {
     },
     Trace(Box<super::TraceCard>),
     Run {
-        question: Option<crate::Reference>,
-        read_at: crate::ChangePosition,
+        query_id: Option<crate::Reference>,
+        read_position: crate::ChangePosition,
         author: Author,
         count: Option<u64>,
         exact: Option<bool>,
@@ -473,7 +473,7 @@ pub enum Card {
         to: String,
         relation: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        how: Option<String>,
+        reason: Option<String>,
         branch_point: Option<String>,
         spawning_call: Option<String>,
         copies_prefix: bool,

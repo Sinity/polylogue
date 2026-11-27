@@ -143,7 +143,7 @@ impl ReferenceText<'_> {
                     return Ok(true);
                 }
                 let from = if let Some(first) = first {
-                    let index: Option<i64> = conn.scalar_optional("SELECT idx FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk, first.to_string()])?;
+                    let index: Option<i64> = conn.scalar_optional("SELECT position FROM block WHERE message_pk=?1 AND coalesce(source_position,cast(position AS TEXT))=?2", params![pk, first.to_string()])?;
                     index.ok_or_else(|| {
                         unavailable(reference, "the bound source block is unavailable")
                     })?
@@ -151,7 +151,7 @@ impl ReferenceText<'_> {
                     0
                 };
                 let mut statement = conn.prepare_cached(
-                    "SELECT pk,idx,kind FROM block WHERE message_pk=?1 AND idx>=?2 ORDER BY idx",
+                    "SELECT pk,position,kind FROM block WHERE message_pk=?1 AND position>=?2 ORDER BY position",
                 )?;
                 let mut rows = statement.query(params![pk, from])?;
                 while let Some(row) = rows.next()? {
@@ -194,7 +194,7 @@ impl ReferenceText<'_> {
                     .scalar_optional("SELECT pk FROM message WHERE id=?1", [message.to_string()])?;
                 let Some(pk) = pk else { return Ok(false) };
                 let selection = self.source_block_selection(pk, reference)?;
-                let block: Option<i64> = conn.scalar_optional("SELECT pk FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk,n.to_string()])?;
+                let block: Option<i64> = conn.scalar_optional("SELECT pk FROM block WHERE message_pk=?1 AND coalesce(source_position,cast(position AS TEXT))=?2", params![pk,n.to_string()])?;
                 let Some(block) = block else {
                     return if *n < selection.block_count {
                         Err(unavailable(

@@ -227,6 +227,11 @@ fn every_reason_has_one_code_and_one_text() {
             "resume --in needs the session whose work it continues",
         ),
         (
+            Reason::ContinuationRequestUsed {},
+            Code::Conflict,
+            "this request ID already names a different operation",
+        ),
+        (
             Reason::ResumeOptionsNeedIn {},
             Code::BadRequest,
             "resume --at, --cwd and --stop-source apply only with --in HARNESS",
@@ -580,6 +585,13 @@ fn every_reason_has_one_code_and_one_text() {
             "the import is refused: problem-x",
         ),
         (
+            Reason::ImportRefused {
+                problem: "refused /home/op/export.json: no declared structure matched".into(),
+            },
+            Code::BadValue,
+            "no files were stored\nrefused /home/op/export.json: no declared structure matched",
+        ),
+        (
             Reason::NotAFile {
                 path: "path-x".into(),
             },
@@ -679,6 +691,23 @@ fn every_reason_has_one_code_and_one_text() {
             Reason::SaveOutcomeUnknown {},
             Code::DaemonRequired,
             "the note may or may not be saved; retry it with the same ID",
+        ),
+        (
+            Reason::ReaderNotRunning {},
+            Code::ReaderUnavailable,
+            "the reader is not running; start it with `polylogue web`",
+        ),
+        (
+            Reason::NativeVersionMismatch { version: Some(1) },
+            Code::Refused,
+            "the browser host needs version 2; reload the extension",
+        ),
+        (
+            Reason::NativeMessageInvalid {
+                problem: "problem-x".into(),
+            },
+            Code::BadRequest,
+            "the browser message is invalid: problem-x",
         ),
         (
             Reason::CaptureNotJson {},

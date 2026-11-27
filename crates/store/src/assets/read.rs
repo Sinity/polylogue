@@ -47,7 +47,7 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
         let (version,piece,source_input,source_chain):(Vec<u8>,crate::content::Piece,String,i64)=conn.query_row(
-            "SELECT m.version_hash,b.content_group,b.content_start,b.content_length,b.data_length,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+            "SELECT m.version_hash,b.content_group,b.content_start,b.content_length,b.data_length,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.source_position,CAST(b.position AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
             |r| Ok((r.get(0)?, crate::content::Piece::of(r, 1)?, r.get(5)?, r.get(6)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
@@ -225,7 +225,7 @@ pub(super) fn scope_matches(
             JOIN import_asset_sidecar s ON s.input=x.input AND s.sidecar=x.sidecar AND s.error IS NULL
             WHERE m.import_id=?1 AND x.source_id=?2 AND m.sidecar IS NOT NULL
               AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
-            ORDER BY m.input,x.ordinal")?;
+            ORDER BY m.input,x.position")?;
         for row in meta.query_map(params![scope, source_id], |r| {
             <(
                 Option<String>,

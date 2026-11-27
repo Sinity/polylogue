@@ -113,12 +113,7 @@ pub fn prompt_kind(content: &Json) -> PromptKind {
         .unwrap_or("");
     if first.starts_with("<user_shell_command>") {
         PromptKind::Command
-    } else if crate::origin::by_name("codex")
-        .unwrap()
-        .harness_prefixes
-        .iter()
-        .any(|m| first.starts_with(m))
-    {
+    } else if HARNESS_PREFIXES.iter().any(|m| first.starts_with(m)) {
         PromptKind::Harness
     } else {
         PromptKind::Prose
@@ -624,6 +619,20 @@ fn result_block(
         attachments,
     }
 }
+
+/// Text prefixes this harness writes at the start of user-role messages.
+pub(crate) const HARNESS_PREFIXES: &[&str] = &[
+    "<environment_context>",
+    "# AGENTS.md instructions",
+    "<user_instructions>",
+    "<subagent_notification>",
+    "<recommended_plugins>",
+    "<codex_internal_context",
+    "<turn_aborted>",
+    "<skill>",
+    "<user_action>",
+    "<permissions instructions>",
+];
 
 #[cfg(test)]
 mod tests;

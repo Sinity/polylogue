@@ -8,6 +8,29 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+#[test]
+fn browser_install_writes_the_invoking_wrapper_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let wrapper = directory.path().join("polylogue");
+    std::os::unix::fs::symlink(crate::BIN, &wrapper).unwrap();
+    let output = crate::command(directory.path())
+        .env("PATH", directory.path())
+        .args(["install", "chrome", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let manifest: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(manifest["path"], wrapper.to_string_lossy().as_ref());
+    assert_eq!(
+        manifest["allowed_origins"],
+        serde_json::json!(["chrome-extension://pcfmanpibdomhkfjiginenedmjjfgned/"])
+    );
+}
+
 /// Execute the typed continuation as supplied by the daemon. CLI formatting
 /// and execution are tested in the binary through its actual declarations.
 fn follow(
@@ -199,7 +222,7 @@ fn serving(mut command: Command) -> Daemon {
 /// written file) waits here first. While `ready` does not hold for a
 /// caught-up status, the change the test made has not reached the daemon
 /// yet, and the next wait is for a status that caught up after a later
-/// change (`--after`): each answer follows something the daemon did, and
+/// change (`--after-changes`): each answer follows something the daemon did, and
 /// nothing is polled.
 pub(super) fn wait_status(
     env: &crate::Fixture,
@@ -212,7 +235,7 @@ pub(super) fn wait_status(
         // instead of turning it into a timeout.
         let mut args = vec!["--deadline", "none", "--json", "status", "--wait", &wait];
         if let Some(after) = &after {
-            args.extend(["--after", after]);
+            args.extend(["--after-changes", after]);
         }
         let out = cli(env, &args);
         let answer: command_surface::Answer<serde_json::Value> =
@@ -779,6 +802,7 @@ mod stored_text;
 mod search_snippets;
 
 mod hook_errors;
+mod live_acts;
 
 mod grok_export;
 
@@ -793,6 +817,7 @@ mod hermes_events;
 
 #[cfg(target_os = "linux")]
 mod attachments;
+mod import_outcomes;
 
 #[cfg(target_os = "linux")]
 mod read_bench;
@@ -1617,8 +1642,8 @@ fn saved_query_retry_and_printed_undo_keep_immutable_results() {
     assert_eq!(report["saved"]["id"], "save-cli-1.1");
     assert_eq!(report["saved"]["revision"], 1);
     assert_eq!(report["watch"]["id"], "save-cli-1.2");
-    assert_eq!(report["kept"]["result"], "result:save-cli-1");
-    assert_eq!(report["kept"]["rows"], 1);
+    assert_eq!(report["saved_rows"]["result"], "result:save-cli-1");
+    assert_eq!(report["saved_rows"]["rows"], 1);
     let undo = step["outcome"]["undo"].as_array().unwrap();
     assert_eq!(undo.len(), 1, "{first}");
     let retry = cli(&env, &args);

@@ -231,8 +231,18 @@ impl<'a> Compiler<'a> {
                     ));
                     let spec = units::spec(parts.scope.unit);
                     let time = parts.scope.a.expand(spec.time);
+                    // Newest first is the unit's time order read backwards,
+                    // ties included, so the index of its default order
+                    // serves it.
                     let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
-                    order.extend(spec.identity.iter().map(|term| parts.scope.a.expand(term)));
+                    if spec.session_order {
+                        order.push(format!("{}.session_order DESC", parts.scope.a.m));
+                    }
+                    order.extend(
+                        spec.identity
+                            .iter()
+                            .map(|term| format!("{} DESC", parts.scope.a.expand(term))),
+                    );
                     parts.explicit_order = Some(order);
                 }
                 TransformKind::Extension { name, arguments }
@@ -427,7 +437,15 @@ impl<'a> Compiler<'a> {
             "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
             similarity.unwrap_or("1")
         ));
-        let (hidden, keys) = self.selection_order(&order, ranking);
+        let (hidden, mut keys) = self.selection_order(&order, ranking);
+        // A unit whose rows are computed (an aggregate, a relation over
+        // other rows) is computed whole, so its page is not read as two
+        // parts, which would compute it twice.
+        if !units::spec(parts.scope.unit).reads_a_table() {
+            for key in &mut keys {
+                key.partition = false;
+            }
+        }
         let keyed = parts.measure.is_none().then(|| {
             (
                 self.keys_statement(ctes, (&from, &wh), &pk, &hidden, ranking),
@@ -924,6 +942,9 @@ impl<'a> Compiler<'a> {
                     .map(|term| format!("{} DESC", a.expand(term))),
             );
             return o;
+        }
+        if let Some(terms) = spec.order {
+            return terms.iter().map(|term| a.expand(term)).collect();
         }
         let desc = if spec.newest_first { " DESC" } else { "" };
         let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];

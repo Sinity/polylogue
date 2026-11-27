@@ -10,7 +10,7 @@ fn standing(engine: &Engine) -> (String, Option<String>, Option<i64>) {
         .unwrap()
         .query(
             "SELECT p.state,p.failure_detail,p.parsed_to+p.waiting AS seen_to FROM parse_state p
-             JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",
+             JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin='claude-code'",
             &[],
         )
         .unwrap();

@@ -32,7 +32,7 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
         )
         .unwrap();
     }
-    r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
+    r.w.wait_for(|s| s["store"]["sessions_physical"] == 121 && s["store"]["search_pending"] == 0);
     let text = "sessions where (parser OR missing) origin:claude-code";
     let counts = data(&r, &format!("{text} | group by origin | count"), None);
     assert_eq!(counts["rows"][0]["count"], 121, "{counts}");
@@ -84,7 +84,7 @@ fn search_writes_are_available_through_the_command_table() {
     let crate::protocol::line::StepAnswer::Saved(kept) = crate::test_answers::step(kept) else {
         panic!("expected saved selection")
     };
-    assert_eq!(kept.kept.result.as_str(), "result:mcp-kept-1");
+    assert_eq!(kept.saved_rows.result.as_str(), "result:mcp-kept-1");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &format!(
                 "result:{}",
                 serde_json::to_string(
-                    outcome["kept"]["result"]
+                    outcome["saved_rows"]["result"]
                         .as_str()
                         .unwrap()
                         .strip_prefix("result:")
