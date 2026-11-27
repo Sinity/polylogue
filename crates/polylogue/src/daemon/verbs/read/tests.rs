@@ -26,14 +26,16 @@ fn an_unknown_format_is_a_bad_value_naming_the_formats() {
     );
 }
 
-/// A documented format whose encoder is not built is reported as such.
+/// A designed format whose encoder is not built is refused from the list
+/// of what is not built, naming its page.
 #[test]
 fn a_documented_format_without_an_encoder_is_not_built() {
     assert_eq!(
         refusal("citation"),
         (
             "not_built".to_owned(),
-            "read --format citation is not built yet".to_owned()
+            "read --format citation is not built yet; docs/page-text.md#citation-lines designs it"
+                .to_owned()
         )
     );
 }

@@ -177,12 +177,14 @@ fn mcp_follow_returns_paged_call() {
         answer.failure().unwrap().message,
         "a model cannot hold a stream; read again to continue"
     );
+    // The same line with each read paged: the typed line, whose defaults
+    // (no follow, a page) are left out.
     let next = &answer.envelope.next[0].request;
     assert_eq!(
         next.arguments,
         json!({
             "selection":"session:claude-code:s1",
-            "steps":[{"verb":"read","follow":false,"delivery":"page","view":"dialogue","budget":128}]
+            "steps":[{"verb":"read","view":"dialogue","budget":128}]
         })
     );
     let (text, read, failed) = invoke(&daemon.daemon.archive, Tool::Read, arguments_for(next));
@@ -349,7 +351,7 @@ fn mcp_and_cli_print_the_same_step_text() {
          kept    result:kept-1 (3 rows, {at}), now result:open-work\n\
          \ntagged 2 rows\n"
     );
-    assert_eq!(rows_text(&line).unwrap(), expected);
+    assert_eq!(line_text(&line).unwrap(), expected);
     assert_eq!(
         crate::cli::print::line(&line, command_surface::TextStyle::Plain),
         expected.replace("\n\n", "\n")

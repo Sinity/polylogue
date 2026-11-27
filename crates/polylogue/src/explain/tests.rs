@@ -9,13 +9,13 @@ fn explain(expression: Option<&str>) -> crate::test_daemon::Call {
 
 #[test]
 fn declaration_pages_preserve_every_entry() {
-    for subject in SUBJECTS {
+    for subject in ["syntax", "units", "fields", "transforms", "capabilities"] {
         let expected = entries(subject, None).unwrap();
         let mut seen = Vec::new();
         let mut cursor = None;
         loop {
             let page = answer(subject, None, Some(1), cursor.as_deref()).unwrap();
-            assert_eq!(page["subject"], *subject);
+            assert_eq!(page["subject"], subject);
             assert_eq!(page["total"], expected.len());
             assert!(page.get("syntax").is_none());
             seen.extend(page["entries"].as_array().unwrap().iter().cloned());
@@ -195,13 +195,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
 }
 
 #[test]
-fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
-    let page = answer("derived", None, Some(100), None).unwrap();
-    let entries = page["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), polylogue_model::derived::all().len());
-    assert!(entries.iter().any(|e| e["name"] == "session_span"
-        && e["validity"] == "parameterized"
-        && e["parameters"][0]["value"] == 300000));
+fn fields_expose_their_construct() {
     let page = answer("fields", Some("sessions"), Some(1000), None).unwrap();
     let field = page["entries"]
         .as_array()
@@ -212,27 +206,41 @@ fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
     assert_eq!(field["construct"]["catalog"], "K15");
 }
 
+/// `help capabilities` (docs/interfaces.md, Operation table) publishes what
+/// the MCP tool list leaves out: each command's and verb's unlisted
+/// arguments and each command's answer schema.
 #[test]
-fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
-    let capabilities = entries("capabilities", None).unwrap();
-    let read = capabilities
-        .iter()
-        .find(|entry| entry["kind"] == "command" && entry["name"] == "rows")
-        .unwrap();
-    assert_eq!(read["tool"], "polylogue_read");
-    let unlisted = read["unlisted"].as_array().unwrap();
-    assert!(
-        unlisted.contains(&json!("return_selection")),
-        "{unlisted:?}"
+fn help_capabilities_lists_unlisted_arguments() {
+    let w = crate::test_daemon::start("help capabilities");
+    let page = crate::test_answers::ok(
+        crate::test_daemon::Call::new("help", json!({"topic": "capabilities", "page_size": 1000}))
+            .answer(&w.daemon),
     );
-    assert!(read["arguments"]["properties"]["steps"].is_object());
-    assert!(read["answer"].is_object());
-    let status = capabilities
-        .iter()
-        .find(|entry| entry["kind"] == "command" && entry["name"] == "status")
-        .unwrap();
-    assert_eq!(status["tool"], "polylogue_read");
-    let envelope = capabilities
+    assert_eq!(page["next"], Value::Null);
+    let entries = page["entries"].as_array().unwrap();
+    let entry = |kind: &str, name: &str| {
+        entries
+            .iter()
+            .find(|entry| entry["kind"] == kind && entry["name"] == name)
+            .unwrap_or_else(|| panic!("no {kind} {name}"))
+    };
+    let rows = entry("command", "rows");
+    assert_eq!(rows["tool"], "polylogue_read");
+    assert_eq!(rows["unlisted"], json!(["references", "return_selection"]));
+    assert!(rows["arguments"]["properties"]["steps"].is_object());
+    assert!(rows["answer"].is_object());
+    assert_eq!(
+        entry("command", "help")["unlisted"],
+        json!(["unit", "page_size"])
+    );
+    assert_eq!(entry("command", "status")["tool"], "polylogue_read");
+    assert_eq!(
+        entry("verb", "read")["unlisted"],
+        json!(["displayed", "delivery"])
+    );
+    assert_eq!(entry("verb", "brief")["unlisted"], json!(["source"]));
+    assert_eq!(entry("verb", "tag")["signature"], "tag(name)");
+    let envelope = entries
         .iter()
         .find(|entry| entry["kind"] == "answer")
         .unwrap();
