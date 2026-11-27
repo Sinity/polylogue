@@ -186,8 +186,8 @@ impl Rebuild {
     }
 
     /// Assembles every session of the session records on the pool and
-    /// appends them, a transaction per [`SESSIONS_PER_TRANSACTION`] batches'
-    /// worth. Returns the events the pool left for the build file.
+    /// appends each composed batch in a transaction. Returns the events the
+    /// pool left for the build file.
     #[allow(clippy::too_many_arguments)]
     fn assemble_stream(
         &mut self,
@@ -214,57 +214,54 @@ impl Rebuild {
             counter,
         )?;
         let skipped: BTreeSet<String> = fallback.iter().cloned().collect();
-        let (batches, gate) = read_stream(
-            merged,
-            texts,
-            skipped,
-            aliases,
-            Arc::new(groups),
-            ahead,
-            assemblers,
-        );
-        // A dropped pool lets its reader go.
-        struct Closing(Arc<Gate>);
-        impl Drop for Closing {
-            fn drop(&mut self) {
-                self.0.close();
-            }
-        }
-        let closing = Closing(Arc::clone(&gate));
-        let mut pool = pool::Pool::start(assemblers, shared, batches, &self.conn)?;
+        let gate = Gate::new();
+        let stop = self.archive.stop().child();
         // A session from the stream refers only to rows the rebuild wrote.
         self.conn.pragma_update(None, "foreign_keys", false)?;
-        let mut deferred = Vec::new();
-        let result = (|| -> Result<()> {
-            loop {
-                self.archive.stop().check()?;
+        let result = std::thread::scope(|scope| {
+            // Any exit wakes the stream and interrupts the workers before
+            // the scope joins them and gives the build file back.
+            struct Closing(Arc<Gate>, crate::cancellation::Cancellation);
+            impl Drop for Closing {
+                fn drop(&mut self) {
+                    self.1.cancel();
+                    self.0.close();
+                }
+            }
+            let _closing = Closing(Arc::clone(&gate), stop.clone());
+            let batches = read_stream(
+                scope,
+                merged,
+                texts,
+                skipped,
+                aliases,
+                Arc::new(groups),
+                ahead,
+                assemblers,
+                Arc::clone(&gate),
+                stop.clone(),
+            )?;
+            let mut pool =
+                pool::Pool::start(scope, assemblers, shared, batches, &self.conn, &stop)?;
+            let mut deferred = Vec::new();
+            while let Some(composed) = pool.next()? {
+                stop.check()?;
+                // Composers read the build file. Wait for their result
+                // before a write transaction can force those reads to wait.
                 let tx = self
                     .conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 bump_counter(&tx)?;
-                let mut sessions = 0;
-                let mut done = false;
-                while sessions < SESSIONS_PER_TRANSACTION as u64 * 8 {
-                    let Some(composed) = pool.next()? else {
-                        done = true;
-                        break;
-                    };
-                    pool.append(&tx, composed.rows)?;
-                    gate.release(composed.bytes);
-                    deferred.extend(composed.late);
-                    sessions += composed.sessions;
-                }
+                pool.append(&tx, composed.rows)?;
                 tx.commit()?;
-                self.count(sessions);
-                if done {
-                    return Ok(());
-                }
+                gate.release(composed.bytes);
+                deferred.extend(composed.late);
+                self.count(composed.sessions);
             }
-        })();
+            Ok(deferred)
+        });
         self.conn.pragma_update(None, "foreign_keys", true)?;
-        drop(closing);
-        result?;
-        Ok(deferred)
+        result
     }
 
     /// Assembles what `touched` names from the parses in the build file, as
@@ -361,7 +358,9 @@ fn piece_bytes(record: usize) -> usize {
 /// sessions to the pool in batches of about [`pool::BATCH_MESSAGES`]
 /// messages or a share of `ahead` bytes. Sessions assembled from the build
 /// file are passed over.
-fn read_stream(
+#[allow(clippy::too_many_arguments)]
+fn read_stream<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
     mut merged: Merger,
     mut texts: Merger,
     skipped: BTreeSet<String>,
@@ -369,25 +368,26 @@ fn read_stream(
     groups: Arc<GroupKeys>,
     ahead: usize,
     assemblers: usize,
-) -> (std::sync::mpsc::Receiver<Result<pool::Batch>>, Arc<Gate>) {
+    gate: Arc<Gate>,
+    stop: crate::cancellation::Cancellation,
+) -> Result<std::sync::mpsc::Receiver<Result<pool::Batch>>> {
     let (sender, receiver) = std::sync::mpsc::channel();
-    let gate = Gate::new();
-    let held = Arc::clone(&gate);
     // Enough batches in flight for every assembler and the appender.
     let batch_bytes = (ahead / (2 * assemblers.max(1) + 1)).max(1 << 20);
-    let spawned = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("polylogue-assemble-stream".into())
-        .spawn(move || {
+        .spawn_scoped(scope, move || {
             let mut batch = pool::Batch::default();
             let mut seq = 0;
             let mut ship = |batch: &mut pool::Batch| -> bool {
                 let mut full = std::mem::take(batch);
                 full.seq = seq;
                 seq += 1;
-                held.take(full.bytes, ahead) && sender.send(Ok(full)).is_ok()
+                gate.take(full.bytes, ahead) && sender.send(Ok(full)).is_ok()
             };
             let result = (|| -> Result<()> {
                 while let Some((key, _)) = merged.peek()? {
+                    stop.check()?;
                     if key.first() != Some(&COMPOSE) {
                         return Err(StoreError::Invalid(
                             "a build stream holds records after its composition".into(),
@@ -399,12 +399,16 @@ fn read_stream(
                             .peek()?
                             .is_some_and(|(key, _)| of_session(key, &session))
                         {
+                            stop.check()?;
                             merged.next()?;
                         }
                         continue;
                     }
                     batch.pieces.push(Piece::Begin);
                     let mut add = |piece: Piece, bytes: usize| {
+                        if stop.is_cancelled() {
+                            return false;
+                        }
                         if matches!(piece, Piece::Message { .. }) {
                             batch.messages += 1;
                         }
@@ -412,7 +416,9 @@ fn read_stream(
                         batch.pieces.push(piece);
                         true
                     };
-                    read_session(&mut merged, &mut texts, &groups, &session, &mut add)?;
+                    if !read_session(&mut merged, &mut texts, &groups, &session, &mut add)? {
+                        return stop.check();
+                    }
                     batch.pieces.push(Piece::End(session));
                     if (batch.messages >= pool::BATCH_MESSAGES || batch.bytes >= batch_bytes)
                         && !ship(&mut batch)
@@ -428,13 +434,8 @@ fn read_stream(
             if let Err(error) = result {
                 let _ = sender.send(Err(error));
             }
-        });
-    if let Err(error) = spawned {
-        let (sender, failed) = std::sync::mpsc::channel();
-        let _ = sender.send(Err(error.into()));
-        return (failed, gate);
-    }
-    (receiver, gate)
+        })?;
+    Ok(receiver)
 }
 
 /// Whether `key` is one of `session`'s records.

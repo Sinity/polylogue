@@ -234,8 +234,14 @@ struct Composing {
 }
 
 impl Composing {
-    fn open(shared: Arc<Shared>, tables: Arc<Tables>) -> Result<Self> {
+    fn open(
+        shared: Arc<Shared>,
+        tables: Arc<Tables>,
+        stop: &crate::cancellation::Cancellation,
+    ) -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        let cancelled = stop.clone();
+        crate::cancellation::interrupt_on(&conn, move || cancelled.check())?;
         crate::schema::ensure_build_index(&conn)?;
         conn.pragma_update(None, "foreign_keys", false)?;
         crate::meta_set(&conn, "write_counter", shared.counter.to_string())?;
@@ -259,9 +265,9 @@ impl Composing {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         build.pragma_update(None, "query_only", true)?;
-        // A read waits for the writer's transaction, an index creation among
-        // them, for as long as it runs.
         build.busy_timeout(std::time::Duration::from_secs(3600))?;
+        let cancelled = stop.clone();
+        crate::cancellation::interrupt_on(&build, move || cancelled.check())?;
         Ok(Self {
             conn,
             build,
@@ -272,7 +278,11 @@ impl Composing {
 
     /// Composes `batch` in one transaction it then rolls back, and takes
     /// its rows.
-    fn compose(&mut self, batch: Batch) -> Result<Composed> {
+    fn compose(
+        &mut self,
+        batch: Batch,
+        stop: &crate::cancellation::Cancellation,
+    ) -> Result<Composed> {
         let shared = Arc::clone(&self.shared);
         let tx = Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         // A session an event of which follows a message stated under another
@@ -281,6 +291,7 @@ impl Composing {
         // holds them: composition reads each reading's content.
         let mut groups = std::collections::BTreeSet::new();
         for piece in &batch.pieces {
+            stop.check()?;
             match piece {
                 Piece::Message { readings, .. } => {
                     groups.extend(readings.iter().map(|r| r.stored.group));
@@ -298,6 +309,7 @@ impl Composing {
             let mut copy =
                 tx.prepare_cached("INSERT INTO content_group(id,hash,body) VALUES (?1,?2,?3)")?;
             for group in groups {
+                stop.check()?;
                 let (hash, body): (Vec<u8>, Vec<u8>) = read
                     .query_row([group], |r| <(Vec<u8>, Vec<u8>)>::try_from(r))
                     .optional()?
@@ -321,6 +333,7 @@ impl Composing {
         let mut kinds = HashMap::new();
         let mut sessions = 0;
         for piece in batch.pieces {
+            stop.check()?;
             match piece {
                 Piece::Begin => {
                     composer.begin();
@@ -400,11 +413,13 @@ pub(super) struct Pool {
 impl Pool {
     /// Starts `count` composers taking batches from `batches`, to append to
     /// the build file `index`.
-    pub(super) fn start(
+    pub(super) fn start<'scope>(
+        scope: &'scope std::thread::Scope<'scope, '_>,
         count: usize,
         shared: Shared,
         batches: Receiver<Result<Batch>>,
         index: &Connection,
+        stop: &crate::cancellation::Cancellation,
     ) -> Result<Self> {
         let template = Connection::open_in_memory()?;
         crate::schema::ensure_build_index(&template)?;
@@ -434,10 +449,11 @@ impl Pool {
                 Arc::clone(&batches),
                 sender.clone(),
             );
+            let stop = stop.clone();
             std::thread::Builder::new()
                 .name(format!("polylogue-assemble-{n}"))
-                .spawn(move || {
-                    let mut composing = match Composing::open(shared, tables) {
+                .spawn_scoped(scope, move || {
+                    let mut composing = match Composing::open(shared, tables, &stop) {
                         Ok(composing) => composing,
                         Err(error) => {
                             let _ = sender.send(Err(error));
@@ -445,6 +461,9 @@ impl Pool {
                         }
                     };
                     loop {
+                        if stop.is_cancelled() {
+                            return;
+                        }
                         let batch = match batches.lock() {
                             Ok(batches) => batches.recv(),
                             Err(_) => return,
@@ -452,7 +471,7 @@ impl Pool {
                         let Ok(batch) = batch else { return };
                         let composed = batch.and_then(|batch| {
                             let _doing = crate::activity::doing("assembling sessions");
-                            composing.compose(batch)
+                            composing.compose(batch, &stop)
                         });
                         let failed = composed.is_err();
                         if sender.send(composed).is_err() || failed {
