@@ -339,28 +339,37 @@ test_staging() {
         [ -n "$run" ] || [ $polls -lt 20 ] || { conclusion=missing; return; }
     done
     note "run https://github.com/$owner/$name/actions/runs/$run"
-    await_run
+    await_run 1
 }
 
+# A completed response for an earlier attempt is not the result of a rerun.
 await_run() {
-    local polls=0
-    # A rerun takes a moment to leave the completed state.
-    while [ "${1-}" = rerun ] && [ $polls -lt 6 ] &&
-        [ "$(gh run view "$run" -R "$owner/$name" --json status --jq .status)" = completed ]; do
-        polls=$((polls + 1)); sleep 10
+    local attempt=$1 result missing_polls=0
+    conclusion=missing
+    while true; do
+        result=$(gh run view "$run" -R "$owner/$name" --attempt "$attempt" \
+            --json attempt,headBranch,headSha,status,conclusion --jq "
+            if .headBranch != \"$staging_branch\" or .headSha != \"$staging\" then \"wrong run\"
+            elif .attempt != $attempt or (.status // \"\") == \"\" then \"missing\"
+            elif .status != \"completed\" then \"pending\"
+            else .conclusion // \"missing\" end" 2>/dev/null) || result=missing
+        case $result in
+            "wrong run") return 0 ;;
+            ''|missing)
+                missing_polls=$((missing_polls + 1))
+                [ "$missing_polls" -lt 20 ] || return 0
+                sleep 15 ;;
+            pending) missing_polls=0; sleep 60 ;;
+            *)
+                run_attempt=$attempt conclusion=$result
+                finished_staging_branches[$staging_branch]=$staging
+                return 0 ;;
+        esac
     done
-    gh run watch "$run" -R "$owner/$name" --interval 60 >/dev/null 2>&1 || true
-    conclusion=$(gh run view "$run" -R "$owner/$name" --json headBranch,headSha,status,conclusion --jq "
-        if .headBranch == \"$staging_branch\" and .headSha == \"$staging\"
-           and .status == \"completed\" and .conclusion != null and .conclusion != \"\"
-        then .conclusion else \"missing\" end") || conclusion=missing
-    if [ "$conclusion" != missing ]; then
-        finished_staging_branches[$staging_branch]=$staging
-    fi
 }
 
 failed_jobs() {
-    gh run view "$run" -R "$owner/$name" --json jobs \
+    gh run view "$run" -R "$owner/$name" --attempt "$run_attempt" --json jobs \
         --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name] | join(", ")'
 }
 
@@ -429,9 +438,10 @@ send_back() {
     gh pr comment "$n" -R "$owner/$name" --body "<!-- land-queue sent back $head -->
 The landing queue sent this pull request back. Its head \`${head:0:10}\` passes \`check\` on its own, but fails combined with $default_branch \`${base:0:10}\`$also.
 
-- Run: https://github.com/$owner/$name/actions/runs/$run (failed, and failed again when its failed jobs were run once more)
-- Failed jobs: $jobs
-- Failed tests: ${tests:-(none named in the JUnit reports)}
+- First failure: https://github.com/$owner/$name/actions/runs/$run/attempts/1
+- Failed rerun: https://github.com/$owner/$name/actions/runs/$run/attempts/$run_attempt
+- Failed jobs on the rerun: $jobs
+- Failed tests before the rerun: ${tests:-(none named in the JUnit reports)}
 
 Pushing a new head or updating the branch puts it back in the queue." >/dev/null
     note "sent back #$n $title: $jobs"
@@ -492,7 +502,7 @@ land_batch() {
             note "red alone on $default_branch: $jobs; running the failed jobs once more"
             unset "finished_staging_branches[$staging_branch]"
             gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || return 0
-            await_run rerun
+            await_run "$((run_attempt + 1))"
             if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
                 note "the staging rerun was ${conclusion/missing/not found}; the batch waits for the next cycle"
                 return 0
@@ -502,6 +512,7 @@ land_batch() {
             if [ "$conclusion" = success ]; then
                 note "failed once, passed on rerun (#${included[0]}): $(paste -sd' ' <<<"${tests:-unnamed}")"
             else
+                jobs=$(failed_jobs)
                 send_back "${included[0]}" "$jobs" "$(paste -sd',' <<<"$tests" | sed 's/,/, /g')" "$base"
                 return 0
             fi
