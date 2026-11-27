@@ -49,10 +49,6 @@ pub mod help {
         /// Print the full reference
         #[serde(default)]
         pub all: bool,
-        /// Write the reference to a file or browser
-        pub to: Option<String>,
-        /// The reference's document format
-        pub format: Option<String>,
         /// List fields for this unit
         #[schemars(extend("unlisted" = true))]
         pub unit: Option<String>,
@@ -80,9 +76,6 @@ pub mod import {
         /// Read the paths as this declared structure (an origin name), or python-vectors for one of Python Polylogue's vector stores
         #[serde(default)]
         pub origin: Option<String>,
-        /// Withdraw page blocks missing from an imported working copy
-        #[serde(default)]
-        pub withdraw_missing: bool,
         /// Fetch provider conversations changed since this time
         pub since: Option<String>,
         /// Cancel a provider import

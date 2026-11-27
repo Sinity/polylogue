@@ -33,6 +33,22 @@ impl Operation for Line {
     fn failure(line: &LineAnswer) -> Option<command_surface::FailureKind> {
         line.failed_step().map(|failure| failure.kind)
     }
+    /// Each read pages instead of streaming or following.
+    fn without_stream(rows: &Rows) -> Option<Rows> {
+        if !streams(rows) {
+            return None;
+        }
+        let mut paged = rows.clone();
+        for step in &mut paged.steps {
+            if let Step::Read(read) = step {
+                read.follow = false;
+                read.delivery = polylogue_model::read::ReadDelivery::Page;
+            }
+        }
+        Some(paged)
+    }
+    const MODEL_TEXT: Option<crate::daemon::handler::ModelText<LineAnswer>> =
+        Some(crate::mcp::line_text);
     /// A line's access is its highest step's. It changes the archive when a
     /// step writes or acts, or a brief records its delivery to a model or a
     /// hook; a line with a streamed read takes only a deadline its caller
@@ -727,9 +743,6 @@ impl Stream<'_> {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         if read.follow {
-            if read.until_idle {
-                return Err(verbs::not_built("read", "until-idle"));
-            }
             let target = verbs::read::target(selection)?;
             let marks =
                 super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;

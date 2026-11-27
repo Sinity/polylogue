@@ -644,12 +644,6 @@ fn text_output(
     client: &crate::config::Client,
 ) -> Result<(), command_surface::Failure> {
     match to {
-        Some(Destination::Clipboard | Destination::Browser) => {
-            return Err(crate::protocol::failure(
-                Code::NotBuilt,
-                "this destination is not built yet",
-            ));
-        }
         Some(Destination::File(path)) => {
             let mut file = super::staged_file::StagedFile::new(path)
                 .map_err(|error| crate::protocol::failure(Code::Io, error.to_string()))?;
@@ -858,11 +852,13 @@ impl picker::Source for Source {
         if action == picker::Action::Enter {
             return Ok(());
         }
-        if action != picker::Action::Read {
-            return Err(crate::daemon::Failure::from(crate::protocol::failure(
-                Code::NotBuilt,
-                "this destination is not built yet",
-            )));
+        let unbuilt = match action {
+            picker::Action::Browser => Some("Ctrl-o (open in the browser)"),
+            picker::Action::Copy => Some("Ctrl-y (copy the reference)"),
+            picker::Action::Enter | picker::Action::Read => None,
+        };
+        if let Some(use_) = unbuilt {
+            return Err(crate::unbuilt::refusal("pick", use_).into());
         }
         let call = crate::client::request(
             "rows",
@@ -917,6 +913,10 @@ pub(crate) fn help(words: &[String]) -> bool {
         for verb in declarations.verbs() {
             println!("  {}", verb.signature());
         }
+        return true;
+    }
+    if words == ["unbuilt"] {
+        print!("{}", crate::unbuilt::text());
         return true;
     }
     if words.len() == 1
