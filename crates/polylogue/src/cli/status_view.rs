@@ -702,7 +702,7 @@ fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines.extend(
         pass.phases
             .iter()
-            .map(|phase| format!("{} s {}", decimal(phase.seconds), phase.phase)),
+            .map(|(phase, seconds)| format!("{} s {}", decimal(*seconds), phase)),
     );
     if let Some(first) = pass.errors.first() {
         let more = match pass.errors.len() {

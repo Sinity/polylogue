@@ -15,7 +15,7 @@ struct PassProgress {
     phase: &'static str,
     began: Instant,
     doing: Doing,
-    phases: Vec<PassPhase>,
+    phases: Vec<(&'static str, Duration)>,
 }
 
 impl PassProgress {
@@ -38,17 +38,27 @@ impl PassProgress {
     }
 
     fn record(&mut self, now: Instant) {
-        self.phases.push(PassPhase {
-            phase: self.phase.into(),
-            seconds: now.duration_since(self.began).as_secs_f64(),
-        });
+        let elapsed = now.duration_since(self.began);
+        if let Some((_, total)) = self
+            .phases
+            .iter_mut()
+            .find(|(phase, _)| *phase == self.phase)
+        {
+            *total += elapsed;
+        } else {
+            self.phases.push((self.phase, elapsed));
+        }
         self.began = now;
     }
 
     fn finish(mut self, pass: &mut Pass) {
         self.record(Instant::now());
-        pass.seconds = self.phases.iter().map(|phase| phase.seconds).sum();
-        pass.phases = self.phases;
+        pass.phases = self
+            .phases
+            .into_iter()
+            .map(|(phase, elapsed)| (phase.into(), elapsed.as_millis() as f64 / 1000.0))
+            .collect();
+        pass.seconds = pass.phases.iter().map(|(_, seconds)| seconds).sum();
     }
 }
 

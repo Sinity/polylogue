@@ -350,20 +350,14 @@ pub struct Pass {
     #[serde(default)]
     pub derivation_pending: bool,
     pub seconds: f64,
-    /// Consecutive phases of a single pass, in execution order.
+    /// Each phase's name and total seconds, in order of first use.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub phases: Vec<PassPhase>,
+    pub phases: Vec<(String, f64)>,
     pub unreadable_roots: Vec<PathBuf>,
     /// What failed in the pass, each with what it happened to and its cause.
     pub errors: Vec<polylogue_model::Failure>,
     /// Capture work is still queued.
     pub capture_pending: bool,
-}
-
-#[derive(Debug, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct PassPhase {
-    pub phase: String,
-    pub seconds: f64,
 }
 
 impl Pass {

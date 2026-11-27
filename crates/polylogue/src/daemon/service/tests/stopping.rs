@@ -427,11 +427,11 @@ fn status_reports_a_source_walk_and_the_finished_pass() {
     assert!(
         pass.phases
             .iter()
-            .any(|phase| phase.phase == "finding source files")
+            .any(|(phase, _)| phase == "finding source files")
     );
     assert_eq!(
         pass.seconds,
-        pass.phases.iter().map(|phase| phase.seconds).sum::<f64>()
+        pass.phases.iter().map(|(_, seconds)| seconds).sum::<f64>()
     );
     drop(release_on_stop);
     runtime.shutdown().unwrap();

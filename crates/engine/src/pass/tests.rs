@@ -40,7 +40,7 @@ fn finished_pass_times_its_work_in_execution_order() {
     let work: Vec<_> = pass
         .phases
         .iter()
-        .map(|phase| phase.phase.as_str())
+        .map(|(phase, _)| phase.as_str())
         .collect();
     assert_eq!(
         work,
@@ -52,14 +52,13 @@ fn finished_pass_times_its_work_in_execution_order() {
             "checking database captures",
             "planning file reads",
             "storing and reading new files",
-            "planning file reads",
             "committing changes",
             "computing session figures",
         ]
     );
     assert_eq!(
         pass.seconds,
-        pass.phases.iter().map(|phase| phase.seconds).sum::<f64>()
+        pass.phases.iter().map(|(_, seconds)| seconds).sum::<f64>()
     );
 }
 
