@@ -124,7 +124,7 @@ fn sparse_stored_readings_commit_their_diagnosis_during_stop() {
                     .unwrap();
             }
         }
-        let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        let mut step = ParsePart::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
         step.parse_version = "synthetic=1".into();
         step.failure = Some(polylogue_model::ChainFailure::refused(format!(

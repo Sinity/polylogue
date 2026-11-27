@@ -323,7 +323,7 @@ fn host_startup_returns_after_publication_and_keeps_the_child_running() {
     let pid: u32 = std::fs::read_to_string(entered).unwrap().parse().unwrap();
     let running = crate::live_events::identity(pid).is_some();
     stop_host(pid);
-    assert_eq!(result.unwrap(), pid);
+    assert_eq!(result.unwrap().0, pid);
     assert!(
         running,
         "socket readiness must keep the hosted process alive"
@@ -354,7 +354,7 @@ fn host_startup_observes_reaper_pipe_exit_without_a_pidfd() {
         Instant::now() + Duration::from_secs(10),
     )
     .unwrap();
-    assert_eq!(outcome, HostSocket::Exited);
+    assert!(matches!(outcome, HostSocket::Exited));
     assert_eq!(status.code(), Some(9));
 }
 
@@ -767,7 +767,10 @@ fn records_list_every_hosted_session() {
     };
     write_record(dir.path(), "hermes-x", &hermes).unwrap();
     assert_eq!(
-        records(dir.path()),
+        records(dir.path())
+            .into_iter()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap(),
         [
             (String::from("codex-t1"), codex),
             (String::from("hermes-x"), hermes)

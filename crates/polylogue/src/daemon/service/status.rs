@@ -1,5 +1,5 @@
 //! One typed status constructor over current archive and runtime observations.
-use super::{Daemon, error, store_error};
+use super::Daemon;
 use polylogue_model::LockExt as _;
 
 /// The daemon's mode as status reports it.
@@ -136,6 +136,7 @@ pub(super) fn answer(
     d: &Daemon,
     vectors: Option<Result<polylogue_store::vectors::VectorStatus, String>>,
     whole_log: bool,
+    details: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     use crate::protocol::status::AnswersFrom;
     // Counted first, so a change while the answer is composed counts after it.
@@ -160,10 +161,26 @@ pub(super) fn answer(
         }
     };
     let now = d.clock.now_ms();
-    let (store, totals_error) = match &snapshot.store {
-        Ok(store) => (Some(store.clone()), None),
+    let loop_status = d.status.get();
+    let (mut store, totals_error) = match &snapshot.store {
+        Ok(store) => (
+            Some(crate::protocol::status::Store::from_snapshot(
+                store.clone(),
+                details,
+                &loop_status.last_pass.errors,
+                &d.config.identity.machine,
+            )),
+            None,
+        ),
         Err(error) => (None, Some(error.clone())),
     };
+    if let Some(store) = &mut store {
+        for coverage in &mut store.capture_coverage {
+            if coverage.machine == d.config.identity.machine {
+                coverage.machine.clone_from(&d.config.identity.host);
+            }
+        }
+    }
     let (quota, quota_error) = match &snapshot.quota {
         Ok(windows) => (
             windows
@@ -176,15 +193,16 @@ pub(super) fn answer(
         Err(error) => (Vec::new(), Some(error.clone())),
     };
     let (vectors, vectors_error) = split(vectors);
-    let loop_status = d.status.get();
     let signals = d.signals.locked().clone();
-    let signals = match serde_json::from_value(signals) {
-        Ok(signals) => signals,
-        Err(problem) => return error(polylogue_model::Code::Internal, problem),
+    let (signals, signals_error) = match serde_json::from_value(signals) {
+        Ok(signals) => (signals, None),
+        Err(problem) => (None, Some(format!("signals: {problem}"))),
     };
     let notices = match &snapshot.notices {
         Ok(notices) => notices.clone(),
-        Err(problem) => return error(polylogue_model::Code::Internal, problem),
+        Err(problem) => crate::protocol::status::Notices::Unavailable {
+            error: problem.clone(),
+        },
     };
     let running = match &snapshot.running {
         Ok(candidates) => {
@@ -203,7 +221,14 @@ pub(super) fn answer(
     };
     let freshness = match &snapshot.reading {
         Ok(local) => super::state::freshness_of(local.clone()),
-        Err(error) => return store_error(error),
+        Err(_) => {
+            let mut local = polylogue_model::freshness::ReadCompleteness::empty();
+            local.parsing = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
+            local.derivation =
+                polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
+            local.search = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
+            super::state::freshness_of(local)
+        }
     };
     let caught_up = build.is_none()
         && !loop_status.busy
@@ -212,6 +237,18 @@ pub(super) fn answer(
     // A failed or refused parse leaves reads up to date, since waiting does
     // not end it; status names it until its bytes or its parser change.
     let mut missing = freshness.status_notes();
+    missing.extend(loop_status.last_pass.errors.iter().map(ToString::to_string));
+    missing.extend(
+        loop_status
+            .last_pass
+            .unreadable_roots
+            .iter()
+            .map(|path| format!("{}: unreadable", path.display())),
+    );
+    if let Err(problem) = &snapshot.reading {
+        missing.push(format!("index completeness: {problem}"));
+    }
+    missing.extend(signals_error);
     let blocked = if let super::ModeState::Blocked { path, error, .. } = &d.mode {
         missing.push(format!("{}: {error}", path.display()));
         true
@@ -272,6 +309,11 @@ pub(super) fn answer(
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
         threads,
+        slow_statements: if whole_log {
+            polylogue_store::activity::slow_statements()
+        } else {
+            Vec::new()
+        },
     };
     missing.extend(
         status
@@ -369,9 +411,9 @@ fn unread(
     let building = answers_from == crate::protocol::status::AnswersFrom::Build;
     let loop_status = d.status.get();
     let signals = d.signals.locked().clone();
-    let signals = match serde_json::from_value(signals) {
-        Ok(signals) => signals,
-        Err(problem) => return error(polylogue_model::Code::Internal, problem),
+    let (signals, signals_error) = match serde_json::from_value(signals) {
+        Ok(signals) => (signals, None),
+        Err(problem) => (None, Some(format!("signals: {problem}"))),
     };
     let mode = mode(d);
     // Before a snapshot nothing is known; a build names itself, and its
@@ -426,15 +468,37 @@ fn unread(
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
         threads,
+        slow_statements: if whole_log {
+            polylogue_store::activity::slow_statements()
+        } else {
+            Vec::new()
+        },
     };
-    let problems = status
-        .threads
+    let mut problems = status
+        .loop_status
+        .last_pass
+        .errors
         .iter()
-        .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name))
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
+    problems.extend(
+        status
+            .loop_status
+            .last_pass
+            .unreadable_roots
+            .iter()
+            .map(|path| format!("{}: unreadable", path.display())),
+    );
+    problems.extend(
+        status
+            .threads
+            .iter()
+            .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name)),
+    );
     let mut answer = crate::protocol::read(status, &freshness);
     if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {
         missing.extend(problems);
+        missing.extend(signals_error);
         missing.extend(words.map(str::to_owned));
         if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode {
             missing.push(format!("{}: {error}", path.display()));
@@ -451,7 +515,7 @@ fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
             .iter()
             .filter(|request| {
                 matches!(
-                    request.request.write,
+                    request.write,
                     polylogue_model::user::UserWrite::DeliveryEvent { .. }
                 )
             })
@@ -461,6 +525,18 @@ fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
     let (live_event_lines, spool_error) = (spool.lines, spool.error);
     crate::protocol::status::PendingWrites {
         delivery_outcomes,
+        delivery_write_failures: d
+            .acts
+            .delivery_write_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
+        mailbox_failures: d
+            .acts
+            .mailbox_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
+        host_reattachment_failures: d
+            .acts
+            .host_reattachment_failures
+            .load(std::sync::atomic::Ordering::Relaxed),
         live_event_lines,
         last_error: spool_error,
     }

@@ -46,10 +46,11 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 `, archive], { encoding: "utf8" }));
 }
 
-function verify(out, version, rawVersion, before) {
+function verify(out, version, rawVersion, before, revision = null) {
   const summary = JSON.parse(readFileSync(join(out, "build-manifest.json"), "utf8"));
   expect(summary).toEqual({
-    version, raw_version: rawVersion, firefox_gecko_id: "polylogue-browser-capture@sinity.dev",
+    version, raw_version: rawVersion, revision,
+    chrome_extension_id: "pcfmanpibdomhkfjiginenedmjjfgned", firefox_gecko_id: "polylogue-browser-capture@sinity.dev",
     artifacts: { chrome: `polylogue-browser-capture-${version}-chrome.zip`, firefox: `polylogue-browser-capture-${version}-firefox.xpi` },
   });
   for (const browser of ["chrome", "firefox"]) {
@@ -59,7 +60,9 @@ function verify(out, version, rawVersion, before) {
     expect(actual.manifest.permissions).toEqual(["alarms", "nativeMessaging", "scripting", "storage", "tabs"]);
     const expected = structuredClone(sourceManifest);
     expected.version = version;
+    if (revision) expected.version_name = revision;
     if (browser === "firefox") {
+      delete expected.key;
       expected.background = { service_worker: "src/background.js", type: "module", scripts: ["src/background.js"] };
       expected.browser_specific_settings = { gecko: { id: "polylogue-browser-capture@sinity.dev", strict_min_version: "121.0" } };
     }
@@ -92,8 +95,8 @@ it.each(["zip", "python"])("builds artifacts with real %s without rewriting sour
     }
     build();
     verify(out, sourceVersion, sourceVersion, before);
-    build("--version", "0.5.0.dev2+fixture");
-    verify(out, "0.5.0", "0.5.0.dev2+fixture", before);
+    build("--version", "0.5.0.dev2+fixture", "--revision", "fixture-revision");
+    verify(out, "0.5.0", "0.5.0.dev2+fixture", before, "fixture-revision");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

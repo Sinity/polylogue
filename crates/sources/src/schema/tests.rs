@@ -315,18 +315,30 @@ fn diff_labels_different_samples_and_refuses_incompatible_rules() {
     assert!(!diff.comparable);
     assert_eq!(diff.reasons, ["different_origins", "different_samples"]);
     after.rule_version += 1;
-    assert!(compare(&before, &after).is_err());
+    assert_eq!(
+        compare(&before, &after).unwrap_err(),
+        "unsupported schema rule version"
+    );
     after = before.clone();
     after.named_fields.insert("forced".into());
-    assert!(compare(&before, &after).is_err());
+    assert_eq!(
+        compare(&before, &after).unwrap_err(),
+        "schema field-name selections differ; infer both with the same --field arguments"
+    );
     let mut malformed = serde_json::to_value(&before).unwrap();
     malformed["examples"] = json!(["private"]);
-    assert!(serde_json::from_value::<Schema>(malformed).is_err());
+    assert_eq!(
+        serde_json::from_value::<Schema>(malformed)
+            .unwrap_err()
+            .to_string(),
+        "unknown field `examples`, expected one of `rule_version`, `origin`, `named_fields`, `sample`, `selection`, `records`, `unreadable_inputs`, `unreadable_records`, `fields`, `tables`"
+    );
 }
 
 #[test]
 fn diff_refuses_malformed_paths_counts_and_escapes() {
     let before = infer(br#"{"id":1}"#, Framing::Json);
+    assert_eq!(compare(&before, &before).unwrap().changes, Vec::new());
     for mutation in [0, 1, 2, 3] {
         let mut after = before.clone();
         match mutation {
@@ -345,7 +357,15 @@ fn diff_refuses_malformed_paths_counts_and_escapes() {
                 after.records += 1;
             }
         }
-        assert!(compare(&before, &after).is_err());
+        assert_eq!(
+            compare(&before, &after).unwrap_err(),
+            match mutation {
+                0 => "schema path must start at the root",
+                1 => "schema field parent count is invalid",
+                2 => "schema path contains an invalid escape",
+                _ => "schema root counts disagree with records",
+            }
+        );
     }
 }
 

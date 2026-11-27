@@ -27,7 +27,7 @@ runtime and its tests. The target card and tool descriptions are
 | [interfaces](interfaces.md) | the operation table, the line grammar, verb words, chains, the verbs and commands, option names and exit codes |
 | [latency](latency.md) | latency classes and budgets, deadlines, the daemon's states, warm state |
 | [terminal](terminal.md) | the orientation screen, picker, row numbers, footers, refusals, output, help and `--explain` |
-| [completion](completion.md) | completion at every position, the catalog and shell registration |
+| [completion](completion.md) | completion at every position, where its values come from, and shell registration |
 | [query](query.md) | selections, Polylogue's units and fields, defaults, times, paging, deadlines, replies, facets, read-only SQL |
 | [transforms](transforms.md) | conditions over related rows, transforms after `\|`, attached rows, combining queries |
 | [saved queries](saved-queries.md) | questions, runs, `save`, saved names, shipped saved queries, kept results, figures, findings, watches |

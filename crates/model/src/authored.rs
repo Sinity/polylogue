@@ -97,7 +97,7 @@ pub struct AuthoredEffect {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signal_events: Vec<crate::signal::EventRecord>,
     pub alternates: crate::AlternateEffect,
-    pub kept_results: Vec<KeptResult>,
+    pub saved_rows: Vec<KeptResult>,
     pub deliveries: Vec<DeliveryChange>,
     pub chats: Vec<ChatChange>,
     pub import_jobs: Vec<ImportJobChange>,
@@ -109,13 +109,13 @@ pub struct KeptResult {
     pub name: Option<String>,
     pub query: String,
     pub ran_at: Timestamp,
-    pub read_at: String,
+    pub read_position: String,
     pub rows_json: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DeliveryEvent {
     pub request: String,
-    pub what: DeliveryOutcome,
+    pub outcome: DeliveryOutcome,
     pub at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,

@@ -230,12 +230,8 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
         "retry-one",
     ]
     .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     let request = crate::cli::run_line::request(&parsed).unwrap();
     assert_eq!(request.request_id, "retry-one");
     assert_eq!(

@@ -44,9 +44,9 @@ pub fn read(
         (crate::html::document(&page.document, Some(table))?)
         (navigation(page, table)?)
         details class="read-position" { summary { "Recorded read position" } dl {
-            dt { "Generation" } dd { (&page.snapshot.read_at.generation) }
-            dt { "Index" } dd { (page.snapshot.read_at.index) }
-            dt { "Archive" } dd { (page.snapshot.read_at.archive) }
+            dt { "Generation" } dd { (&page.snapshot.read_position.index_instance) }
+            dt { "Index" } dd { (page.snapshot.read_position.index) }
+            dt { "Archive" } dd { (page.snapshot.read_position.archive) }
             dt { "Ran at" } dd { (page.snapshot.ran_at) }
             dt { "Up to date" } dd { (page.snapshot.freshness.up_to_date()) }
         } }

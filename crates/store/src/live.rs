@@ -18,7 +18,7 @@ pub struct LiveSession {
     pub facts: LiveFacts,
     pub cwd: Option<String>,
     /// When its transcript last grew, Unix ms.
-    pub last_activity_at: Option<i64>,
+    pub last_active_at: Option<i64>,
 }
 
 /// One session's live state in full, for `read --view live`.
@@ -177,9 +177,9 @@ impl crate::Reader<'_> {
     pub fn live_untils(&self, now: i64) -> Result<Vec<(String, i64)>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT id, pl_live(live_facts, last_activity_at, ?1, 'until') AS until FROM session
+            "SELECT id, pl_live(live_facts, last_active_at, ?1, 'until') AS until FROM session
              WHERE (live_last_at IS NOT NULL AND live_last_at >= ?2)
-                OR (live_last_at IS NULL AND last_activity_at >= ?3)",
+                OR (live_last_at IS NULL AND last_active_at >= ?3)",
         )?;
         let rows = statement.query_map(
             params![
@@ -205,9 +205,9 @@ impl crate::Reader<'_> {
     pub fn running_candidates(&self, now: i64) -> Result<RunningCandidates> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT id, live_facts, last_activity_at, cwd FROM session
+            "SELECT id, live_facts, last_active_at, cwd FROM session
              WHERE (live_last_at IS NOT NULL AND live_last_at >= ?1)
-                OR (live_last_at IS NULL AND last_activity_at >= ?2)
+                OR (live_last_at IS NULL AND last_active_at >= ?2)
                 OR (json_extract(live_facts, '$.root') IS NOT NULL
                     AND json_extract(live_facts, '$.root_gone_at') IS NULL
                     AND json_extract(live_facts, '$.ended_at') IS NULL)",
@@ -238,7 +238,7 @@ impl crate::Reader<'_> {
     pub fn live_state(&self, session: &str, now: i64) -> Result<Option<LiveSession>> {
         let conn = self.conn()?;
         let found = conn
-            .prepare_cached("SELECT live_facts, last_activity_at, cwd FROM session WHERE id = ?1")?
+            .prepare_cached("SELECT live_facts, last_active_at, cwd FROM session WHERE id = ?1")?
             .query_row([session], |r| {
                 <(Option<String>, Option<i64>, Option<String>)>::try_from(r)
             })
@@ -251,7 +251,7 @@ impl crate::Reader<'_> {
             view: live::view(facts.as_ref(), grew_at, now),
             facts: facts.unwrap_or_default(),
             cwd,
-            last_activity_at: grew_at,
+            last_active_at: grew_at,
         }))
     }
 
@@ -264,7 +264,7 @@ impl crate::Reader<'_> {
         let aliases = Aliases::plain();
         let found = conn
             .prepare(&format!(
-                "SELECT s.pk, s.live_facts, s.last_activity_at, {peers} FROM session s WHERE s.id = ?1",
+                "SELECT s.pk, s.live_facts, s.last_active_at, {peers} FROM session s WHERE s.id = ?1",
                 peers = sessions_peers(&aliases, now)
             ))?
             .query_row([session], |r| <(i64, Option<String>, Option<i64>, Option<String>)>::try_from(r))
@@ -340,7 +340,7 @@ impl crate::Reader<'_> {
     ) -> Result<Option<FollowSnapshot>> {
         let conn = self.conn()?;
         let found = conn
-            .prepare_cached("SELECT pk, live_facts, last_activity_at FROM session WHERE id = ?1")?
+            .prepare_cached("SELECT pk, live_facts, last_active_at FROM session WHERE id = ?1")?
             .query_row([session], |r| {
                 <(i64, Option<String>, Option<i64>)>::try_from(r)
             })
@@ -400,7 +400,7 @@ impl crate::Reader<'_> {
     pub fn live_edited_files(&self, now: i64) -> Result<Vec<LiveEditedFiles>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT id, live_facts, last_activity_at, cwd FROM session
+            "SELECT id, live_facts, last_active_at, cwd FROM session
              WHERE live_last_at IS NOT NULL AND live_last_at >= ?1 AND cwd IS NOT NULL
                AND json_extract(live_facts, '$.edited_files') IS NOT NULL",
         )?;

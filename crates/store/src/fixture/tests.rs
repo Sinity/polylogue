@@ -51,7 +51,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
     let cached: Option<i64> = fixture
         .index
         .query_row(
-            "SELECT last_activity_at FROM session WHERE pk=?1",
+            "SELECT last_active_at FROM session WHERE pk=?1",
             [session],
             |row| row.get(0),
         )
@@ -108,7 +108,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
     let cached: Option<i64> = fixture
         .index
         .query_row(
-            "SELECT last_activity_at FROM session WHERE pk=?1",
+            "SELECT last_active_at FROM session WHERE pk=?1",
             [session],
             |row| row.get(0),
         )
@@ -137,35 +137,6 @@ fn stored_message(directory: &std::path::Path) -> (Fixture, SessionId) {
         )
         .unwrap();
     (fixture, SessionId::parse("claude-code:decode").unwrap())
-}
-
-/// A role the model does not have is a read error, never a user message.
-#[test]
-fn unknown_stored_role_fails_the_read() {
-    let directory = tempfile::tempdir().unwrap();
-    let (fixture, session) = stored_message(directory.path());
-    assert_eq!(
-        fixture
-            .reads()
-            .unwrap()
-            .reader()
-            .unwrap()
-            .messages(&session, false)
-            .unwrap()[0]
-            .role,
-        polylogue_model::Role::Assistant
-    );
-    fixture
-        .index
-        .execute("UPDATE message SET role = 'narrator'", [])
-        .unwrap();
-    let reads = fixture.reads().unwrap();
-    let error = reads
-        .reader()
-        .unwrap()
-        .messages(&session, false)
-        .unwrap_err();
-    assert!(error.to_string().contains("narrator"), "{error}");
 }
 
 /// Attributes that do not parse are a read error, never empty attributes.

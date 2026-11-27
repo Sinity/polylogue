@@ -100,6 +100,18 @@ pub(crate) struct Refusal {
     pub candidates: Vec<String>,
 }
 impl Refusal {
+    pub(crate) fn failure(self) -> command_surface::Failure {
+        let mut failure =
+            crate::protocol::failure(self.code, self.message).with_candidates(self.candidates);
+        failure.position = self
+            .position
+            .map(|offset| command_surface::InputSpan { offset, length: 1 });
+        if let Some(line) = self.try_line {
+            failure = failure.with_suggestion(command_surface::Suggestion::Query(line));
+        }
+        failure
+    }
+
     pub(crate) fn new(code: Code, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -115,32 +127,11 @@ impl Refusal {
         self
     }
 }
+/// The saved query names a first word can be: the authored ones the daemon
+/// confirmed for this line, then the shipped ones.
 #[derive(Default)]
-pub(crate) struct FirstWordCatalog {
-    pub saved: Vec<String>,
-    pub shipped: Vec<String>,
-}
-impl FirstWordCatalog {
-    pub fn load(paths: &crate::config::Paths, archive: &std::path::Path) -> Self {
-        let saved = polylogue_store::completion::CatalogReader::open(
-            &paths.completion_catalog(archive),
-            &crate::runtime_dir::archive_key(archive),
-        )
-        .ok()
-        .flatten()
-        .and_then(|reader| reader.saved_names("").ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|item| item.name)
-        .collect();
-        Self {
-            saved,
-            shipped: polylogue_model::saved_queries::SHIPPED_QUERIES
-                .iter()
-                .map(|query| query.name.to_owned())
-                .collect(),
-        }
-    }
+pub(crate) struct SavedNames {
+    pub authored: Vec<String>,
 }
 pub(crate) fn shell_line(words: &[String]) -> String {
     std::iter::once("polylogue".to_owned())
@@ -148,15 +139,20 @@ pub(crate) fn shell_line(words: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-impl SelectionRules for FirstWordCatalog {
+impl SelectionRules for SavedNames {
     type Additional = std::convert::Infallible;
     fn is_command(&self, word: &str) -> bool {
         matches!(word, "--help" | "-h") || crate::commands::is_cli_command(word)
     }
     fn saved_name(&self, word: &str) -> Option<String> {
-        self.saved
+        self.authored
             .iter()
-            .chain(&self.shipped)
+            .map(String::as_str)
+            .chain(
+                polylogue_model::saved_queries::SHIPPED_QUERIES
+                    .iter()
+                    .map(|query| query.name),
+            )
             .any(|name| name == word)
             .then(|| word.into())
     }
@@ -258,10 +254,59 @@ fn listing_option(
     }
     Ok(true)
 }
+/// Skips the line and listing options before the selection.
+fn leading_options(
+    args: &[String],
+    index: &mut usize,
+    line: &mut LineOptions,
+    listing: &mut ListingOptions,
+) -> Result<(), Refusal> {
+    while *index < args.len()
+        && (line_option(args, index, line)? || listing_option(args, index, listing)?)
+    {
+        *index += 1;
+    }
+    Ok(())
+}
+/// Whether the words name a command, read as the line parser reads its
+/// first word but without parsing the rest of the line.
+pub(crate) fn names_command(args: &[String]) -> bool {
+    let mut index = 0;
+    if leading_options(
+        args,
+        &mut index,
+        &mut LineOptions::default(),
+        &mut ListingOptions::default(),
+    )
+    .is_err()
+        || args.get(index).is_some_and(|word| word == "--")
+    {
+        return false;
+    }
+    command_surface::line::classify_first(
+        args.get(index).map(String::as_str),
+        &SavedNames::default(),
+        &crate::daemon::verbs::declarations(),
+    ) == FirstWord::Command
+}
+impl ParsedLine {
+    /// A first word read as a search word that is shaped like a saved query
+    /// name: only the daemon knows whether one is saved under it.
+    pub(crate) fn possible_saved_name(&self) -> Option<&str> {
+        match (&self.first, &self.selection) {
+            (FirstWord::SearchWord, Some(SelectionWord::Text(word)))
+                if polylogue_model::annotation::policy::valid_saved_name(word) =>
+            {
+                Some(word)
+            }
+            _ => None,
+        }
+    }
+}
 /// Parses without reading stdin or contacting the daemon.
 pub(crate) fn parse(
     args: &[String],
-    catalog: &FirstWordCatalog,
+    saved: &SavedNames,
     terminal: bool,
 ) -> Result<ParsedLine, Refusal> {
     let declarations = crate::daemon::verbs::declarations();
@@ -273,12 +318,7 @@ pub(crate) fn parse(
         line: LineOptions::default(),
     };
     let mut index = 0;
-    while index < args.len()
-        && (line_option(args, &mut index, &mut parsed.line)?
-            || listing_option(args, &mut index, &mut parsed.listing)?)
-    {
-        index += 1;
-    }
+    leading_options(args, &mut index, &mut parsed.line, &mut parsed.listing)?;
     let selection_index = index;
     let literal_selection = args.get(index).is_some_and(|word| word == "--");
     if literal_selection {
@@ -292,7 +332,7 @@ pub(crate) fn parse(
     } else {
         command_surface::line::classify_first(
             args.get(index).map(String::as_str),
-            catalog,
+            saved,
             &declarations,
         )
     };
@@ -375,7 +415,10 @@ pub(crate) fn parse(
                     n => format!("{n} words"),
                 };
                 message.push_str(&format!("; {} takes {count}", step.verb));
-                if matches!(step.verb, "note" | "send" | "edit" | "answer") {
+                if parsed.selection.is_none() && parsed.steps.len() == 1 && step.verb == "read" {
+                    corrected = args[index..].to_vec();
+                    corrected.extend_from_slice(&args[..index]);
+                } else if matches!(step.verb, "note" | "send" | "edit" | "answer") {
                     corrected = args[..step.words.start + 1].to_vec();
                     corrected.push(args[step.words.start + 1..].join(" "));
                 }

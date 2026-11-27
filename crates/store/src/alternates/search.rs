@@ -21,7 +21,7 @@ pub fn project(conn: &Connection) -> Result<()> {
         conn.execute("DELETE FROM alternate_text WHERE alternate=?1", [&id])?;
         super::rows::parts(conn, &id, |part| {
             conn.execute(
-                "INSERT INTO alternate_text(alternate,n,body) VALUES(?1,?2,?3)",
+                "INSERT INTO alternate_text(alternate,position,body) VALUES(?1,?2,?3)",
                 params![
                     id,
                     crate::to_i64(part.n, "alternate part number is out of range")?,
@@ -45,7 +45,7 @@ impl Reader<'_> {
         mut visit: impl FnMut(AlternateMatch) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let mut statement=conn.prepare("SELECT t.alternate,t.n FROM alternate_fts JOIN alternate_text t ON t.rowid=alternate_fts.rowid JOIN source_alternate v ON v.id=t.alternate WHERE alternate_fts MATCH ?1 AND (?2 IS NULL OR v.to_lang=?2) ORDER BY rank,t.alternate,t.n")?;
+        let mut statement=conn.prepare("SELECT t.alternate,t.position FROM alternate_fts JOIN alternate_text t ON t.rowid=alternate_fts.rowid JOIN source_alternate v ON v.id=t.alternate WHERE alternate_fts MATCH ?1 AND (?2 IS NULL OR v.to_lang=?2) ORDER BY rank,t.alternate,t.position")?;
         let mut rows = statement.query(params![text, language])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;

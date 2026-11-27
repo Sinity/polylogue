@@ -597,6 +597,54 @@ fn spawned_agents_are_linked_from_the_call() {
     );
 }
 
+/// An agent reports many activity items; its spawn is one statement,
+/// stated by the first of them, however the bytes are split.
+#[test]
+fn a_subagents_activity_states_its_spawn_once() {
+    let child = "019a0000-0000-7000-8000-0000000000cc";
+    let activity = |ordinal: u64, id: &str| {
+        env(
+            ordinal,
+            "event_msg",
+            json!({"type": "item_completed", "thread_id": THREAD, "turn_id": "t1",
+            "item": {"type": "SubAgentActivity", "id": id, "agent_thread_id": child},
+            "completed_at_ms": 1}),
+        )
+    };
+    let records = vec![
+        meta(json!({})),
+        activity(2, "act_1"),
+        activity(3, "act_2"),
+        activity(4, "act_3"),
+    ];
+    let spawns = |steps: &[Step]| -> Vec<(String, Option<String>)> {
+        steps
+            .iter()
+            .flat_map(|step| &step.output.links)
+            .filter(|link| link.kind == LinkKind::Spawn)
+            .map(|link| {
+                (
+                    link.child.native().as_str().to_owned(),
+                    link.call_id.clone(),
+                )
+            })
+            .collect()
+    };
+    let expected = vec![(child.to_owned(), Some("act_1".to_owned()))];
+    let mut parser_state = ParserState::default();
+    let whole = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
+    assert_eq!(spawns(&[whole]), expected);
+    let bytes = jsonl(&records);
+    let split = bytes.iter().position(|b| *b == b'\n').unwrap() + 1;
+    let split = split + bytes[split..].iter().position(|b| *b == b'\n').unwrap() + 1;
+    let mut parser_state = ParserState::default();
+    let first = run(&rollout(), &mut parser_state, &bytes[..split], 0).unwrap();
+    let parser_state_json = serde_json::to_string(&parser_state).unwrap();
+    let mut parser_state: ParserState = serde_json::from_str(&parser_state_json).unwrap();
+    let rest = run(&rollout(), &mut parser_state, &bytes[split..], split as u64).unwrap();
+    assert_eq!(spawns(&[first, rest]), expected);
+}
+
 #[test]
 fn rollouts_from_2025_have_a_header_and_bare_items() {
     let records = vec![

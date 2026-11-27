@@ -39,25 +39,52 @@ const ROOT_PARENT: &str = "00000000-0000-4000-8000-000000000000";
 
 /// `conversations.json` whose conversations start with `uuid` (ChatGPT's
 /// export has the same name and never does).
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    if sidecars::recognize(path, head) {
+///
+/// One conversation alone (`uuid` and `chat_messages`) is recognized
+/// whatever the file is named, once the whole document is read. A project
+/// read whole names itself by its `docs` or `prompt_template`; its path alone
+/// does not.
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::{Kind, ShapeKey};
+    if head.shape.is_some()
+        && head.holds(ShapeKey::Uuid, Kind::String)
+        && head.holds(ShapeKey::ChatMessages, Kind::Array)
+    {
         return true;
     }
+    if sidecars::recognize(path, head.bytes) {
+        return head.shape.is_none()
+            || !project_path(path)
+            || (head.holds(ShapeKey::Uuid, Kind::String)
+                && (head.has(ShapeKey::Docs) || head.has(ShapeKey::PromptTemplate)));
+    }
+    let head = head.bytes;
     let named = path.extension().is_some_and(|ext| ext == "json");
     named && first_byte(head) == Some(b'[') && first_key(head) == Some("uuid")
 }
 
+/// A project of the export: `projects.json`, or a file under `projects/`.
+/// Its path alone declares no export around it.
+pub fn project_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "json")
+        && (path.file_name().is_some_and(|name| name == "projects.json")
+            || path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "projects"))
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
-    if let Some(parser) = sidecars::open(path) {
-        return Some(parser);
-    }
-    let named = path.extension().is_some_and(|ext| ext == "json");
-    named.then(|| Parse::Export(Box::new(Export)))
+    sidecars::open(path).or_else(|| Some(Parse::Export(Box::new(Export))))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
-pub fn recognize_design(path: &Path, head: &[u8]) -> bool {
-    in_design_dir(path) && first_byte(head) == Some(b'{') && first_key(head) == Some("uuid")
+pub fn recognize_design(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::{Kind, ShapeKey};
+    in_design_dir(path)
+        && head.top() == Some(Kind::Object)
+        && head.holds(ShapeKey::Uuid, Kind::String)
 }
 
 pub fn open_design(path: &Path) -> Option<Parse> {

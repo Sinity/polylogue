@@ -264,7 +264,7 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
                 .unwrap();
         serde_json::json!({
             "messages": reader.messages(&id, false).unwrap(),
-            "sessions": reader.query("SELECT id FROM session WHERE stub=0 ORDER BY id", &[]).unwrap(),
+            "sessions": reader.query("SELECT id FROM session WHERE has_transcript=1 ORDER BY id", &[]).unwrap(),
             "sources": reader.query("SELECT m.id,s.source_start,s.source_start+s.source_length AS source_end FROM message_parse s JOIN message m ON m.id=s.message_id ORDER BY m.id", &[]).unwrap(),
         })
     }

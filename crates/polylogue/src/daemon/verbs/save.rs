@@ -22,7 +22,7 @@ impl Verb for Save {
         let rows = selection
             .query_text()
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
-        let mut question = selection.question.clone().unwrap_or_else(|| rows.clone());
+        let mut question = selection.query.clone().unwrap_or_else(|| rows.clone());
         if let (Some(name), Some(retained), super::Given::Query(selected)) =
             (&step.name, selection.retained.as_deref(), &selection.given)
             && (selected == name || selected.strip_prefix("query:") == Some(name.as_str()))
@@ -51,15 +51,22 @@ impl Verb for Save {
             question = value.text;
         }
         let mut undo = Vec::new();
+        let mut position = None;
         let mut done = StepDone::from(
-            handlers::save_selection(step, question, selection, &call.call)?.map(
-                |(report, committed)| {
-                    undo = committed;
-                    StepAnswer::Saved(report)
-                },
-            ),
+            handlers::save_selection(step, question, selection, &call.call)?.map(|committed| {
+                position = Some(committed.position);
+                let result = committed.outcome;
+                undo = result.written;
+                let mut report = result
+                    .save
+                    .expect("Save transaction returns its resolved outcomes");
+                report.pending = result.outcome.pending;
+                report.repeat |= result.outcome.repeat;
+                StepAnswer::Saved(report)
+            }),
         )
         .checked()?;
+        done.position = position;
         done.undo
             .extend(super::undo_line(call.call.request_id, &undo)?);
         Ok(done)
@@ -148,7 +155,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
     }
     if step.watch && step.name.is_none() {
         let query = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .unwrap_or_else(|| "QUERY".into());

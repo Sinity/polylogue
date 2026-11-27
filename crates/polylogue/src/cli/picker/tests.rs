@@ -53,6 +53,7 @@ impl Fixture {
     }
     fn rows(&self) -> Vec<Candidate> {
         match self.case.as_str() {
+            "empty" => vec![],
             "single" => vec![row("Alpha")],
             "pages" | "fails" | "held" => ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
                 .map(row)
@@ -201,6 +202,7 @@ fn terminal_child() {
             json!({"choice":references})
         }
         Ok(Choice::Cancelled) => json!({"cancelled":true}),
+        Ok(Choice::Empty) => json!({"empty":true}),
         Err(error) => json!({"error":error.code(),"candidates":error.candidates()}),
     };
     emit(
@@ -531,6 +533,22 @@ fn picker_never_opens_off_terminal() {
             events
                 .iter()
                 .filter(|event| event.get("shown").is_some())
+                .count(),
+            0
+        );
+    }
+}
+
+#[test]
+fn empty_selection_never_opens_picker() {
+    for tty in [true, false] {
+        let terminal = Terminal::new("empty", tty, tty);
+        let (result, _, events) = terminal.finish();
+        assert_eq!(result, json!({"empty":true}));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.get("action").is_some())
                 .count(),
             0
         );

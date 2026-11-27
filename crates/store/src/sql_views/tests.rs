@@ -13,7 +13,7 @@ fn each_view_keeps_its_columns() {
     for (view, columns) in [
         (
             "v1_sessions",
-            "id origin kind title cwd repo branch harness started_at last_activity_at",
+            "id origin kind title cwd repo branch harness started_at last_active_at",
         ),
         (
             "v1_messages",
@@ -23,7 +23,7 @@ fn each_view_keeps_its_columns() {
             "v1_tool_calls",
             "session call_id at tool action command path outcome exit_code",
         ),
-        ("v1_links", "parent child kind how"),
+        ("v1_links", "parent child kind reason"),
         (
             "v1_annotations",
             "id root kind key value author via machine created_at valid_until about current withdrawn conflict",
@@ -165,13 +165,13 @@ fn the_views_keep_unknown_values_null_and_read_calls_and_links() {
     assert_eq!(calls[0]["outcome"], "error");
     assert_eq!(calls[0]["exit_code"], 2);
     let links = reader
-        .query("SELECT parent, child, kind, how FROM v1_links", &[])
+        .query("SELECT parent, child, kind, reason FROM v1_links", &[])
         .unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0]["parent"], "test:s1");
     assert_eq!(links[0]["child"], "test:s2");
     assert_eq!(links[0]["kind"], "fork");
-    assert!(links[0]["how"].is_null());
+    assert!(links[0]["reason"].is_null());
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn the_sessions_view_leaves_out_stubs() {
         .unwrap();
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
-        .execute("UPDATE session SET stub=1 WHERE pk=?1", [stub])
+        .execute("UPDATE session SET has_transcript=0 WHERE pk=?1", [stub])
         .unwrap();
     let pool = f.reads().unwrap();
     let sessions = pool

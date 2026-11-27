@@ -108,14 +108,14 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             .map(str::to_owned)
             .collect();
         let columns = names.iter().map(|name| {
-            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
+            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first_position" | "last_position") {
                 // The chain the occurrence record cites, not the read range it took.
-                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.parse_version=t.parse_version AND r.number=t.\"{name}\") AS \"{name}\"")
+                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.parser_version=t.parser_version AND r.position=t.\"{name}\") AS \"{name}\"")
             } else if let Some(natural) = natural_key(&table, name) {
                 // Row keys are local to an index; what they name is compared
                 // (docs/architecture.md, the record and the index).
                 format!("{natural} AS \"{name}\"")
-            } else if table == "wire_occurrence" && name == "number" {
+            } else if table == "wire_occurrence" && name == "position" {
                 "NULL".to_owned()
             } else if table == "wire_occurrence" && name == "occurrence" {
                 "json_extract(t.occurrence,'$.chain') AS occurrence".to_owned()
@@ -128,7 +128,7 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 // compared.
                 "(SELECT g.body FROM content_group g WHERE g.id=t.content_group) AS content_group"
                     .to_owned()
-            } else if table == "wire_reading" && name == "state" {
+            } else if table == "wire_parse" && name == "state" {
                 format!("json_remove(t.state,{}) AS state", READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(","))
             } else { format!("t.\"{name}\"") }
         }).collect::<Vec<_>>().join(",");
@@ -203,7 +203,7 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
     ("*", "committed"),
     ("*", "commit_seq"),
     ("session", "changed"),
-    ("session", "derived_changed"),
+    ("session", "summary_changed"),
     ("session_first_prompt", "changed"),
 ];
 /// Values that follow the order of writes rather than what was written: a
@@ -237,7 +237,7 @@ fn natural_key(table: &str, column: &str) -> Option<String> {
         "message_pk" => "(SELECT x.id FROM message x WHERE x.pk=t.message_pk)".to_owned(),
         "text_id" => "(SELECT hex(x.hash) FROM text x WHERE x.id=t.text_id)".to_owned(),
         "input_pk" => "(SELECT x.id FROM input_ref x WHERE x.pk=t.input_pk)".to_owned(),
-        "call_block_pk" => "(SELECT m.id||'/'||b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
+        "call_block_pk" => "(SELECT m.id||'/'||b.position FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
         "event_pk" => "(SELECT x.id FROM event x WHERE x.pk=t.event_pk)".to_owned(),
         "document_pk" => "(SELECT x.id FROM document x WHERE x.pk=t.document_pk)".to_owned(),
         _ => return None,

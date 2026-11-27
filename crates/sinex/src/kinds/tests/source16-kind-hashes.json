@@ -1,0 +1,155 @@
+{
+  "source_revision": "3e52c21a4",
+  "source": {
+    "name": "polylogue",
+    "version": 16
+  },
+  "family": "polylogue",
+  "kinds": [
+    {
+      "name": "polylogue.attachment_binding",
+      "version": 2,
+      "definition_hash": "75766412a00e638b6b23bb1bb50258f695ccf09a9d4175c4d32a39dfc10d849f"
+    },
+    {
+      "name": "polylogue.input_observation",
+      "version": 8,
+      "definition_hash": "954932f1bb9aae0fb5626d1fad16e4324e5c89a3e6efffdbebc824ef13ddbcc0"
+    },
+    {
+      "name": "polylogue.blob",
+      "version": 3,
+      "definition_hash": "5f9b8ffa306ed46e1d7f5a47a8510e682676b70120bf58a0770d6926faa759c7"
+    },
+    {
+      "name": "polylogue.session",
+      "version": 9,
+      "definition_hash": "b343837cdc3ca23014b18a45d56b1107e67a70ec6531b78aafbca1921e0c1765"
+    },
+    {
+      "name": "polylogue.message",
+      "version": 11,
+      "definition_hash": "2629870a4033ed100239ddfb086233994b46d7d3eeaa4d60888c16c9ee38eef3"
+    },
+    {
+      "name": "polylogue.tool_call",
+      "version": 4,
+      "definition_hash": "0b960bee85de5aca12d176067c7b331078b0e95e927aefc701262fed9b9f0339"
+    },
+    {
+      "name": "polylogue.document",
+      "version": 8,
+      "definition_hash": "bf9b61254ea0f2b97c90195d016a14ede67e3498506e1ff66e9b59d7362ef7cb"
+    },
+    {
+      "name": "polylogue.fragment",
+      "version": 6,
+      "definition_hash": "b2af90de14b19922b5d96310a5fb8da83bf93efaa764b0db02339d8cac89ef90"
+    },
+    {
+      "name": "polylogue.event",
+      "version": 8,
+      "definition_hash": "4631cdd9dfe24e62752be075f580765306dfe3f18604d15c618cd60530da0e35"
+    },
+    {
+      "name": "polylogue.link",
+      "version": 9,
+      "definition_hash": "f131d495ebebbc0a137b0a5b2815b3259f3e27c90e85212e61dde283108affb4"
+    },
+    {
+      "name": "polylogue.prefix_copy",
+      "version": 4,
+      "definition_hash": "98c23647b0b67d3a1a6e014f460bc41a073fd166430175aafcbe1a042b686baa"
+    },
+    {
+      "name": "polylogue.prefix_member",
+      "version": 4,
+      "definition_hash": "a7a4d4053781e6f5a8010fc449f44c100e7a52f009dad16eb9a60d3ce39c7028"
+    },
+    {
+      "name": "polylogue.background",
+      "version": 8,
+      "definition_hash": "bca356fc91f9b67dc63ff962ecfc6f3cd0dc495833a0fd9117b21465f0c38690"
+    },
+    {
+      "name": "polylogue.repository",
+      "version": 8,
+      "definition_hash": "ccc49efeb303a7dd9f0287c2071fdc96a7600a417f48d3db7850664f8e104eb3"
+    },
+    {
+      "name": "polylogue.parse_progress",
+      "version": 9,
+      "definition_hash": "bfc28985f5bb56094d5ecc35eb3d61136aa4e004b09ab71d4b1c2d230441d1e4"
+    },
+    {
+      "name": "polylogue.annotation",
+      "version": 2,
+      "definition_hash": "3b443aaa72196147e680ab5e70c3ebe852ef27c41a51d1a82ab2f3fff605e99c"
+    },
+    {
+      "name": "polylogue.delivery",
+      "version": 11,
+      "definition_hash": "7906abc0dfd91f7c453c15047471f78c358d5e610e2532b3310a18fad6d504e3"
+    },
+    {
+      "name": "polylogue.delivery_outcome",
+      "version": 11,
+      "definition_hash": "b6184d2265cbfc76d29cdac32923d17f7b5613eb4c2d8f727701c89e1226c986"
+    },
+    {
+      "name": "polylogue.request",
+      "version": 11,
+      "definition_hash": "33f022c8ac9b8f9a1457a924fb0ca40fed7fb1e736cbed5c5f30ae38585c9d60"
+    },
+    {
+      "name": "polylogue.request_restore",
+      "version": 11,
+      "definition_hash": "c6e32189e44344022800c152a10dd7eddce346eab2fd4f7032c1ca818d5fb640"
+    },
+    {
+      "name": "polylogue.line_resolution",
+      "version": 8,
+      "definition_hash": "4db32951831fff1f1cdc154289785b16ef80d23aa48b49719bb90145f9273d25"
+    },
+    {
+      "name": "polylogue.line_resolution_restore",
+      "version": 8,
+      "definition_hash": "7d46a5348f4db92bf1ffefb2d496f8fab99b1bc2e199403653cb58c08be64e1e"
+    },
+    {
+      "name": "polylogue.line_save",
+      "version": 5,
+      "definition_hash": "d71182704aff32eb86b90b9f31e8c10af03a63652456638aefa5dc5197c38357"
+    },
+    {
+      "name": "polylogue.line_save_restore",
+      "version": 5,
+      "definition_hash": "326891a9be9d908f3e0ac170c36c4482adc103ce45747e74576172cf04288e1c"
+    },
+    {
+      "name": "polylogue.annotation_restore",
+      "version": 1,
+      "definition_hash": "46b46d567d4ca71f6e2006ed2191d71d101910f74b7d1e7ed0033841b870fa82"
+    },
+    {
+      "name": "polylogue.query",
+      "version": 3,
+      "definition_hash": "cb61516f36b8b257c58995fbe0c8a22e66511aa806bf63c8e73084b4ef199961"
+    },
+    {
+      "name": "polylogue.query_run",
+      "version": 10,
+      "definition_hash": "edb786fcb58eead8044a567939a5c435b2c5bf8e1ae145c76557327651d3020a"
+    },
+    {
+      "name": "polylogue.query_run_outcome",
+      "version": 2,
+      "definition_hash": "2b51a6cc9d21355d581e53b65af1630b6d09bd3374a3aaaaa6dc8285d6c7bb6b"
+    },
+    {
+      "name": "polylogue.coverage",
+      "version": 3,
+      "definition_hash": "97d5d4b44c59a7f037d409f345efa1c9f5a550b08500430fba6ab2bb2c173204"
+    }
+  ]
+}

@@ -405,7 +405,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         Some(UserWrite::ResolveLine {
             resolved, retained, ..
         }) => Selection {
-            question: match &given {
+            query: match &given {
                 Given::Query(text) => Some(text.clone()),
                 _ => None,
             },
@@ -514,7 +514,7 @@ fn resolve(
             Failure::not_found(format!("no current authored saved query query:{name}"))
         })?;
         let mut selection = resolve(Given::Reference(target), steps, return_selection, call)?;
-        selection.question = Some(text.clone());
+        selection.query = Some(text.clone());
         selection.given = given;
         return Ok(selection);
     }
@@ -560,7 +560,7 @@ fn resolve(
             };
             return Ok(Selection {
                 given,
-                question,
+                query: question,
                 resolved,
                 retained: Some(Box::new(retained)),
             });
@@ -592,7 +592,7 @@ fn resolve(
     Ok(Selection {
         given,
         resolved,
-        question,
+        query: question,
         retained: None,
     })
 }
@@ -655,7 +655,7 @@ fn selects_rows(
 fn summary(selection: &Selection) -> Option<Resolved> {
     let resolved = selection.resolved.as_ref()?;
     Some(Resolved {
-        question: selection.question.clone(),
+        query: selection.query.clone(),
         count: resolved.len() as u64,
         named: !matches!(selection.given, Given::Query(_)),
         first: resolved.iter().take(20).map(ToString::to_string).collect(),
@@ -669,7 +669,7 @@ fn attach_population(answer: &mut Answer<StepsAnswer>, selection: &Selection, ca
     let population = (|| {
         let reader = call.reader()?;
         let text = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .ok_or_else(|| Failure::bad_request("pick needs a selection"))?;
@@ -744,8 +744,7 @@ impl Stream<'_> {
     ) -> Result<StepDone, Failure> {
         if read.follow {
             let target = verbs::read::target(selection)?;
-            let marks =
-                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            let marks = super::follow::run(&call.call, self.context, &target, None, self.output)?;
             return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
         let answer = verbs::read::stream(
@@ -777,6 +776,7 @@ fn execute_steps(
     let mut envelope = Envelope::default();
     let mut outcome = Outcome::Empty(());
     let mut failed = false;
+    let mut after_write = None;
     for (index, step) in steps.into_iter().enumerate() {
         let verb = step.verb();
         if failed {
@@ -788,7 +788,8 @@ fn execute_steps(
             continue;
         }
         let request_id = step_request(call.request_id, index);
-        let step_call = StepCall::new(call, &request_id);
+        let mut step_call = StepCall::new(call, &request_id);
+        step_call.call.after_write = after_write;
         let work = || {
             if let Some(limit) = limit {
                 limit.check()?;
@@ -812,7 +813,12 @@ fn execute_steps(
         let reported = match result {
             Ok(done) => {
                 verbs::merge_outcome(&mut outcome, done.outcome());
-                let StepDone { answer, undo } = done;
+                let StepDone {
+                    answer,
+                    undo,
+                    position,
+                } = done;
+                after_write = after_write.max(position);
                 envelope.notes.extend(answer.envelope.notes);
                 if !answer.envelope.next.is_empty() {
                     envelope.next = answer.envelope.next;
@@ -840,7 +846,10 @@ fn execute_steps(
             request_id: Some(request_id),
             outcome: reported,
         });
-        if let Some(stream) = &mut stream {
+        if !failed
+            && limit.is_none_or(|limit| limit.check().is_ok())
+            && let Some(stream) = &mut stream
+        {
             stream.reports(selection, &mut reports, &mut envelope)?;
         }
     }
@@ -929,7 +938,7 @@ fn keeps_waiting(answer: &Answer<LineAnswer>) -> bool {
                 && rows.next.is_none()
                 && rows.incomplete.is_empty()
                 && rows
-                    .read_at
+                    .read_position
                     .freshness
                     .as_ref()
                     .is_some_and(polylogue_model::freshness::ReadFreshness::catching_up)
@@ -943,7 +952,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let query = Selection {
         given,
         resolved: None,
-        question: None,
+        query: None,
         retained: None,
     }
     .query_text()
@@ -1020,7 +1029,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
         _ => None,
     };
     let selection = Selection {
-        question: match &given {
+        query: match &given {
             Given::Query(text) => Some(text.clone()),
             _ => None,
         },
@@ -1038,7 +1047,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
             let plain = || format!("would {} {}", step.verb(), selection.described());
             // A step that acts on rows one by one cannot look at a query's
             // rows here, which are not resolved.
-            let would = if selection.question.is_some() && step.rows() != RowRule::Any {
+            let would = if selection.query.is_some() && step.rows() != RowRule::Any {
                 plain()
             } else {
                 step.would(&selection, &step_call)

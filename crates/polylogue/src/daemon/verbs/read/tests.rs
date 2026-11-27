@@ -97,12 +97,8 @@ fn a_continuation_carries_every_option_of_its_step() {
         "sealed",
     ]
     .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     let call = crate::cli::run_line::request(&parsed).unwrap();
     assert!(call.cursor.is_none());
     let rows: Rows = serde_json::from_value(call.arguments).unwrap();
@@ -266,7 +262,7 @@ fn cursor_from_before_the_change_is_stale_with_rerun() {
     let reader = d.daemon.reads.reader().unwrap();
     let seal = CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     };
     drop(reader);
     let mut cursor = PageCursor::open(step.cursor.as_deref().unwrap(), &seal).unwrap();

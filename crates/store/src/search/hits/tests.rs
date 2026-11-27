@@ -189,7 +189,7 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
             |r| r.get(0),
         )
         .unwrap();
-    let insert = "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length) SELECT m.pk,m.session_pk,0,'text',?1,?2,?3,?4 FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id LIKE 'test:many-%' AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk) ORDER BY m.pk LIMIT ?5";
+    let insert = "INSERT INTO block(message_pk,session_pk,position,kind,text_id,content_group,content_start,content_length) SELECT m.pk,m.session_pk,0,'text',?1,?2,?3,?4 FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id LIKE 'test:many-%' AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk) ORDER BY m.pk LIMIT ?5";
     write
         .execute(
             insert,

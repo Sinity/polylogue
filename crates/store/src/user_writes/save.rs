@@ -263,14 +263,14 @@ pub(super) fn apply(
             name: save.name.clone(),
             query: save.query.clone(),
             ran_at: request.at,
-            read_at: save.read_at.clone(),
+            read_position: save.read_position.clone(),
             rows_json: save.rows_json.clone(),
         },
     )?;
     Ok(SaveReport {
         request: request.id.clone(),
         saved: saved_part,
-        kept: KeptPart {
+        saved_rows: KeptPart {
             result: format!("result:{}", request.id),
             rows,
             at: request.at,

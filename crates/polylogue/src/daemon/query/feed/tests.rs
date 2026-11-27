@@ -46,7 +46,7 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     fixture_counters(&fixture, 1, 3);
     let result = batch(&fixture, Some("old-generation:8:9"));
     assert_eq!(result[0]["type"], "begin");
-    assert_eq!(result[0]["generation_changed"], true);
+    assert_eq!(result[0]["index_instance_changed"], true);
     assert_eq!(result[0]["replacement"], true);
     assert_eq!(result.last().unwrap()["type"], "complete");
     assert_eq!(result.last().unwrap()["count"], 301);
@@ -155,7 +155,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
     let target = reader.change_position().unwrap();
     let future = format!(
         "{}:{}:{}",
-        target.generation,
+        target.index_instance,
         target.index + 1,
         target.archive
     );
@@ -174,7 +174,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
         )
         .unwrap_err()
         .code(),
-        "bad_request"
+        "bad_value"
     );
 }
 

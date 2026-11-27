@@ -545,7 +545,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute(
-            "UPDATE link SET branch_point='claude-code:b' WHERE parent_id='claude-code:p' AND child_id='claude-code:c'",
+            "UPDATE session_link SET branch_point='claude-code:b' WHERE parent_id='claude-code:p' AND child_id='claude-code:c'",
             [],
         )
         .unwrap();

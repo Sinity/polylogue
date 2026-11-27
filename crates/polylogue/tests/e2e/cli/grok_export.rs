@@ -197,15 +197,18 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     let renamed = dir.path().join("renamed-metadata-first.json");
     std::fs::write(&renamed, &bytes).unwrap();
     let unsupported = cli(&env, &["--json", "import", renamed.to_str().unwrap()]);
-    assert!(unsupported.status.success(), "{unsupported:?}");
-    let report: polylogue_engine::ImportReport =
-        serde_json::from_value(json(&unsupported)).unwrap();
-    assert_eq!(report.refused.len(), 1);
-    assert!(report.imported.is_empty());
-    assert_eq!(report.members.len(), 1);
-    assert_eq!(report.members[0].class, "refused");
-    assert_eq!(report.members[0].origin, None);
-    assert!(report.pass.errors.is_empty());
+    assert_eq!(unsupported.status.code(), Some(2), "{unsupported:?}");
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&unsupported.stdout).unwrap();
+    let failure = answer.failure().unwrap();
+    assert_eq!(failure.kind, command_surface::FailureKind::BadValue);
+    assert_eq!(
+        failure.message,
+        format!(
+            "no files were stored\nrefused {}: no declared structure matched",
+            renamed.display()
+        )
+    );
     let standard = dir.path().join("prod-grok-backend.json");
     std::fs::write(&standard, &bytes).unwrap();
     let imported = cli(&env, &["--json", "import", standard.to_str().unwrap()]);
