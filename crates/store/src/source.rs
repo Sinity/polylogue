@@ -18,17 +18,21 @@ pub(crate) fn database_rows(link: &str) -> String {
 
 /// Committed imported row streams and the originals they represent. The
 /// caller can restrict the original by `container_input` on its existing index.
-pub(crate) fn database_links() -> String {
+fn database_links_from(observations: &str) -> String {
     let rows = database_rows("member");
     format!(
         "SELECT member.container_input FROM source_observation_container member
-         JOIN source_observation child ON child.id = member.observation_id
+         JOIN {observations} child ON child.id = member.observation_id
          WHERE {rows} AND child.class = 'imported' AND child.input <> member.container_input"
     )
 }
 
 pub(crate) fn database_original(input: &str) -> String {
-    let links = database_links();
+    database_original_from(input, "source_observation")
+}
+
+pub(crate) fn database_original_from(input: &str, observations: &str) -> String {
+    let links = database_links_from(observations);
     format!("EXISTS({links} AND member.container_input = {input})")
 }
 
