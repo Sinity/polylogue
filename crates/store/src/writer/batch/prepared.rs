@@ -11,9 +11,6 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) events: Vec<crate::encoding::PreparedEvent>,
     /// The groups holding the messages' and events' content.
     pub(in crate::writer) content: crate::content::Groups,
-    /// What the summaries read of each message and event, parallel to them.
-    pub(crate) heads: Vec<crate::parse::head::MessageHead>,
-    pub(crate) event_heads: Vec<crate::parse::head::EventHead>,
     pub(in crate::writer) released: bool,
 }
 
@@ -231,18 +228,6 @@ impl ParsePart {
         ) else {
             return;
         };
-        let heads = self
-            .output
-            .messages
-            .iter()
-            .map(|r| crate::parse::head::message_head(&r.message))
-            .collect();
-        let event_heads = self
-            .output
-            .events
-            .iter()
-            .map(crate::parse::head::event_head)
-            .collect();
         self.prepared = PreparedRows {
             messages,
             documents,
@@ -250,8 +235,6 @@ impl ParsePart {
             texts,
             events,
             content,
-            heads,
-            event_heads,
             released: true,
         };
         for blocks in self

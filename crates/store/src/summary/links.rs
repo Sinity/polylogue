@@ -59,8 +59,7 @@ impl Fold for Links {
             for stage in &stages {
                 match (stage.program.as_str(), stage.subcommand()) {
                     ("git", Some("commit")) => {
-                        for hash in crate::parse::head::commits_in(output.as_deref().unwrap_or(""))
-                        {
+                        for hash in committed(output.as_deref().unwrap_or("")) {
                             state
                                 .commits
                                 .entry(hash)
@@ -68,7 +67,7 @@ impl Fold for Links {
                         }
                     }
                     ("gh", Some("pr")) if is_create(stage) => {
-                        for pull in crate::parse::head::pulls_in(output.as_deref().unwrap_or("")) {
+                        for pull in pull_requests(output.as_deref().unwrap_or("")) {
                             state.pulls.entry(pull).or_insert_with(|| m.key.clone());
                         }
                     }
@@ -121,6 +120,43 @@ fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
         ),
         (None, None) => Ok(None),
     }
+}
+
+/// `[branch abc1234] subject` lines of `git commit` output.
+fn committed(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|l| {
+            let inner = l.trim().strip_prefix('[')?.split_once(']')?.0;
+            let hash = inner.rsplit(' ').next()?;
+            (hash.len() >= 7 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| hash.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+/// Pull request URLs in `gh pr create` output: `(owner/repo, number, url)`.
+/// The URL is the pull request's own, so a link does not depend on which
+/// mention of it (a `/files` suffix, trailing punctuation) was read first.
+fn pull_requests(output: &str) -> Vec<(String, i64, String)> {
+    output
+        .split_whitespace()
+        .filter_map(|w| {
+            let rest = w.strip_prefix("https://github.com/")?;
+            let mut parts = rest.split('/');
+            let (owner, repo, pull, number) =
+                (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            let n: i64 = number
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .ok()?;
+            (pull == "pull").then(|| {
+                let repo = format!("{owner}/{repo}");
+                let url = format!("https://github.com/{repo}/pull/{n}");
+                (repo, n, url)
+            })
+        })
+        .collect()
 }
 
 /// Replaces the links this summary found for the session after `after`

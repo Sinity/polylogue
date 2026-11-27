@@ -11,6 +11,9 @@ use rusqlite::{Transaction, params};
 
 pub(crate) struct Title;
 
+/// Characters kept of the prompt's first line.
+const LENGTH: usize = 80;
+
 /// The first text block a person typed as prose, in session order, once
 /// one was folded: its title, if it has one.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -38,7 +41,10 @@ impl Fold for Title {
             return Ok(Flow::Continue);
         };
         let prompt = crate::ordered_blocks::one(cx.conn, block.pk)?;
-        state.0 = Some(prompt.text().and_then(crate::parse::head::prompt_title));
+        state.0 = Some(match prompt.text() {
+            Some(text) if !is_fork_instructions(text) => title_of(text),
+            _ => None,
+        });
         Ok(Flow::Continue)
     }
 
@@ -54,4 +60,18 @@ pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, title: Option<&str>) 
     )?
     .execute(params![session_pk, title])?;
     Ok(())
+}
+
+/// The harness's instructions to a context-forked subagent.
+fn is_fork_instructions(text: &str) -> bool {
+    text.trim_start().starts_with("<fork-boilerplate>")
+}
+
+pub(crate) fn title_of(prompt: &str) -> Option<String> {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut t: String = line.chars().take(LENGTH).collect();
+    if line.chars().count() > LENGTH {
+        t.push('…');
+    }
+    Some(t)
 }

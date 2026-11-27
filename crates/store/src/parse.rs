@@ -1,8 +1,4 @@
-//! A chain's reading on its way to the index: the part a parser produced
-//! for a byte range of one chain, where parts go, and the facts the
-//! summaries take from them.
-
-pub mod head;
+//! The parts a parser produces for a chain and where those parts are written.
 
 pub use crate::writer::ParsePart;
 
