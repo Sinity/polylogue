@@ -336,7 +336,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
                 "kept",
                 json!({"selection":"annotations where kind:question","steps":[{"verb":"save"}]})
             )
-            .await["kept"]["result"],
+            .await["saved_rows"]["result"],
             "result:kept-1"
         );
         assert_eq!(

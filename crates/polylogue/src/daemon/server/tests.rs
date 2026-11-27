@@ -689,26 +689,11 @@ fn sixteen_clients_with_one_stalled_stream() {
 
 #[test]
 fn status_keeps_budget_during_import() {
+    use polylogue_store::fault::{self, Action};
+
     let daemon = crate::test_daemon::start_with_workers("status during import", 1);
     let d = &daemon.daemon;
-    // Every ordinary reader is taken: one here, one by a read that runs
-    // until it is cancelled, which also holds the only ordinary place.
     let _held = d.reads.reader().unwrap();
-    let mut long_read = UnixStream::connect(d.archive.socket()).unwrap();
-    long_read
-        .write_all(
-            request_line(
-                "dev sql",
-                serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
-                "long-read",
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    eventually("the long read took the other reader", || {
-        d.reads.checked_out() == 2
-    });
-    // An import runs at idle priority meanwhile.
     let export = daemon.home.join("import/session.jsonl");
     std::fs::create_dir_all(export.parent().unwrap()).unwrap();
     std::fs::write(
@@ -720,18 +705,34 @@ fn status_keeps_budget_during_import() {
             .collect::<String>(),
     )
     .unwrap();
+    let mut long_read = UnixStream::connect(d.archive.socket()).unwrap();
+    long_read
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     let mut import = UnixStream::connect(d.archive.socket()).unwrap();
-    import
+    let mut status = UnixStream::connect(d.archive.socket()).unwrap();
+
+    // Stop this request after it takes the other ordinary reader and the
+    // only ordinary request place. Background readers also use the pool.
+    let statement = "SELECT 1 AS status_during_import";
+    fault::clear();
+    fault::arm("read.query", statement, Action::Hold, 0, 1);
+    long_read
         .write_all(
             request_line(
-                "import",
-                serde_json::json!({"paths": [export]}),
-                "background-import",
+                "dev sql",
+                serde_json::json!({"statement": statement}),
+                "long-read",
             )
             .as_bytes(),
         )
         .unwrap();
-    let mut status = UnixStream::connect(d.archive.socket()).unwrap();
+    let held = fault::wait_held_within(Duration::from_secs(10));
+    if !held {
+        fault::release();
+    }
+    assert!(held, "the SQL request took the other reader");
+
     // The status class's own deadline: a status queued behind the long read
     // would answer with a timeout.
     let line = request_line_with(
@@ -740,12 +741,35 @@ fn status_keeps_budget_during_import() {
         "status-during-import",
         command_surface::Deadline::Default,
     );
-    let answer = answer_of(&mut status, &line);
-    crate::test_answers::ok(answer);
+    let answer = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                import
+                    .write_all(
+                        request_line(
+                            "import",
+                            serde_json::json!({"paths": [export]}),
+                            "background-import",
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                answer_of(&mut status, &line)
+            })
+            .join()
+    });
+    let readers = d.reads.checked_out();
+    fault::release();
+    let read = next_answer(&mut BufReader::new(long_read));
+    fault::clear();
+    crate::test_answers::ok(answer.unwrap());
     assert_eq!(
-        d.reads.checked_out(),
-        2,
+        readers, 2,
         "the long read was still running when status answered"
+    );
+    assert_eq!(
+        crate::test_answers::ok(read),
+        serde_json::json!([{ "status_during_import": 1 }])
     );
 }
 

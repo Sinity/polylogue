@@ -250,6 +250,8 @@ pub static ITEM_COMPLETED: Fields = Fields::new(
         ("type", Read(T::String)),
         ("item.type", Read(T::String)),
         ("item.id", Read(T::String)),
+        ("item.kind", Read(T::String)),
+        ("item.agent_thread_id", Read(T::String)),
         ("item.status", Read(T::String)),
         ("item.exit_code", Read(T::Number)),
         ("item.duration", Read(T::NumberOrObject)),

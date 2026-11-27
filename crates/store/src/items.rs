@@ -100,7 +100,7 @@ pub(crate) fn stored_entries(
 
 /// What a read of stored entries selects: the row, and the message or
 /// event its unit's first row names.
-const ENTRY_SELECT: &str = "SELECT i.seq, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL FROM transcript_line i";
+const ENTRY_SELECT: &str = "SELECT i.position, i.class, i.body, i.call_id, m.id, e.id, i.source_key IS NOT NULL FROM transcript_line i";
 const ENTRY_JOINS: &str =
     "LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk";
 
@@ -118,7 +118,7 @@ pub(crate) fn read_entries(
     let order = if forward { "" } else { " DESC" };
     let mut statement = conn.prepare_cached(&format!(
         "{ENTRY_SELECT} {ENTRY_JOINS}
-         WHERE i.session_pk = ?1 AND i.seq >= ?2 AND i.seq < ?3 ORDER BY i.seq{order}"
+         WHERE i.session_pk = ?1 AND i.position >= ?2 AND i.position < ?3 ORDER BY i.position{order}"
     ))?;
     let mut rows = statement.query(params![session_pk, range.start, range.end])?;
     let mut run = Run::new(conn, session_pk);
@@ -289,10 +289,10 @@ impl<'c> Run<'c> {
         let found: Option<StartRow> = self
             .conn
             .prepare_cached(
-                "SELECT i.seq, i.entry, i.call_id, m.id
+                "SELECT i.position, i.body, i.call_id, m.id
                  FROM transcript_line i LEFT JOIN message m ON m.pk = i.message_pk
-                 WHERE i.session_pk = ?1 AND i.seq <= ?2 AND i.unit IS NOT NULL
-                 ORDER BY i.seq DESC LIMIT 1",
+                 WHERE i.session_pk = ?1 AND i.position <= ?2 AND i.source_key IS NOT NULL
+                 ORDER BY i.position DESC LIMIT 1",
             )?
             .query_row(params![self.session_pk, seq], |row| {
                 <(_, _, _, _)>::try_from(row)
@@ -411,7 +411,7 @@ impl Reader<'_> {
     pub fn copied_prefixes(&self, id: &SessionId) -> Result<Vec<SessionId>> {
         let conn = self.conn()?;
         let mut parents: BTreeSet<String> = conn
-            .prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1")?
+            .prepare_cached("SELECT DISTINCT parent_id FROM shared_prefix WHERE child_id=?1")?
             .query_map([id.to_string()], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         parents.extend(
@@ -589,9 +589,9 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let unit: Option<(i64, Vec<u8>)> = conn
             .prepare_cached(
-                "SELECT seq, counts FROM transcript_line
-                 WHERE session_pk = ?1 AND seq <= ?2 AND counts IS NOT NULL
-                 ORDER BY seq DESC LIMIT 1",
+                "SELECT position, counts FROM transcript_line
+                 WHERE session_pk = ?1 AND position <= ?2 AND counts IS NOT NULL
+                 ORDER BY position DESC LIMIT 1",
             )?
             .query_row(params![session_pk, position(seq)?], |row| {
                 <(_, _)>::try_from(row)
@@ -619,7 +619,7 @@ impl Reader<'_> {
         match key {
             EntryKey::Event { event } => Ok(conn
                 .prepare_cached(
-                    "SELECT i.seq FROM event e JOIN transcript_line i
+                    "SELECT i.position FROM event e JOIN transcript_line i
                        ON i.event_pk = e.pk AND i.session_pk = e.session_pk
                      WHERE e.id = ?1 AND e.session_pk = ?2",
                 )?
@@ -648,7 +648,7 @@ impl Reader<'_> {
     fn item_header(&self, session_pk: i64, message: &MessageId) -> Result<Option<u64>> {
         self.conn()?
             .prepare_cached(
-                "SELECT i.seq FROM message m JOIN transcript_line i
+                "SELECT i.position FROM message m JOIN transcript_line i
                    ON i.message_pk = m.pk AND i.session_pk = m.session_pk
                  WHERE m.id = ?1 AND m.session_pk = ?2",
             )?
@@ -666,9 +666,9 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let next: Option<i64> = conn
             .prepare_cached(
-                "SELECT seq FROM transcript_line
-                 WHERE session_pk = ?1 AND seq > ?2 AND message_pk IS NOT NULL
-                 ORDER BY seq LIMIT 1",
+                "SELECT position FROM transcript_line
+                 WHERE session_pk = ?1 AND position > ?2 AND message_pk IS NOT NULL
+                 ORDER BY position LIMIT 1",
             )?
             .query_row(params![session_pk, position(header)?], |row| row.get(0))
             .optional()?;
@@ -711,8 +711,8 @@ impl Reader<'_> {
         let found: Option<i64> = self
             .conn()?
             .prepare_cached(&format!(
-                "SELECT seq FROM transcript_line {filter}
-                   AND session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq{order} LIMIT 1"
+                "SELECT position FROM transcript_line {filter}
+                   AND session_pk = ?1 AND position >= ?2 AND position < ?3 ORDER BY position{order} LIMIT 1"
             ))?
             .query_row(
                 params![session_pk, position(range.start)?, position(range.end)?],
@@ -732,8 +732,8 @@ impl Reader<'_> {
         let filter = lookup_filter(kind);
         self.conn()?
             .prepare_cached(&format!(
-                "SELECT seq FROM transcript_line {filter}
-                   AND session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq"
+                "SELECT position FROM transcript_line {filter}
+                   AND session_pk = ?1 AND position >= ?2 AND position < ?3 ORDER BY position"
             ))?
             .query_map(
                 params![session_pk, position(range.start)?, position(range.end)?],
@@ -749,12 +749,12 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let seqs: Vec<i64> = conn
             .prepare_cached(
-                "SELECT seq FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+                "SELECT position FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY position",
             )?
             .query_map(params![session_pk, call_id], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         let mut line = conn.prepare_cached(&format!(
-            "{ENTRY_SELECT} {ENTRY_JOINS} WHERE i.session_pk = ?1 AND i.seq = ?2"
+            "{ENTRY_SELECT} {ENTRY_JOINS} WHERE i.session_pk = ?1 AND i.position = ?2"
         ))?;
         let mut out = Vec::new();
         // The lines are apart, so each is its own run.
@@ -787,7 +787,7 @@ impl Reader<'_> {
         }
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT c.call_id, c.seq, c.class
+            "SELECT c.call_id, c.position, c.class
              FROM json_each(?2) j CROSS JOIN transcript_call c
              WHERE c.session_pk = ?1 AND c.call_id = j.value",
         )?;

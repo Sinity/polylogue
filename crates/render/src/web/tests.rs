@@ -37,10 +37,11 @@ fn page() -> ReadPage {
     ReadPage {
         format: Format::Html,
         snapshot: ReadPageSnapshot {
+            incomplete: Vec::new(),
             query: format!("query:{}", "a".repeat(64)),
             ran_at: Timestamp::from_unix_ms(0).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 4,
                 archive: 7,
             },

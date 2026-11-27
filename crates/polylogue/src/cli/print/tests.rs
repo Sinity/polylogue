@@ -81,7 +81,7 @@ fn terminal_printers_escape_archived_text() {
     ));
     let page = json!({
         "format":"markdown",
-        "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}},
+        "snapshot":{"incomplete":[],"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_position":{"index_instance":"synthetic","index":0,"archive":0},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}},
         "document":{
             "header":{"target":"event:synthetic","view":"transcript","title":{"state":"value","value":HOSTILE},"kind":{"kind":"event","event_type":"synthetic"}},
             "items":[{"source":{"ref":"event:synthetic"},"kind":{"kind":"text","text":HOSTILE}}],
@@ -197,5 +197,80 @@ fn a_day_zone_this_machine_cannot_load_is_named_not_replaced() {
         note.starts_with("the day zone Nowhere/Unlisted cannot be loaded here (")
             && note.ends_with("); the measure is shown as its data"),
         "{note}"
+    );
+}
+
+#[test]
+fn deadline_failure_prints_the_hint_next_line_and_notes() {
+    let request = command_surface::RunnableRequest::new(
+        "rows",
+        json!({
+            "selection":"session:claude-code:ID", "steps":[{"verb":"read"}],
+            "references":[], "all":false, "dry_run":false, "explain":false,
+            "page_size":null, "fields":[], "why":false, "wait":null
+        }),
+        "test-request",
+    );
+    let mut answer = command_surface::Answer::error(
+        crate::protocol::store_failure(&polylogue_store::StoreError::ReadDeadlineExceeded)
+            .with_hint("rerun with `--deadline none`, or narrow to one session"),
+    )
+    .with_note("stopped during reading")
+    .with_next("complete without a deadline", request);
+    answer.envelope.next[0].request.deadline = command_surface::Deadline::None;
+    assert_eq!(
+        failure(&answer, false),
+        concat!(
+            "polylogue: deadline_exceeded: the read deadline was exceeded\n",
+            "polylogue: hint: rerun with `--deadline none`, or narrow to one session\n",
+            "polylogue: complete without a deadline: polylogue --why=false --all=false --dry-run=false --explain=false --request-id test-request --deadline none -- session:claude-code:ID read\n",
+            "polylogue: note: stopped during reading\n"
+        )
+    );
+}
+
+#[test]
+fn grammar_failure_prints_the_working_line() {
+    let error = crate::cli::line::parse(
+        &["read".into(), "claude-code:ID".into()],
+        &Default::default(),
+        false,
+    )
+    .unwrap_err();
+    let answer = command_surface::Answer::error(error.failure());
+    assert_eq!(
+        failure(&answer, false),
+        concat!(
+            "polylogue: not_a_verb: \"claude-code:ID\" is not a verb; read takes no words\n",
+            "polylogue: try: polylogue claude-code:ID read\n"
+        )
+    );
+}
+
+#[test]
+fn a_failed_step_prints_its_suggestion_hint_and_candidates() {
+    let error = crate::protocol::failure(polylogue_model::Code::Ambiguous, "choose a session")
+        .with_suggestion(command_surface::Suggestion::Query(
+            "polylogue session:codex:one read".into(),
+        ))
+        .with_hint("use the full reference")
+        .with_candidates(vec!["session:codex:one".into(), "session:codex:two".into()]);
+    let reply = protocol::line::LineAnswer::Steps(protocol::line::StepsAnswer {
+        resolved: None,
+        steps: vec![protocol::line::StepReport {
+            verb: "read".into(),
+            request_id: None,
+            outcome: protocol::line::StepOutcome::Failed { error },
+        }],
+    });
+    assert_eq!(
+        line(&reply, TextStyle::Plain),
+        concat!(
+            "polylogue: ambiguous: choose a session\n",
+            "polylogue: try: polylogue session:codex:one read\n",
+            "polylogue: hint: use the full reference\n",
+            "  session:codex:one\n",
+            "  session:codex:two\n"
+        )
     );
 }

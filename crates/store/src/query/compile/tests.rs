@@ -225,7 +225,7 @@ fn changes_continue_from_a_feed_position() {
     assert!(sql.contains(".seq > 3) OR ("), "{sql}");
     assert!(sql.contains(".seq > 12) OR"), "{sql}");
     assert!(sql.contains(".changed > 12 OR"), "{sql}");
-    assert!(compile_err("feed where after:12").contains("GENERATION:INDEX:ARCHIVE"));
+    assert!(compile_err("feed where after:12").contains("INDEX_INSTANCE:INDEX:ARCHIVE"));
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn deliveries_take_their_outcome_from_the_latest_event() {
 #[test]
 fn every_stored_value_can_be_queried() {
     use polylogue_model::{
-        BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
+        BlockKind, LINK_KIND_NAMES, LINK_REASON_NAMES, LinkKind, PromptKind, Role, SessionKind,
     };
     let closed: &[(&str, &[&str])] = &[
         ("sessions where kind:", SessionKind::NAMES),
@@ -250,7 +250,7 @@ fn every_stored_value_can_be_queried() {
         ("messages where prompt_kind:", PromptKind::NAMES),
         ("blocks where kind:", BlockKind::NAMES),
         ("session_links where kind:", LINK_KIND_NAMES),
-        ("session_links where how:", LINK_HOW_NAMES),
+        ("session_links where reason:", LINK_REASON_NAMES),
     ];
     for (query, names) in closed {
         for name in *names {
@@ -503,8 +503,8 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             "similar:dates | group by origin | first 1 | count",
         ] {
             let program = compile(text, &options).unwrap();
-            assert_eq!(program.near.is_some(), embeddings, "{text}");
-            assert_eq!(program.incomplete.is_empty(), embeddings, "{text}");
+            assert!(program.near.is_some(), "{text}");
+            assert!(program.incomplete.is_empty(), "{text}");
         }
         for text in [
             "sessions | where similar:dates",

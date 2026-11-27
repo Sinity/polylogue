@@ -753,8 +753,9 @@ pub struct OpenChain<'w> {
     out: Out<'w>,
 }
 
-impl super::chain::ChainSink for OpenChain<'_> {
-    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+impl crate::parse::ParseSink for OpenChain<'_> {
+    fn part(&mut self, mut part: ParsePart) -> Result<()> {
+        let step = &mut part;
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -807,12 +808,16 @@ impl super::chain::ChainSink for OpenChain<'_> {
         }
         Ok(())
     }
+
+    fn end(self: Box<Self>) -> Result<()> {
+        (*self).finish()
+    }
 }
 
 impl OpenChain<'_> {
     /// Ends the chain: moves its rows into the worker's stream and clears
     /// the scratch index.
-    pub fn finish(mut self) -> Result<()> {
+    fn finish(mut self) -> Result<()> {
         self.steps.finish()?;
         move_out(
             &self.tx,
@@ -845,7 +850,7 @@ fn move_out(
 ) -> Result<()> {
     let mut value = Vec::new();
     let (format, route): (String, String) = tx.query_row(
-        "SELECT format,route FROM input_ref WHERE id=?1",
+        "SELECT origin,route FROM input_ref WHERE id=?1",
         [input],
         |r| <(String, String)>::try_from(r),
     )?;
@@ -926,11 +931,11 @@ fn move_out(
         // A message's text rows also carry the key of its reading in the
         // composition stream, which the load gives each its text key under.
         let mut statement = tx.prepare_cached(
-            "SELECT p.chain,p.document,p.item,p.idx,t.hash,m.session_id FROM parse_text p
+            "SELECT p.chain,p.document,p.item,p.position,t.hash,m.session_id FROM parse_text p
              JOIN text t ON t.id=p.text_id
              LEFT JOIN message_parse m ON p.document=0 AND m.input_pk=p.input_pk AND m.chain=p.chain
                  AND m.message_id=p.item
-             ORDER BY p.document,p.item,p.idx",
+             ORDER BY p.document,p.item,p.position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -1037,10 +1042,10 @@ fn compose_records(
         let mut reader = crate::content::Reader::default();
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,r.record_position,
-                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,r.record_position,
+                 r.order_time,r.route,r.state,r.id_kind='content',r.hash,
                  r.content_group,r.content_start,r.content_length,r.layout
-             FROM message_parse r ORDER BY r.seq,r.record_position",
+             FROM message_parse r ORDER BY r.position,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -1099,7 +1104,7 @@ fn compose_records(
     {
         let mut statement = tx.prepare_cached(
             "SELECT event_id,session_id,route,hash,content_group,content_start,content_length,data_length,
-                 seq,source_start,source_start+source_length,after_message_id
+                 position,source_start,source_start+source_length,after_message_id
              FROM event_parse WHERE session_id IS NOT NULL",
         )?;
         let mut rows = statement.query([])?;
@@ -1650,9 +1655,11 @@ impl Inner {
                         composing,
                         table: Table::new(
                             "parse_text".into(),
-                            ["input_pk", "chain", "document", "item", "idx", "text_id"]
-                                .map(String::from)
-                                .to_vec(),
+                            [
+                                "input_pk", "chain", "document", "item", "position", "text_id",
+                            ]
+                            .map(String::from)
+                            .to_vec(),
                             "",
                         ),
                     }))
@@ -1937,9 +1944,9 @@ impl Inner {
                 INPUTS => {
                     let row = decode_row(value)?;
                     t.prepare_cached(
-                        "INSERT INTO input_ref(id,format,route) VALUES (?1,?2,?3)
-                         ON CONFLICT(id) DO UPDATE SET format=excluded.format,route=excluded.route
-                         WHERE format IS NOT excluded.format OR route IS NOT excluded.route",
+                        "INSERT INTO input_ref(id,origin,route) VALUES (?1,?2,?3)
+                         ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,route=excluded.route
+                         WHERE origin IS NOT excluded.origin OR route IS NOT excluded.route",
                     )?
                     .execute(params![key_input(rest)?, row[0], row[1]])?;
                 }

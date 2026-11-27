@@ -50,9 +50,9 @@ CREATE TABLE session_value (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   field             TEXT NOT NULL,          -- model | tool
   value             TEXT NOT NULL,
-  n                 INTEGER NOT NULL CHECK (n >= 0),  -- 0: the session no longer has the value; the
+  count                 INTEGER NOT NULL CHECK (count >= 0),  -- 0: the session no longer has the value; the
                                             --   row stays so the catalog sees the removal
-  changed           INTEGER NOT NULL,       -- write counter of the transaction that last changed n
+  changed           INTEGER NOT NULL,       -- write counter of the transaction that last changed count
   PRIMARY KEY (session_pk, field, value)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_value_changed ON session_value(changed);

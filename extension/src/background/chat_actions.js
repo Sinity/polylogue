@@ -5,7 +5,7 @@
 // Replies come back through regular capture.
 
 import { attachmentInPage, cancelChatActionInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
-import { encode } from "./base64.js";
+import { decode, encode } from "./base64.js";
 import { ProviderScheduler } from "./provider.js";
 import { loaded } from "./tabs.js";
 
@@ -39,7 +39,7 @@ export class ChatActions {
       this.running = (async () => {
         try {
           const by = await this.instance();
-          const { action } = await this.host.claimChatAction(by);
+          const { action } = await this.host.call("internal chat claim", { by });
           if (action) await this.run(action, by);
         } finally {
           this.running = null;
@@ -57,7 +57,7 @@ export class ChatActions {
   async passFiles(action, runId, tabId) {
     for (const item of action.attachments || []) {
       await this.inPage(tabId, attachmentInPage, [action.id, runId, "start", item]);
-      const bytes = new Uint8Array(await (await this.host.chatAttachment(action.id, item.id)).arrayBuffer());
+      const bytes = decode((await this.host.call("internal chat attachment", { id: action.id, attachment: item.id })).bytes);
       if (bytes.length !== item.size) throw new Error("protocol_attachment_size_mismatch");
       for (let at = 0; at < bytes.length; at += CHUNK_BYTES) {
         await this.inPage(tabId, attachmentInPage, [action.id, runId, "append", item, at, encode(bytes.subarray(at, at + CHUNK_BYTES))]);
@@ -67,7 +67,7 @@ export class ChatActions {
   }
 
   async run(action, by) {
-    const report = (update) => this.host.reportChatAction(action.id, { by, ...update });
+    const report = (update) => this.host.call("internal chat report", { id: action.id, update: { by, ...update } });
     const runId = crypto.randomUUID();
     let sending = false;
     let preparedSend = false;

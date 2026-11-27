@@ -79,7 +79,7 @@ pub struct InContainer {
 
 /// One parse step's rows and where they sit in the input's chain.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ParseStep {
+pub struct ParsePart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<polylogue_model::batch::ExportDelivery>,
     /// Message positions in reading order for array records, apart from byte ranges.
@@ -119,7 +119,7 @@ mod export;
 mod prepared;
 pub(crate) use prepared::PreparedRows;
 
-impl ParseStep {
+impl ParsePart {
     /// The comparison hashes of the row-dump records parsed in this step.
     pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
         let mut update = crate::tool_databases::RowComparison::records(bytes)?;
@@ -198,7 +198,7 @@ pub struct Batch {
     pub blobs: Vec<NewBlob>,
     /// The chain's stored length after this batch.
     pub length: u64,
-    pub parse: Vec<ParseStep>,
+    pub parse: Vec<ParsePart>,
     /// Runs when the writer is done with the batch: after its transaction
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.

@@ -785,7 +785,7 @@ proptest! {
 
     /// A ranking orders rows and never changes which match or how many:
     /// words ranked by relevance against the same rows sorted by time, and
-    /// `similar:` with vectors for every text, for some, and disabled. A
+    /// `similar:` with vectors for every text, for some, and for none. A
     /// count after `similar:` needs no ranking, so it computes no similarity.
     #[test]
     fn a_ranking_never_changes_which_rows_match(
@@ -806,32 +806,28 @@ proptest! {
         // Stored vectors stay, so each variant adds to the one before.
         for vectors in ["none", "some texts", "every text"] {
             let similarity = match vectors {
-                "every text" => Some(vectors_for(&w, |_| true)),
-                "some texts" => Some(vectors_for(&w, |session| session.ends_with('0') || session.ends_with('2'))),
-                _ => None,
+                "every text" => vectors_for(&w, |_| true),
+                "some texts" => vectors_for(&w, |session| session.ends_with('0') || session.ends_with('2')),
+                _ => std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown()),
             };
-            let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
-                Ok(std::sync::Arc::clone(similarity.as_ref().unwrap()))
+            let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
+                Ok(std::sync::Arc::clone(&similarity))
             };
             let mut request = ask(&ranked_text);
             request.page_size = Some(1 << 40);
-            request.embeddings = similarity.is_some();
-            if similarity.is_some() {
-                request.near = Some(&near);
-            }
+            request.embeddings = true;
+            request.near = Some(&near);
             let v = run_q(&w, request).unwrap();
             prop_assert_eq!(key_set(Unit::Sessions, &v), key_set(Unit::Sessions, &plain), "{}", vectors);
             prop_assert_eq!(&v["count"], &plain["count"], "{}", vectors);
-            if similarity.is_some() {
-                prop_assert!(
+            prop_assert!(
                     v["unknown"]["similar"]
                         .as_u64()
                         .is_some_and(|n| Some(n) <= plain["count"].as_u64()),
                     "{}", v
                 );
-            }
         }
-        let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> {
+        let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
             panic!("a count computed a similarity")
         };
         let count_text = format!("{ranked_text} | agg count");

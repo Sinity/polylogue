@@ -345,14 +345,22 @@ fn observe_input(
             read: &read,
         });
         let mut one = Observer::new(selection.fields.clone());
-        let result = if stored.format == "codex-compressed" {
+        let compressed_form_of = spec
+            .compressed_form_of
+            .and_then(polylogue_sources::origin::by_name);
+        let result = if let Some(decoded_origin) = compressed_form_of {
             // Stored Codex revisions already contain decoded bytes even when
-            // their observation path ends in .zst. Only this container origin
-            // is decompressed; framing never follows the filename alone.
-            let codex = polylogue_sources::origin::by_name("codex").expect("codex origin");
+            // their observation path ends in .zst. Only an origin declared as
+            // another's compressed form is decompressed; framing never
+            // follows the filename alone.
             let decoded =
                 zstd::stream::read::Decoder::new(bytes).map_err(|_| "unreadable_input")?;
-            observe_bytes(&mut one, BufReader::new(decoded), codex, &stored.path)
+            observe_bytes(
+                &mut one,
+                BufReader::new(decoded),
+                decoded_origin,
+                &stored.path,
+            )
         } else {
             observe_bytes(&mut one, &mut bytes, spec, &stored.path)
         };

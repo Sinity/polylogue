@@ -44,7 +44,7 @@ describe("what the page's conversation is called", () => {
   it("names the command that installs the host when it is missing", () => {
     const said = words.conversation({ ...page, host: "missing" });
     expect(said.label).toBe("Polylogue is not installed for this browser");
-    expect(said.detail).toBe("Run `polylogue install chrome --extension-id <id>`.");
+    expect(said.detail).toBe("Run `polylogue install chrome`.");
   });
 
   it("says that Polylogue did not answer when the installed host fails, as the popup's header does", () => {

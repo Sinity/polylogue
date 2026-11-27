@@ -39,7 +39,7 @@ fn atif_transcript_keeps_text_tools_images_and_embedded_scope_without_fabricated
     let origin = by_name("hermes").unwrap();
     assert!((origin.recognize)(
         Path::new("trajectory-synthetic.json"),
-        &raw[..64]
+        &polylogue_sources::document::Head::new(&raw[..64])
     ));
     let parsed = parse("hermes", "trajectory-synthetic.json", &raw);
     assert!(sessions(&parsed).is_empty());
@@ -121,7 +121,7 @@ fn atif_future_versions_are_explicitly_unsupported_and_other_schema_keys_do_not_
     );
     assert!(!(by_name("hermes").unwrap().recognize)(
         Path::new("other.json"),
-        br#"{"schema_version":"other-format"}"#
+        &polylogue_sources::document::Head::new(br#"{"schema_version":"other-format"}"#)
     ));
 }
 

@@ -1,8 +1,6 @@
-//! Shared time mechanics with explicit conversion at the millisecond SQL seam.
-//! Candidate bounds for integer-index comparisons are widened by one
-//! millisecond on each side, so the exact test decides.
-//! Temporal predicates compare stored source times at nanosecond precision.
-//! Millisecond conversions remain for derived point fields and broad candidates.
+//! Shared time mechanics with explicit conversion at the millisecond SQL seam:
+//! stored times are whole milliseconds, so a query's bound is rounded to the
+//! millisecond that decides the same comparison.
 use polylogue_query::QueryError;
 pub use query_language::time::{Clock, ResolvedTime, Time, duration_ms, resolve};
 
@@ -31,8 +29,9 @@ impl Milliseconds for Time {
 #[cfg(test)]
 mod tests;
 
-/// Serialized once by lowering and interpreted by the deterministic SQL adapter.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A time predicate before it is compiled to column comparisons
+/// ([`super::compile`]'s `time_test`).
+#[derive(Debug, Clone)]
 pub(crate) enum TimePredicate {
     Known,
     Compare {
@@ -44,38 +43,17 @@ pub(crate) enum TimePredicate {
         until: Option<jiff::Timestamp>,
     },
 }
-impl TimePredicate {
-    pub(crate) fn candidates(&self, cache: &str) -> String {
-        use query_language::time::TimeCondition::*;
-        let lower = |at: jiff::Timestamp| {
-            format!(
-                "({cache}) >= {}",
-                at.as_nanosecond().div_euclid(1_000_000) - 1
-            )
-        };
-        let upper =
-            |at: jiff::Timestamp| format!("({cache}) <= {}", crate::calendar::boundary_ms(at) + 1);
-        match self {
-            Self::Known | Self::Compare { invert: true, .. } => "1".into(),
-            Self::Compare { condition, .. } => match *condition {
-                Before { at } | AtOrBefore { at } => upper(at),
-                After { at } | AtOrAfter { at } => lower(at),
-                Equal { at } => format!("({} AND {})", lower(at), upper(at)),
-                Within { range } => format!("({} AND {})", lower(range.start), upper(range.end)),
-                NotEqual { .. } => "1".into(),
-            },
-            Self::Overlap { since, until } => {
-                let parts: Vec<_> = since
-                    .map(lower)
-                    .into_iter()
-                    .chain(until.map(upper))
-                    .collect();
-                if parts.is_empty() {
-                    "1".into()
-                } else {
-                    format!("({})", parts.join(" AND "))
-                }
-            }
-        }
-    }
+
+/// The first whole millisecond at or after `at`: a stored millisecond `t`
+/// is at or after `at` exactly when `t >= ceil_ms(at)`.
+pub(crate) fn ceil_ms(at: jiff::Timestamp) -> i64 {
+    let ns = at.as_nanosecond();
+    i64::try_from(ns.div_euclid(1_000_000) + i128::from(ns.rem_euclid(1_000_000) != 0))
+        .expect("jiff timestamps fit the millisecond index")
+}
+
+/// The last whole millisecond at or before `at`.
+pub(crate) fn floor_ms(at: jiff::Timestamp) -> i64 {
+    i64::try_from(at.as_nanosecond().div_euclid(1_000_000))
+        .expect("jiff timestamps fit the millisecond index")
 }

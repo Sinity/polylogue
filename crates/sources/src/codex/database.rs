@@ -49,7 +49,8 @@ fn database(path: &Path) -> Option<&str> {
 }
 
 /// Recognizes a row dump file; the database itself is never parsed.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.extension().is_some_and(|e| e == "jsonl")
         && database(path).is_some()
         && crate::document::starts_object_lines(head)
@@ -61,7 +62,7 @@ pub fn is_database(path: &Path) -> bool {
 }
 
 pub fn is_row_dump(path: &Path) -> bool {
-    is_database(path) || recognize(path, b"{")
+    is_database(path) || recognize(path, &crate::document::Head::new(b"{"))
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
@@ -255,7 +256,7 @@ impl Parser for Database {
                 out.links.push(Link {
                     kind: LinkKind::Spawn,
                     copies_prefix: false,
-                    how: None,
+                    reason: None,
                     parent,
                     child,
                     branch_point: None,

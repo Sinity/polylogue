@@ -89,7 +89,7 @@ pub(super) fn apply(
     )?
     .execute(params![session_pk, after.0])?;
     let mut interval = tx.prepare_cached(
-        "INSERT OR REPLACE INTO live_interval(session_pk, aspect, value, start_at, end_at, closed_by, closed)
+        "INSERT OR REPLACE INTO live_interval(session_pk, aspect, value, started_at, ended_at, closed_by, closed)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )?;
     for (i, key) in &emitted.intervals {

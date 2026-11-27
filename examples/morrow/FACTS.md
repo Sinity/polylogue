@@ -202,7 +202,7 @@ session. L8 owns its last three messages; its first three belong to 0199,
 whose original file is absent. The copies remain readable in L8 without a
 provider relationship ([sessions](../../docs/sessions.md#session-links)).
 
-Provider links (`how` is absent for provider relationships):
+Provider links (`reason` is absent for provider relationships):
 
 | Parent | Child | Kind | Evidence | Spawning call |
 |---|---|---|---|---|
@@ -224,7 +224,7 @@ marker and create no provider link. L4 has no spawning-call marker either;
 its file location alone establishes no spawn.
 
 The delivery row below addresses #4 from #2, the source of a separate
-`reference` relationship with `how: briefing`.
+`reference` relationship with `reason: briefing`.
 
 Things the examples rely on:
 

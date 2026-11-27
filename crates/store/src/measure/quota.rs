@@ -629,9 +629,9 @@ pub fn current(
             .collect::<Vec<_>>()
             .join(",");
         let mut sessions = conn.prepare(&format!(
-            "SELECT pk, origin, last_activity_at FROM session
-             WHERE last_activity_at >= ?1 AND origin IN ({placeholders})
-             ORDER BY last_activity_at DESC"
+            "SELECT pk, origin, last_active_at FROM session
+             WHERE last_active_at >= ?1 AND origin IN ({placeholders})
+             ORDER BY last_active_at DESC"
         ))?;
         let mut params: Vec<rusqlite::types::Value> = vec![since.into()];
         params.extend(tools.iter().map(|tool| (*tool).to_owned().into()));

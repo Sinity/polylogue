@@ -11,7 +11,7 @@ pub use cli::picker;
 mod auth;
 mod client;
 mod commands;
-mod completion_catalog;
+mod completion;
 mod config;
 mod daemon;
 mod demo;
@@ -180,24 +180,32 @@ fn run() -> ExitCode {
                 Ok(client) => client,
                 Err(error) => return start.failed(&error.failure()),
             };
-            // Saved names are recognised from the catalog the daemon
-            // publishes beside the archive.
-            let catalog = cli::line::FirstWordCatalog::load(&client.paths, &client.archive);
-            let parsed = match cli::line::parse(words, &catalog, cli::run_line::terminal()) {
+            let mut parsed = match cli::line::parse(
+                words,
+                &cli::line::SavedNames::default(),
+                cli::run_line::terminal(),
+            ) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    let mut failure = protocol::failure(error.code, error.message);
-                    failure.hint = error.try_line.map(|line| format!("try: {line}"));
-                    if !error.candidates.is_empty() {
-                        failure
-                            .hint
-                            .get_or_insert_default()
-                            .push_str(&format!("\n{}", error.candidates.join("\n")));
-                    }
-                    return cli::fail_with(process.output, invocation.json, &failure, &[]);
+                    return cli::fail_with(process.output, invocation.json, &error.failure(), &[]);
                 }
             };
             crate::client::remember_this_process(&process.environment);
+            // An authored saved name is known to the daemon only; with the
+            // daemon down the word stays a search, and the line fails as
+            // every line does then.
+            if let Some(word) = parsed.possible_saved_name()
+                && cli::completion::is_saved_name(&client.archive, word)
+            {
+                let saved = cli::line::SavedNames {
+                    authored: vec![word.to_owned()],
+                };
+                // The saved name takes the one word the search took, so
+                // the rest of the line parses as it did.
+                if let Ok(line) = cli::line::parse(words, &saved, cli::run_line::terminal()) {
+                    parsed = line;
+                }
+            }
             cli::run_line::run(parsed, &client)
         }
     }
@@ -243,16 +251,13 @@ fn complete(
 ) -> ExitCode {
     client_pipe_signal();
     // Unfinished words complete with what the arguments so far select.
-    let catalog = config::Client::load(process, invocation.overrides.clone())
+    let archive = config::Client::load(process, invocation.overrides.clone())
         .ok()
-        .map(|client| cli::completion::Catalog {
-            path: client.paths.completion_catalog(&client.archive),
-            archive_key: runtime_dir::archive_key(&client.archive),
-        });
+        .map(|client| client.archive);
     cli::completion::capture(cli::completion::Context {
         arguments: completion.arguments.clone(),
         index: completion.index,
-        catalog,
+        archive,
         prefix: completion.prefix.clone(),
     });
     let basename = arguments

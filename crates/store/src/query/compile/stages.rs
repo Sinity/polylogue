@@ -131,12 +131,11 @@ impl<'a> Compiler<'a> {
                 let partial = match field {
                     "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
                     "tree_cost" => {
-                        let tree = fields::descendants(s);
+                        let tree = fields::spawn_tree(s);
                         Some(format!(
-                            "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
-                         WHERE xl.kind IN ({}) AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
-                            unpriced(&tree),
-                            fields::STRUCTURAL_KINDS
+                            "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
+                         WHERE xl.kind = 'spawn' AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
+                            unpriced(&tree)
                         ))
                     }
                     _ => None,
@@ -310,7 +309,7 @@ impl<'a> Compiler<'a> {
             let (expr, kind) = if unit == Unit::Messages && lower == "text" {
                 (
                     format!(
-                        "(SELECT group_concat(pl_text_at(xg.body, tx.start, tx.length), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.idx) xbs JOIN text tx ON tx.id = xbs.text_id JOIN content_group xg ON xg.id = tx.group_id)",
+                        "(SELECT group_concat(pl_text_at(xg.body, tx.start, tx.length), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.position) xbs JOIN text tx ON tx.id = xbs.text_id JOIN content_group xg ON xg.id = tx.group_id)",
                         sc.a.m
                     ),
                     ColKind::Text,

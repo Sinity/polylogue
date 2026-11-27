@@ -53,7 +53,8 @@ pub const LOCATIONS: &[&str] = &[
     "projects/*/*/subagents/workflows/*/journal.jsonl",
 ];
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     File::from_path(path).is_some() && crate::document::starts_object_lines(head)
 }
 
@@ -927,7 +928,7 @@ fn link_at(
     out.links.push(Link {
         kind,
         copies_prefix: evidence == "fork-context-ref",
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: at,

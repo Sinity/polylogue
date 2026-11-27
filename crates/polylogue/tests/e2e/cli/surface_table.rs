@@ -146,7 +146,12 @@ fn every_surface_gives_the_same_rows_totals_and_refusals_on_morrow() {
     );
     let _daemon = start_daemon(&env);
     let status = wait_status(&env, |_| true);
-    assert_eq!(status["store"]["sessions"], 8);
+    // Logical sessions as `sessions` lists them, and every session: #3
+    // folds into #2 and #6 into #5, while the copy #4 has no recorded
+    // provider relationship and stays its own root (docs/measures.md,
+    // logical session).
+    assert_eq!(status["store"]["sessions"], 6);
+    assert_eq!(status["store"]["sessions_physical"], 8);
     let (port, token) = http_access(&directory);
     let mut mcp = super::query_surfaces::Mcp::start(&env);
     for line in LINES {

@@ -31,12 +31,12 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
     }
     let mut definitions = BTreeMap::new();
     for definition in &object.definitions {
-        if question_id(&definition.normal_form, &definition.parameters)? != definition.question {
+        if question_id(&definition.normal_form, &definition.parameters)? != definition.query_id {
             return Err(crate::StoreError::internal(
                 "query definition hash does not identify its normal form",
             ));
         }
-        if let Some(prior) = definitions.insert(definition.question.to_string(), definition)
+        if let Some(prior) = definitions.insert(definition.query_id.to_string(), definition)
             && prior != definition
         {
             return Err(crate::StoreError::internal(
@@ -138,8 +138,8 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
             "a query run requires its accepting machine",
         ));
     }
-    if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
-        != Some(&run.read_at)
+    if polylogue_model::ChangePosition::parse(&run.read_position.to_string()).as_ref()
+        != Some(&run.read_position)
     {
         return Err(crate::StoreError::internal(
             "a query run has an invalid read position",
@@ -148,7 +148,7 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     match &run.binding {
         RunBinding::Original { execution } => validate_execution(run, execution),
         RunBinding::OriginalObject { execution } => {
-            if run.question.is_some() {
+            if run.query_id.is_some() {
                 return Err(crate::StoreError::internal(
                     "an object read has no query question",
                 ));
@@ -160,15 +160,15 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     }
 }
 fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
-    if Some(execution.replay.context.question) != run.question {
+    if Some(execution.replay.context.question) != run.query_id {
         return Err(crate::StoreError::internal(
             "a query run's replay context names another question",
         ));
     }
     for (key, expected) in [
-        ("generation", run.read_at.generation.clone()),
-        ("index", run.read_at.index.to_string()),
-        ("archive", run.read_at.archive.to_string()),
+        ("index_instance", run.read_position.index_instance.clone()),
+        ("index", run.read_position.index.to_string()),
+        ("archive", run.read_position.archive.to_string()),
     ] {
         if execution
             .replay
@@ -182,11 +182,11 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
             ));
         }
     }
-    if let Some(scope) = execution.replay.context.versions.get("scope")
-        && execution.replay.scope_fingerprint.as_ref() != Some(scope)
+    if let Some(access) = execution.replay.context.versions.get("access")
+        && execution.replay.access_fingerprint.as_ref() != Some(access)
     {
         return Err(crate::StoreError::internal(
-            "a query run's replay context contradicts its grant scope",
+            "a query run's replay context contradicts its read access",
         ));
     }
     execution
@@ -359,9 +359,9 @@ pub(crate) fn apply_run(
     };
     conn.execute(
         &source.sql("INSERT INTO @source.query_run(id,binding_hash,run_hash,query,at,read_position,author,via,commit_seq,source_order,run,object_ref) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET binding_hash=excluded.binding_hash,run_hash=excluded.run_hash,query=excluded.query,object_ref=excluded.object_ref,at=excluded.at,read_position=excluded.read_position,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
-        params![run.id.as_str(),binding_hash,run_hash,run.question.map(|question| question.to_string()),run.at.unix_ns().to_string(),run.read_at.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?,object_ref],
+        params![run.id.as_str(),binding_hash,run_hash,run.query_id.map(|query_id| query_id.to_string()),run.at.unix_ns().to_string(),run.read_position.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?,object_ref],
     )?;
-    if let Some(question) = run.question {
+    if let Some(question) = run.query_id {
         first_run(conn, source, &question.to_string())?;
     }
     Ok(())

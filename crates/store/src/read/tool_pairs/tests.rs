@@ -261,7 +261,7 @@ fn call_coordinate_never_hydrates_other_calls_or_their_results() {
     first.blocks.push(second.blocks[0].clone());
     archive.write("s", vec![first.clone(), result, other_result.clone()]);
     let conn = index(&archive);
-    crate::content::poison_bodies(&conn, "block", "(message_pk=(SELECT pk FROM message WHERE id=?1) AND idx=1) OR message_pk=(SELECT pk FROM message WHERE id=?2)", params![first.id.to_string(), other_result.id.to_string()]).unwrap();
+    crate::content::poison_bodies(&conn, "block", "(message_pk=(SELECT pk FROM message WHERE id=?1) AND position=1) OR message_pk=(SELECT pk FROM message WHERE id=?2)", params![first.id.to_string(), other_result.id.to_string()]).unwrap();
     drop(conn);
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -370,7 +370,7 @@ fn a_corrupt_cross_session_or_mismatched_id_relation_cannot_expose_a_result_body
         );
         let conn = index(&archive);
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        conn.execute("UPDATE tool_call SET result_message_id=?1,result_idx=(SELECT b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND b.kind='tool_result') WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?2)", params![other_result.id.to_string(), call.id.to_string()]).unwrap();
+        conn.execute("UPDATE tool_call SET result_message_id=?1,result_position=(SELECT b.position FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND b.kind='tool_result') WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?2)", params![other_result.id.to_string(), call.id.to_string()]).unwrap();
         crate::content::poison_bodies(
             &conn,
             "block",

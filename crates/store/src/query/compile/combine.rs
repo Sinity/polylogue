@@ -89,6 +89,11 @@ impl<'a> Compiler<'a> {
                 });
             }
             (None, Some(theirs)) => self.similar_text = Some(theirs.clone()),
+            (Some(_), Some(theirs)) => {
+                if let Some(mine) = &mut self.similar_text {
+                    mine.text_ranked &= theirs.text_ranked;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -384,6 +389,7 @@ impl<'a> Compiler<'a> {
                     OrderKey {
                         column: recency,
                         descending: true,
+                        ..Default::default()
                     },
                 ],
             );

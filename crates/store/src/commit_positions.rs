@@ -49,7 +49,7 @@ impl Reader<'_> {
 
     /// Greatest commit position among the stored session facts.
     pub fn session_commit(&self, id: &SessionId) -> Result<Option<u64>> {
-        self.greatest_commit("SELECT r.committed FROM session s JOIN session_stated x ON x.session_pk=s.pk JOIN session_parse r ON r.session_id=x.stated_id WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
+        self.greatest_commit("SELECT r.committed FROM session s JOIN session_stated x ON x.session_pk=s.pk JOIN session_parse r ON r.session_id=x.stated_id WHERE s.id=?1 UNION ALL SELECT committed FROM shared_prefix WHERE child_id=?1", [id.to_string()])
     }
 
     /// Commit position of the selected document reading, independent of cache changes.
@@ -67,8 +67,8 @@ impl Reader<'_> {
     /// Greatest commit position among the stored link facts.
     pub fn link_commit(&self, link: &Link) -> Result<Option<u64>> {
         let kind = link.kind.as_str();
-        let how = link.how.map(|how| how.as_str());
-        self.greatest_commit("SELECT s.committed FROM link_parse s WHERE s.parent_id=?1 AND s.child_id=?2 AND s.kind=?3 AND s.how IS ?4 UNION ALL SELECT committed FROM prefix_copy WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,how])
+        let reason = link.reason.map(|reason| reason.as_str());
+        self.greatest_commit("SELECT s.committed FROM link_parse s WHERE s.parent_id=?1 AND s.child_id=?2 AND s.kind=?3 AND s.reason IS ?4 UNION ALL SELECT committed FROM shared_prefix WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,reason])
     }
 }
 

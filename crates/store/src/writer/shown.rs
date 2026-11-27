@@ -212,7 +212,7 @@ struct Call {
 
 /// A tool result block: (session order, message ID, block index) places it.
 struct CallResult {
-    place: (String, String, i64),
+    place: (Vec<u8>, String, i64),
     outcome: Option<ResultOutcome>,
     at: Option<i64>,
 }
@@ -484,20 +484,33 @@ impl<'c> Work<'_, 'c> {
             for row in self
                 .tx()
                 .prepare_cached(
-                    "SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE parent_id=?1
-                     UNION SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE child_id=?1",
+                    "SELECT parent_id,child_id,kind,reason,branch_point,spawning_call FROM link_statement WHERE parent_id=?1
+                     UNION SELECT parent_id,child_id,kind,reason,branch_point,spawning_call FROM link_statement WHERE child_id=?1",
                 )?
                 .query_map([session], |row| {
                     <(String, String, String, Option<String>, Option<String>, Option<String>)>::try_from(row)
                 })?
             {
-                let (parent, child, kind, how, at, call) = row?;
-                let statement = serde_json::to_vec(&(parent, child, kind, how, at, call))?;
+                let (parent, child, kind, reason, at, call) = row?;
+                let statement = serde_json::to_vec(&(parent, child, kind, reason, at, call))?;
                 shown_links.entry(statement.clone()).or_default().insert(statement);
             }
         }
+        let mut relations = BTreeSet::new();
         for (shown, stated) in shown_links {
             self.compose_link(&shown, &stated)?;
+            let (parent, child, kind, reason, ..): (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = serde_json::from_slice(&shown)?;
+            relations.insert((parent, child, kind, reason));
+        }
+        for relation in relations {
+            self.resolve_links(relation)?;
         }
         for document in documents {
             self.compose_document(&document)?;
@@ -534,10 +547,10 @@ impl<'c> Work<'_, 'c> {
             return Ok(pk);
         }
         let id = SessionId::parse(session).map_err(StoreError::invalid)?;
-        self.tx().prepare_cached("INSERT INTO session(id,origin,native_id,kind,cwd_json,changed,harness,stub,
+        self.tx().prepare_cached("INSERT INTO session(id,origin,native_id,kind,cwd_json,changed,harness,has_transcript,
             message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,
             thinking_count,compaction_count,tool_call_count,error_count)
-            VALUES (?1,?2,?3,'main','[]',?4,?2,1,0,0,0,0,0,0,0,0,0,0)")?
+            VALUES (?1,?2,?3,'main','[]',?4,?2,0,0,0,0,0,0,0,0,0,0,0)")?
             .execute(params![session, id.origin().as_str(), id.native().as_str(), self.context.counter])?;
         let pk = self.tx().last_insert_rowid();
         self.sessions.insert(session.to_owned(), pk);
@@ -557,7 +570,7 @@ impl<'c> Work<'_, 'c> {
             let pk = self.session_row(session)?;
             self.context.changes.whole_session(pk);
             self.context.changes.session(pk);
-            self.set_stub(pk, session, !own)?;
+            self.set_has_transcript(pk, session, own)?;
             return Ok(());
         }
         let stated = self.ids.stated(session)?;
@@ -597,17 +610,20 @@ impl<'c> Work<'_, 'c> {
             (_, true) => {
                 let pk = self.session_row(session)?;
                 self.context.changes.session(pk);
-                self.set_stub(pk, session, !own)
+                self.set_has_transcript(pk, session, own)
             }
         }
     }
 
-    /// Makes session `pk` a stub or not; a change marks its lineage due.
-    fn set_stub(&mut self, pk: i64, session: &str, stub: bool) -> Result<()> {
+    /// Records whether session `pk` has a transcript (it is a stub while only
+    /// events name it); a change marks its lineage due.
+    fn set_has_transcript(&mut self, pk: i64, session: &str, has_transcript: bool) -> Result<()> {
         let changed = self
             .tx()
-            .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-            .execute(params![pk, stub])?;
+            .prepare_cached(
+                "UPDATE session SET has_transcript=?2 WHERE pk=?1 AND has_transcript IS NOT ?2",
+            )?
+            .execute(params![pk, has_transcript])?;
         if changed > 0 {
             crate::lineage::mark_due(self.tx(), session)?;
         }
@@ -626,8 +642,8 @@ impl<'c> Work<'_, 'c> {
             let rows = self
                 .tx()
                 .prepare_cached(
-                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,
-                         r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,
+                         r.record_position,r.order_time,r.route,r.state,r.id_kind='content',r.hash,
                          r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
                 )?
@@ -818,24 +834,17 @@ impl<'c> Work<'_, 'c> {
         // The earliest place among the readings that know an order time, so
         // the message stays before what follows it in each input; a reading
         // that knows none never pulls it to the session's start.
-        let place = readings
+        let order = readings
             .iter()
-            .min_by_key(|m| {
+            .map(|m| {
                 (
                     m.order_time.is_none(),
-                    m.order_time,
-                    &m.input,
-                    m.seq,
-                    m.position,
+                    crate::encoding::session_order(m.order_time, &m.input, m.seq, m.position),
                 )
             })
+            .min()
+            .map(|(_, order)| order)
             .expect("readings are not empty");
-        let order = crate::encoding::session_order(
-            place.order_time,
-            &place.input,
-            place.seq,
-            place.position,
-        );
         let mut routes: Vec<(FieldGroup, i64, i64)> = groups
             .iter()
             .map(|(group, n)| (*group, readings[*n].input_pk, readings[*n].chain))
@@ -994,8 +1003,8 @@ impl<'c> Work<'_, 'c> {
         let stored = self
             .tx()
             .prepare_cached(
-                "SELECT idx,content_group,content_start,content_length,data_length FROM block
-                 WHERE message_pk=?1 ORDER BY idx",
+                "SELECT position,content_group,content_start,content_length,data_length FROM block
+                 WHERE message_pk=?1 ORDER BY position",
             )?
             .query_map([message_pk], |r| {
                 Ok((r.get::<_, i64>(0)?, crate::content::Piece::of(r, 1)?))
@@ -1010,7 +1019,7 @@ impl<'c> Work<'_, 'c> {
                 self.tx()
                     .prepare_cached(
                         "UPDATE block SET content_group=?3,content_start=?4,content_length=?5,data_length=?6
-                         WHERE message_pk=?1 AND idx=?2",
+                         WHERE message_pk=?1 AND position=?2",
                     )?
                     .execute(params![
                         message_pk,
@@ -1114,7 +1123,7 @@ impl<'c> Work<'_, 'c> {
         &mut self,
         message_pk: i64,
         session_pk: i64,
-        order: &str,
+        order: &[u8],
         value: &ReadingValue,
     ) -> Result<()> {
         let m = &value.message;
@@ -1127,9 +1136,9 @@ impl<'c> Work<'_, 'c> {
         let origin = m.session.origin().as_str().to_owned();
         let at = m.at.map(Timestamp::unix_ms);
         let mut insert = self.tx().prepare_cached(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+            "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                  content_start, content_length, data_length, call_id, blob_hash, media_type,
-                 file_name, size, url, direction, encrypted, other_type, ordinal)
+                 file_name, size, url, direction, encrypted, other_type, source_position)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )?;
         for (idx, (block, piece)) in m.blocks.iter().zip(&value.pieces).enumerate() {
@@ -1246,7 +1255,7 @@ impl<'c> Work<'_, 'c> {
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
                      command, path, outcome, outcome_reason, run_by_script, command_norm,
-                     result_message_id, result_idx, exit_code, result_at, reported_duration_ms)
+                     result_message_id, result_position, exit_code, result_at, reported_duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
@@ -1320,10 +1329,10 @@ impl<'c> Work<'_, 'c> {
             let result: Option<(String, i64, crate::content::Piece, Option<i64>)> = self
                 .tx()
                 .prepare_cached(
-                    "SELECT m.id,b.idx,b.content_group,b.content_start,b.content_length,b.data_length,m.at
+                    "SELECT m.id,b.position,b.content_group,b.content_start,b.content_length,b.data_length,m.at
                      FROM block b JOIN message m ON m.pk=b.message_pk
                      WHERE b.session_pk=?1 AND b.call_id=?2 AND b.kind='tool_result'
-                     ORDER BY m.session_order,m.id,b.idx LIMIT 1",
+                     ORDER BY m.session_order,m.id,b.position LIMIT 1",
                 )?
                 .query_row(params![session_pk, call_id], |r| {
                     Ok((r.get(0)?, r.get(1)?, crate::content::Piece::of(r, 2)?, r.get(6)?))
@@ -1340,7 +1349,7 @@ impl<'c> Work<'_, 'c> {
             let columns = Pairing::of(result, background.as_ref());
             let same = self.tx().exists(
                 "SELECT NOT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND call_id=?2 AND NOT (
-                     result_message_id IS ?3 AND result_idx IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
+                     result_message_id IS ?3 AND result_position IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
                      AND exit_code IS ?7 AND result_at IS ?8 AND reported_duration_ms IS ?9))",
                 params![session_pk, call_id, columns.message, columns.idx, columns.outcome, columns.reason, columns.exit, columns.result_at, columns.duration],
             )?;
@@ -1353,7 +1362,7 @@ impl<'c> Work<'_, 'c> {
             self.context.changes.session(session_pk);
             self.tx()
                 .prepare_cached(
-                    "UPDATE tool_call SET result_message_id=?3,result_idx=?4,outcome=?5,outcome_reason=?6,
+                    "UPDATE tool_call SET result_message_id=?3,result_position=?4,outcome=?5,outcome_reason=?6,
                          exit_code=?7,result_at=?8,reported_duration_ms=?9
                      WHERE session_pk=?1 AND call_id=?2",
                 )?
@@ -1473,7 +1482,7 @@ impl<'c> Work<'_, 'c> {
         Ok(self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_start+r.source_length,
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.position,r.source_start,r.source_start+r.source_length,
                      r.content_group,r.content_start,r.content_length,r.data_length
                  FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
             )?
@@ -1600,13 +1609,14 @@ impl<'c> Work<'_, 'c> {
                 winner.start.unwrap_or(0),
             )
         });
+        let time = crate::encoding::TimeColumns::of(winner.event.at, winner.event.time_accuracy());
         let values = params![
             shown,
             session_pk,
             seq,
             after,
             winner.event.kind,
-            winner.event.at.map(Timestamp::unix_ms),
+            time.at,
             winner.input_pk,
             winner.chain,
             winner.start,
@@ -1616,11 +1626,13 @@ impl<'c> Work<'_, 'c> {
             piece.length,
             piece.data_length,
             order,
+            time.until,
+            time.precision_name(),
         ];
         match stored {
             Some((pk, before_session, before)) => {
                 let same = self.tx().exists(
-                    "SELECT EXISTS(SELECT 1 FROM event WHERE id=?1 AND session_pk IS ?2 AND seq IS ?3 AND after_message_id IS ?4
+                    "SELECT EXISTS(SELECT 1 FROM event WHERE id=?1 AND session_pk IS ?2 AND position IS ?3 AND after_message_id IS ?4
                      AND kind IS ?5 AND at IS ?6 AND input_pk IS ?7 AND source_chain IS ?8 AND source_start IS ?9
                      AND source_end IS ?10)",
                     params![shown, session_pk, seq, after, winner.event.kind,
@@ -1640,9 +1652,10 @@ impl<'c> Work<'_, 'c> {
                     }
                 }
                 self.tx().prepare_cached(
-                    "UPDATE event SET session_pk=?2,seq=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
+                    "UPDATE event SET session_pk=?2,position=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
                          source_chain=?8,source_start=?9,source_end=?10,content_group=?11,content_start=?12,
-                         content_length=?13,data_length=?14,session_order=?15 WHERE id=?1",
+                         content_length=?13,data_length=?14,session_order=?15,at_until=?16,at_precision=?17
+                     WHERE id=?1",
                 )?
                 .execute(values)?;
                 if moved_only {
@@ -1651,9 +1664,10 @@ impl<'c> Work<'_, 'c> {
             }
             None => {
                 self.tx().prepare_cached(
-                    "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,
-                         source_end,content_group,content_start,content_length,data_length,session_order)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                    "INSERT INTO event(id,session_pk,position,after_message_id,kind,at,input_pk,source_chain,source_start,
+                         source_end,content_group,content_start,content_length,data_length,session_order,
+                         at_until,at_precision)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 )?
                 .execute(values)?;
                 let pk = self.tx().last_insert_rowid();
@@ -1692,7 +1706,7 @@ impl<'c> Work<'_, 'c> {
         };
         for stated in self.ids.stated_messages(message)? {
             let seq: Option<i64> = self.tx().scalar_optional(
-                "SELECT seq FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+                "SELECT position FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
                 params![input, chain, stated],
             )?;
             if seq.is_some() {
@@ -1770,7 +1784,7 @@ impl<'c> Work<'_, 'c> {
         }
         found.retain(|(_, input, chain, ..)| newest.get(input) == Some(chain));
         found.sort_by(|a, b| (&a.0, a.2).cmp(&(&b.0, b.2)));
-        let (parent, child, kind, how, at, call): (
+        let (parent, child, kind, reason, at, call): (
             String,
             String,
             String,
@@ -1779,8 +1793,8 @@ impl<'c> Work<'_, 'c> {
             Option<String>,
         ) = serde_json::from_slice(shown)?;
         let stored: Option<i64> = self.tx().scalar_optional(
-            "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
-            params![parent, child, kind, how, at, call],
+            "SELECT pk FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
+            params![parent, child, kind, reason, at, call],
         )?;
         let winner = compose::value(
             &found
@@ -1792,7 +1806,8 @@ impl<'c> Work<'_, 'c> {
             if let Some(pk) = stored {
                 self.context.changes.link(self.tx(), pk)?;
                 self.mark_link_sessions(&parent, &child)?;
-                self.tx().execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                self.tx()
+                    .execute("DELETE FROM link_statement WHERE pk=?1", [pk])?;
                 if crate::lineage::is_lineage(&kind) {
                     crate::lineage::mark_due(self.tx(), &child)?;
                 }
@@ -1807,7 +1822,7 @@ impl<'c> Work<'_, 'c> {
         match stored {
             Some(pk) => {
                 let same = self.tx().exists(
-                    "SELECT EXISTS(SELECT 1 FROM link WHERE pk=?1 AND evidence IS ?2 AND input_pk IS ?3 AND source_chain IS ?4 AND copies_prefix IS ?5)",
+                    "SELECT EXISTS(SELECT 1 FROM link_statement WHERE pk=?1 AND evidence IS ?2 AND input_pk IS ?3 AND source_chain IS ?4 AND copies_prefix IS ?5)",
                     params![pk, link.evidence, input_pk, chain, link.copies_prefix],
                 )?;
                 if same {
@@ -1815,20 +1830,97 @@ impl<'c> Work<'_, 'c> {
                 }
                 self.context.changes.link(self.tx(), pk)?;
                 self.tx()
-                    .prepare_cached("UPDATE link SET evidence=?2,input_pk=?3,source_chain=?4,copies_prefix=?5 WHERE pk=?1")?
+                    .prepare_cached("UPDATE link_statement SET evidence=?2,input_pk=?3,source_chain=?4,copies_prefix=?5 WHERE pk=?1")?
                     .execute(params![pk, link.evidence, input_pk, chain, link.copies_prefix])?;
             }
             None => {
                 self.context.changes.link_child(self.tx(), &child)?;
                 self.tx().prepare_cached(
-                    "INSERT INTO link(parent_id,child_id,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
+                    "INSERT INTO link_statement(parent_id,child_id,kind,reason,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?
-                .execute(params![parent, child, kind, how, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
+                .execute(params![parent, child, kind, reason, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
                 if crate::lineage::is_lineage(&kind) {
                     crate::lineage::mark_due(self.tx(), &child)?;
                 }
             }
+        }
+        self.mark_link_sessions(&parent, &child)
+    }
+
+    /// Writes the relations between `parent` and `child` of one kind and
+    /// reason from all their statements (`session_link`), in one pass over the
+    /// statements, so a reader reads the relations as rows.
+    fn resolve_links(
+        &mut self,
+        (parent, child, kind, reason): (String, String, String, Option<String>),
+    ) -> Result<()> {
+        let statements: Vec<crate::lineage::LinkStatement> = self
+            .tx()
+            .prepare_cached(
+                "SELECT l.branch_point, l.spawning_call, l.copies_prefix, l.evidence, l.source_chain, l.input_pk
+                 FROM link_statement l JOIN input_ref i ON i.pk=l.input_pk
+                 WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.reason IS ?4
+                 ORDER BY i.id, l.source_chain",
+            )?
+            .query_map(params![parent, child, kind, reason], |r| {
+                Ok(crate::lineage::LinkStatement {
+                    branch_point: r.get(0)?,
+                    spawning_call: r.get(1)?,
+                    copies_prefix: r.get(2)?,
+                    evidence: r.get(3)?,
+                    source_chain: r.get(4)?,
+                    input_pk: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let resolved = crate::lineage::relations(&statements);
+        let stored: Vec<crate::lineage::Relation> = self
+            .tx()
+            .prepare_cached(
+                "SELECT branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
+                 FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4
+                 ORDER BY branch_point, spawning_call",
+            )?
+            .query_map(params![parent, child, kind, reason], |r| {
+                Ok(crate::lineage::Relation {
+                    branch_point: r.get(0)?,
+                    spawning_call: r.get(1)?,
+                    copies_prefix: r.get(2)?,
+                    evidence: r.get(3)?,
+                    source_chain: r.get(4)?,
+                    input_pk: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        if stored == resolved {
+            return Ok(());
+        }
+        self.context.changes.link_child(self.tx(), &child)?;
+        self.tx()
+            .prepare_cached(
+                "DELETE FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4",
+            )?
+            .execute(params![parent, child, kind, reason])?;
+        for relation in &resolved {
+            self.tx()
+                .prepare_cached(
+                    "INSERT INTO session_link(parent_id,child_id,kind,reason,copies_prefix,branch_point,
+                         spawning_call,evidence,source_chain,input_pk)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                )?
+                .execute(params![
+                    parent,
+                    child,
+                    kind,
+                    reason,
+                    relation.copies_prefix,
+                    relation.branch_point,
+                    relation.spawning_call,
+                    relation.evidence,
+                    relation.source_chain,
+                    relation.input_pk
+                ])?;
         }
         self.mark_link_sessions(&parent, &child)
     }
@@ -1848,7 +1940,7 @@ impl<'c> Work<'_, 'c> {
         let mut found = self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_start+r.source_length
+                "SELECT i.id,r.input_pk,r.chain,r.route,r.at,r.hash,r.source_start,r.source_start+r.source_length
                  FROM document_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.document_id=?1",
             )?
             .query_map([id], |r| {
@@ -1910,25 +2002,28 @@ impl<'c> Work<'_, 'c> {
         let document: Document = readings::read_document(self.tx(), input_pk, chain, id)?
             .ok_or_else(|| StoreError::Invalid("a document reading has no body".into()))?;
         let prepared = PreparedDocument::new(&document)?;
+        let time = crate::encoding::TimeColumns::of(document.source_time, document.time_accuracy());
         let pk = match stored {
             Some((pk, _)) => {
                 self.tx().execute(
-                    "UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,
-                         source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12 WHERE pk=?1",
-                    params![pk, document.purpose.as_str(), document.title, document.source_time.map(Timestamp::unix_ms),
+                    "UPDATE document SET purpose=?2,title=?3,at=?4,authorship=?5,version_hash=?6,input_pk=?7,
+                         source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12,
+                         at_until=?13,at_precision=?14 WHERE pk=?1",
+                    params![pk, document.purpose.as_str(), document.title, time.at,
                         document.authorship.as_str(), &prepared.hash[..], input_pk, chain, start, end,
-                        self.context.counter, prepared.fields],
+                        self.context.counter, prepared.fields, time.until, time.precision_name()],
                 )?;
                 pk
             }
             None => {
                 self.tx().execute(
-                    "INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,
-                         source_chain,source_start,source_end,fields,changed)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                    "INSERT INTO document(id,origin,native_id,purpose,title,at,authorship,version_hash,input_pk,
+                         source_chain,source_start,source_end,fields,changed,at_until,at_precision)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                     params![id, document.id.origin().as_str(), document.id.native().as_str(), document.purpose.as_str(),
-                        document.title, document.source_time.map(Timestamp::unix_ms), document.authorship.as_str(),
-                        &prepared.hash[..], input_pk, chain, start, end, prepared.fields, self.context.counter],
+                        document.title, time.at, document.authorship.as_str(),
+                        &prepared.hash[..], input_pk, chain, start, end, prepared.fields, self.context.counter,
+                        time.until, time.precision_name()],
                 )?;
                 self.tx().last_insert_rowid()
             }
@@ -1958,7 +2053,7 @@ impl<'c> Work<'_, 'c> {
                 _ => None,
             };
             self.tx().execute(
-                "INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO document_block(document_pk,position,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![pk, idx as i64, block.kind().as_str(), body, text, blob, data],
             )?;
         }
@@ -2058,7 +2153,7 @@ struct MainReading<'a> {
     session_pk: i64,
     /// The words of the main reading's text blocks.
     words: i64,
-    order: &'a str,
+    order: &'a [u8],
     input_pk: i64,
     chain: i64,
     start: i64,
@@ -2080,6 +2175,8 @@ const MESSAGE_COLUMNS: &[&str] = &[
     "prompt_kind",
     "model",
     "at",
+    "at_until",
+    "at_precision",
     "at_time",
     "parent_id",
     "input_tokens",
@@ -2104,7 +2201,7 @@ const MESSAGE_COLUMNS: &[&str] = &[
     "source_end",
     "in_progress",
 ];
-const CONTENT_COLUMNS: usize = 25;
+const CONTENT_COLUMNS: usize = 27;
 
 /// A block layout worth storing: `None` for a message holding every block.
 fn layout_column(selection: &polylogue_model::bundle::ShownBlocks) -> Result<Option<Vec<u8>>> {
@@ -2139,6 +2236,7 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         }
         (!a.is_empty()).then(|| serde_json::Value::Object(a).to_string())
     };
+    let time = crate::encoding::TimeColumns::of(m.at, m.time_accuracy());
     let u = &m.usage;
     // A count beyond SQLite's integer range is unknown, never wrapped.
     let n = |x: Option<u64>| x.and_then(|x| i64::try_from(x).ok());
@@ -2152,7 +2250,9 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         Value::Text(author.as_str().to_owned()),
         text(m.prompt_kind.map(|k| name(&k))),
         text(m.model.clone()),
-        int(m.at.map(Timestamp::unix_ms)),
+        int(time.at),
+        int(time.until),
+        text(time.precision_name().map(str::to_owned)),
         Value::Blob(main.time),
         text(m.parent.as_ref().map(ToString::to_string)),
         int(n(u.input)),
@@ -2176,7 +2276,7 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         int(n(m.duration_ms)),
         Value::Integer(main.words),
         text(attrs),
-        Value::Text(main.order.to_owned()),
+        Value::Blob(main.order.to_owned()),
         Value::Integer(main.input_pk),
         Value::Integer(main.chain),
         Value::Integer(main.start),

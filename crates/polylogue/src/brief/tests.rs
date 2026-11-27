@@ -402,8 +402,8 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
         let shown = refs.len();
         let cut: usize = left_out
             .iter()
-            .filter(|l| !l.what.contains("shortened"))
-            .map(|l| l.what.split(' ').next().unwrap().parse::<usize>().unwrap())
+            .filter(|l| !l.item.contains("shortened"))
+            .map(|l| l.item.split(' ').next().unwrap().parse::<usize>().unwrap())
             .sum();
         assert_eq!(shown + cut, 80, "budget {budget}");
         if cut > 0 {
@@ -696,7 +696,7 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
         .left_out
         .iter()
         .filter(|l| l.reason == "deadline")
-        .map(|l| l.what.as_str())
+        .map(|l| l.item.as_str())
         .collect();
     assert_eq!(
         late,
@@ -1615,7 +1615,7 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
         prepared
             .left_out
             .iter()
-            .find(|item| item.what == "open items")
+            .find(|item| item.item == "open items")
             .map(|item| item.reason.as_str()),
         Some("not available (malformed JSON)")
     );

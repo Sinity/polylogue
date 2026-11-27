@@ -3,25 +3,26 @@
 //! each committed index change (the live clock commits transitions that
 //! come from time alone), reads the selection again and looks again only at
 //! the selected sessions whose rows or live state changed since its last
-//! look, and ends before the request's deadline with the marks the client
-//! sends back.
-use super::{Daemon, Failure, accepting};
+//! look. A deadline that passes ends the request with a timeout.
+use super::{Failure, accepting};
+use crate::daemon::handler::Call;
 use crate::protocol::follow::{Line, Marks, step};
 use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Time kept before the deadline to send the marks.
+/// Time kept before the deadline to send a waiting listing's reply.
 pub(super) const REPLY_MARGIN: Duration = Duration::from_millis(500);
 
 pub(crate) fn run(
-    d: &Daemon,
+    call: &Call<'_>,
     operation: &Arc<polylogue_reading::operation::Context>,
     query: &str,
     marks: Option<Marks>,
     output: &mut dyn std::io::Write,
 ) -> Result<Marks, Failure> {
+    let d = call.daemon;
     let commits = d.writes.as_ref().map(|w| w.completion_commits());
     let limit = polylogue_store::read::limit::ReadLimit::current();
     // A cancelled follow (its client gone, or the daemon stopping) stops
@@ -46,7 +47,7 @@ pub(crate) fn run(
         }
         let now = d.config.requests.now().unix_ms();
         {
-            let reader = d.reads.reader()?;
+            let reader = call.reader()?;
             let (counter, changed) = reader.sessions_changed_after(looked.unwrap_or(i64::MAX))?;
             let selected = selected(&reader, operation, query, now)?
                 .into_iter()
@@ -86,10 +87,11 @@ pub(crate) fn run(
         .map_err(Failure::io)?;
         let left = limit
             .as_ref()
-            .and_then(polylogue_store::read::limit::ReadLimit::remaining)
-            .map(|left| left.saturating_sub(REPLY_MARGIN));
+            .and_then(polylogue_store::read::limit::ReadLimit::remaining);
         if left.is_some_and(|left| left.is_zero()) {
-            return Ok(marks);
+            return Err(Failure::store(
+                &polylogue_store::StoreError::ReadDeadlineExceeded,
+            ));
         }
         if commits.is_none() && left.is_none() {
             return Ok(marks);

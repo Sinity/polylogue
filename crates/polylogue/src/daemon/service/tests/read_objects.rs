@@ -120,7 +120,7 @@ fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadHeader) {
         panic!("object reading must cite its real Run, not a question")
     };
     let run = reader.query_run(&id).unwrap().unwrap();
-    assert_eq!(run.question, None);
+    assert_eq!(run.query_id, None);
     assert!(
         matches!(run.binding, RunBinding::OriginalObject { execution } if execution.reference.to_string() == reference)
     );

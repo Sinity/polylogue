@@ -52,9 +52,9 @@ pub struct Install {
     /// Add the MCP guidance to Claude Code, Codex or Gemini CLI global instructions
     #[serde(default)]
     pub instructions: bool,
-    /// The ID chrome://extensions shows
+    /// Chrome extension ID (defaults to the packaged extension)
     pub extension_id: Option<String>,
-    /// The wrapper command to complete (default: polylogue)
+    /// The wrapper command for Chrome or shell completion (default: polylogue)
     pub program: Option<String>,
     /// Use this harness settings file
     #[schemars(extend("unlisted" = true))]

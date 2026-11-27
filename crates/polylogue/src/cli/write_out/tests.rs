@@ -11,7 +11,7 @@ fn begin() -> serde_json::Value {
             "query": format!("query:{}", "a".repeat(64)),
             "query_text": "sessions",
             "ran_at": "2026-01-01T00:00:00Z",
-            "read_at": {"generation":"synthetic", "index":1, "archive":1},
+            "read_position": {"index_instance":"synthetic", "index":1, "archive":1},
             "freshness": {
                 "local": polylogue_model::freshness::ReadCompleteness::empty(),
                 "sinex": {
@@ -283,4 +283,77 @@ fn write_out_keeps_the_earlier_failure_status() {
     .unwrap();
     assert_eq!(code, 5);
     assert!(destination.is_file());
+}
+
+#[test]
+fn a_client_read_deadline_keeps_the_timeout_and_next_request() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = polylogue_engine::Config::new(
+        root.path().to_owned(),
+        Default::default(),
+        "synthetic-machine".into(),
+        "synthetic-host".into(),
+        1,
+        polylogue_model::WallClock::fixed("2026-01-01T00:00:00Z".parse().unwrap()),
+    )
+    .unwrap();
+    let startup = crate::config::Startup::for_test(engine, root.path());
+    let parsed = super::super::line::parse(
+        &[
+            "session:claude-code:ID".into(),
+            "read".into(),
+            "--follow".into(),
+            "--deadline".into(),
+            "200".into(),
+        ],
+        &Default::default(),
+        false,
+    )
+    .unwrap();
+    for remaining in [
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(1),
+    ] {
+        let (mut socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let until = std::time::Instant::now() + remaining;
+        let result = write_read_stream(
+            &startup.client,
+            &parsed,
+            &mut Default::default(),
+            |callback| crate::client::receive(&mut socket, Some(until), callback),
+        );
+        let Err(OutputError::Answer(answer)) = result else {
+            panic!("a client deadline must return the read deadline reply");
+        };
+        let error = answer.failure().unwrap();
+        assert_eq!(
+            (
+                error.code.as_deref(),
+                error.kind,
+                error.retryable,
+                answer.exit_code(),
+                answer.http_status()
+            ),
+            (
+                Some("deadline_exceeded"),
+                command_surface::FailureKind::Timeout,
+                true,
+                7,
+                Some(504)
+            )
+        );
+        assert_eq!(error.message, "the read deadline was exceeded");
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("rerun with `--deadline none`, or narrow to one session")
+        );
+        assert_eq!(answer.envelope.next.len(), 1);
+        let mut expected = super::super::run_line::request(&parsed).unwrap();
+        expected.deadline = command_surface::Deadline::None;
+        assert_eq!(
+            answer.envelope.next[0].request.arguments,
+            expected.arguments
+        );
+        assert_eq!(answer.envelope.next[0].request.deadline, expected.deadline);
+    }
 }

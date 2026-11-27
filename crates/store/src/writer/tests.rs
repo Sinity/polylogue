@@ -35,7 +35,7 @@ mod written_text;
 fn write_test_rows(
     tx: &Transaction<'_>,
     batch: &Batch,
-    step: &ParseStep,
+    step: &ParsePart,
     chain: i64,
     counter: i64,
 ) -> Result<u64> {
@@ -241,7 +241,7 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
         blobs: vec![],
         length: start + 100,
         parse: vec![{
-            let mut step = ParseStep::new(
+            let mut step = ParsePart::new(
                 Output {
                     sessions: sessions
                         .iter()
@@ -260,6 +260,17 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
         capture_read: None,
         release: InFlight::default(),
     }
+}
+
+/// An input ID that sorts before `other` among inputs whose messages share
+/// an order time: by the digest of the ID the session order holds
+/// (docs/sessions.md, messages), not by the ID's text.
+fn input_sorting_before(other: &str, stem: &str) -> String {
+    let digest = |id: &str| blake3::hash(id.as_bytes()).as_bytes()[..16].to_vec();
+    (0..)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|id| digest(id) < digest(other))
+        .expect("some name sorts first")
 }
 
 fn row(offset: u64, message: Message) -> MessageRow {
@@ -595,7 +606,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         branch_point: None,
@@ -611,7 +622,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         branch_point: None,
@@ -665,7 +676,7 @@ fn copied_messages_are_stored_once_and_read_logically() {
     child.parse.first_mut().unwrap().output.links = vec![Link {
         kind: LinkKind::Resume,
         copies_prefix: true,
-        how: None,
+        reason: None,
         parent: sid("parent"),
         child: sid("child"),
         branch_point: None,
@@ -1173,7 +1184,7 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
             .collect::<Vec<_>>();
         let title = r
             .query(
-                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:s1'",
                 &[],
             )
             .unwrap();
@@ -1190,7 +1201,7 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
             "claude-code:later"
         ]
     );
-    assert_eq!(forward.1[0]["derived_title"], "First question");
+    assert_eq!(forward.1[0]["prompt_title"], "First question");
 }
 
 mod restating;
