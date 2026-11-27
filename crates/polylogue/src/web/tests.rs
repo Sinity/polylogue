@@ -969,7 +969,7 @@ fn cost_uses_public_accounting_and_session_scope() {
 }
 
 #[test]
-fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
+fn session_parent_links_are_scoped_and_missing_branch_point_stays_incomplete() {
     let r = reader();
     for (child, parent) in [
         ("child", "s1"),
@@ -982,14 +982,29 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
             "synthetic child",
         ))
         .unwrap();
-        record["forkedFrom"] = serde_json::json!({"sessionId": parent, "messageUuid": "u1"});
+        let input = if child == "orphan" {
+            record["resumeSessionId"] = serde_json::json!(parent);
+            format!("{record}\n")
+        } else {
+            let (uuid, text) = if child == "child" {
+                ("u1", "look at <script>alert(1)</script> & the parser")
+            } else {
+                ("unrelated-prompt", "synthetic unrelated parent")
+            };
+            let mut copy: serde_json::Value = serde_json::from_str(
+                &polylogue_testkit::claude_user(&format!("copy-{child}"), child, text),
+            )
+            .unwrap();
+            copy["forkedFrom"] = serde_json::json!({"sessionId": parent, "messageUuid": uuid});
+            format!("{copy}\n{record}\n")
+        };
         std::fs::write(
             r.w.home.join(format!(".claude/projects/-p/{child}.jsonl")),
-            format!("{record}\n"),
+            input,
         )
         .unwrap();
     }
-    r.w.wait_for(|status| status["store"]["messages"] == 4);
+    r.w.wait_for(|status| status["store"]["messages"] == 5);
     rt().block_on(async {
         use polylogue_model::read::{Card, ItemKind, ParentIssue, ReadRecord, ValueState};
         let (status, _, html) = send_html(&r, "/s/claude-code:child?view=tree").await;
@@ -1025,8 +1040,8 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert!(html.contains("href=\"/s/claude-code%3Amissing\""), "{html}");
         let items=read_items(&r,"session:claude-code:orphan",&[("show","inherited")]).await;
         let issues:Vec<_>=items.iter().filter_map(|item|match &item.kind {ItemKind::LinkIssue {issue}=>Some(issue.clone()),_=>None}).collect();
-        assert_eq!(issues,[ParentIssue::MissingParent {child:polylogue_model::SessionId::parse("claude-code:orphan").unwrap(),parent:polylogue_model::SessionId::parse("claude-code:missing").unwrap()}]);
-        assert_eq!(serde_json::to_value(&issues[0]).unwrap()["kind"],"missing_parent");
+        assert_eq!(issues,[ParentIssue::MissingBranchPoint {child:polylogue_model::SessionId::parse("claude-code:orphan").unwrap(),parent:polylogue_model::SessionId::parse("claude-code:missing").unwrap(),branch_point:None}]);
+        assert_eq!(serde_json::to_value(&issues[0]).unwrap()["kind"],"missing_branch_point");
         assert!(items.iter().any(|item|matches!(&item.kind,ItemKind::Card {card} if matches!(card.as_ref(),Card::Session {lineage_complete,..} if lineage_complete==&ValueState::known(false)))));
         let (status,_,html)=send_html(&r,"/s/claude-code:orphan?show=inherited").await;
         assert_eq!(status,StatusCode::OK,"{html}");

@@ -87,11 +87,15 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
     .unwrap();
     std::fs::write(
         dir.join("fork.jsonl"),
-        line(json!({
-            "type": "user", "uuid": "f1", "sessionId": "fork", "timestamp": "2026-03-01T12:00:00Z",
-            "message": {"role": "user", "content": "forked question"},
-            "forkedFrom": {"sessionId": "root", "messageUuid": "r1"}
-        })),
+        [
+            line(json!({
+                "type": "user", "uuid": "fork-copy", "sessionId": "fork", "timestamp": "2026-03-01T10:00:00Z",
+                "message": {"role": "user", "content": "root question"},
+                "forkedFrom": {"sessionId": "root", "messageUuid": "r1"}
+            })),
+            user("f1", "fork", "2026-03-01T12:00:00Z", "forked question"),
+        ]
+        .concat(),
     )
     .unwrap();
     let compacted = [
