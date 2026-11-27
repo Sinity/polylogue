@@ -304,9 +304,12 @@ run, the failed jobs and tests and the master commit (and the pull requests
 merged from the same batch), and skips it while its head is the one that
 comment names. A new head or a branch update puts it back.
 
-The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
-flight (its run finishes unused); members already merged stay merged, and the
-rest are ready pull requests on the next cycle. The staging branch is deleted
+The queue keeps nothing beyond GitHub. Staging commits carry their base's
+date, so a restarted queue facing the same master and the same ready pull
+requests builds the same staging commit and picks up the run already testing
+it; otherwise the batch in flight is abandoned and its run finishes unused.
+Members of a green batch already merged stay merged, and the rest are ready
+pull requests on the next cycle. The staging branch is deleted
 when a cycle ends. Each cycle prints what is not in the batch (check running,
 red on its own head with the failed jobs, conflicting, waiting on review
 threads, sent back, held, draft), then the batch, the staging commit, the

@@ -307,10 +307,15 @@ listing() {
 
 # Builds the staging commit on $1 from the pull requests after it, each as
 # one squash commit, into `staging`; members that merge cleanly go into
-# `included`, the others into `left_out`. Needs no working tree.
+# `included`, the others into `left_out`. Needs no working tree. The commits
+# carry the base's date, so the same base and members give the same staging
+# commit, and a restarted queue finds the run already testing it.
 build_staging() {
     local base=$1 n tree
     shift
+    local GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+    GIT_AUTHOR_DATE=$(git log -1 --format=%cI "$base") GIT_COMMITTER_DATE=$GIT_AUTHOR_DATE
+    export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
     staging=$base included=() left_out=()
     for n in "$@"; do
         parse_row "${row_of[$n]}"
@@ -327,13 +332,18 @@ build_staging() {
 # exactly that commit and waits for it. Sets run (its ID) and conclusion.
 test_staging() {
     local polls=0
-    git push -q -f origin "$staging:refs/heads/$staging_branch"
-    gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging" >/dev/null
-    run=
+    staging_run() {
+        gh run list -R "$owner/$name" --workflow "$workflow" --branch "$staging_branch" --event workflow_dispatch \
+            --limit 10 --json databaseId,headSha,conclusion \
+            --jq "[.[] | select(.headSha == \"$staging\" and .conclusion != \"cancelled\") | .databaseId][0] // empty"
+    }
+    # The staging branch belongs to the queue; each batch replaces it.
+    git push -q origin "+$staging:refs/heads/$staging_branch"
+    run=$(staging_run)
+    [ -n "$run" ] || gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging" >/dev/null
     while [ -z "$run" ]; do
         sleep 15
-        run=$(gh run list -R "$owner/$name" --workflow "$workflow" --branch "$staging_branch" --event workflow_dispatch \
-            --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$staging\") | .databaseId][0] // empty")
+        run=$(staging_run)
         polls=$((polls + 1))
         [ -n "$run" ] || [ $polls -lt 20 ] || { conclusion=missing; return; }
     done
