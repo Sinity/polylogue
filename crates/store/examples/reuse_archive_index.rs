@@ -19,10 +19,16 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+#[path = "reuse_archive_index/continuation.rs"]
+mod continuation;
+
 type Error = Box<dyn std::error::Error>;
 
 fn main() -> Result<(), Error> {
-    let mut args = std::env::args_os().skip(1);
+    let mut args = std::env::args_os().skip(1).peekable();
+    if args.next_if(|arg| arg == "continue").is_some() {
+        return continuation::run(args);
+    }
     let (Some(earlier), Some(later), None) = (args.next(), args.next(), args.next()) else {
         return Err("usage: reuse_archive_index <earlier sealed copy> <later sealed copy>".into());
     };
@@ -42,16 +48,7 @@ fn reuse(earlier: &Path, later: &Path) -> Result<(u64, u64), Error> {
     }
     let old_id = archive_id(&old)?;
     let new_id = archive_id(&new)?;
-    let index = IndexFiles::at(earlier, &old_id, Position(from))?;
-    if index.rebuilding != Rebuilding::No
-        || index.installed
-            != (Installed::Current {
-                archive: old_id,
-                position: Position(from),
-            })
-    {
-        return Err(format!("earlier archive needs an installed index at position {from}").into());
-    }
+    checked_index(earlier, old_id, from)?;
     for name in [
         "index.db",
         "index.db-wal",
@@ -71,10 +68,25 @@ fn reuse(earlier: &Path, later: &Path) -> Result<(u64, u64), Error> {
         }
     }
     attach(&old, &target.archive_db())?;
-    prove_prefix(&old, from, earlier, later)?;
+    prove_record_prefix(&old, from)?;
+    prove_segment_prefix(&old, earlier, later)?;
     prove_vectors(&source, &target)?;
     install_index(earlier, later, &new_id, from)?;
     Ok((from, to))
+}
+
+fn checked_index(earlier: &Path, old_id: ArchiveId, from: u64) -> Result<(), Error> {
+    let index = IndexFiles::at(earlier, &old_id, Position(from))?;
+    if index.rebuilding != Rebuilding::No
+        || index.installed
+            != (Installed::Current {
+                archive: old_id,
+                position: Position(from),
+            })
+    {
+        return Err(format!("earlier archive needs an installed index at position {from}").into());
+    }
+    Ok(())
 }
 
 // The daemon uses this same file as its exclusive writer lock. Offline copies
@@ -116,7 +128,7 @@ fn attach(conn: &Connection, path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> Result<(), Error> {
+fn prove_record_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
     // Immutable capture and authored records must survive the cut. Rows with
     // a commit position cannot first appear on the wrong side of the cut.
     // The later archive supplies mutable authored state itself, including
@@ -159,6 +171,21 @@ fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> R
     ] {
         compare_rows(conn, table, suffix, from)?;
     }
+    Ok(())
+}
+
+fn segment_path(name: &str) -> Result<&Path, Error> {
+    let path = Path::new(name);
+    let mut parts = path.components();
+    if !matches!((parts.next(), parts.next(), parts.next()),
+        (Some(Component::Normal(dir)), Some(Component::Normal(_)), None) if dir == "segments")
+    {
+        return Err(format!("invalid segment name {name}").into());
+    }
+    Ok(path)
+}
+
+fn prove_segment_prefix(conn: &Connection, earlier: &Path, later: &Path) -> Result<(), Error> {
     let mut statement = conn.prepare(
         "SELECT name, (SELECT committed_end FROM main.segment WHERE name = s.name), committed_end FROM later.segment s",
     )?;
@@ -171,13 +198,7 @@ fn prove_prefix(conn: &Connection, from: u64, earlier: &Path, later: &Path) -> R
     })?;
     for segment in segments {
         let (name, old_end, new_end) = segment?;
-        let path = Path::new(&name);
-        let mut parts = path.components();
-        if !matches!((parts.next(), parts.next(), parts.next()),
-            (Some(Component::Normal(dir)), Some(Component::Normal(_)), None) if dir == "segments")
-        {
-            return Err(format!("invalid segment name {name}").into());
-        }
+        let path = segment_path(&name)?;
         let mut target = File::open(later.join(path))?;
         if target.metadata()?.len() != new_end {
             return Err(

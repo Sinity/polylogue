@@ -273,3 +273,119 @@ fn refuses_different_catalog_rows_or_segment_bytes_before_installing() {
     );
     assert!(!home.index_db().exists());
 }
+
+#[test]
+fn continues_one_native_source_after_preparing_the_checked_cut() {
+    let mut home = ClaudeHome::new();
+    home.append("prior.jsonl", &claude_user("one", "prior", "checked cedar"));
+    read_sources(&home, true);
+    add_vector(&home.root, 1);
+    let earlier = fork(&mut home, "source");
+
+    home.append("warm.jsonl", &claude_user("two", "warm", "warm harbor"));
+    read_sources(&home, true);
+    let candidate = home.dir.path().join("candidate");
+    let pending = {
+        let _running = lock(&home.root).unwrap();
+        continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap()
+    };
+    assert!(pending.checked_at > pending.index_at);
+    assert!(!candidate.exists());
+
+    home.append("final.jsonl", &claude_user("three", "final", "final reef"));
+    read_sources(&home, true);
+    let manifest = original_bytes(&home.root);
+    let (_, record_position) = open_archive(&Archive::at(&home.root)).unwrap();
+    let archive = Archive::at(&home.root);
+    let source_vectors = polylogue_store::vectors::Vectors::writer(&archive, 1024).unwrap();
+    {
+        let _running = lock(&home.root).unwrap();
+        source_vectors
+            .put_query_vector(
+                "example/paid",
+                "final reef",
+                &[1., 2.],
+                &polylogue_model::WallClock::new(jiff::Timestamp::now),
+            )
+            .unwrap();
+    }
+    // Keep the committed vector WAL present across the capture.
+    assert!(home.root.join("embeddings.db-wal").is_file());
+    let (from, to) = pending.finish().unwrap();
+    assert_eq!(to, record_position);
+    assert_eq!(from, open_archive(&Archive::at(&earlier)).unwrap().1);
+    assert!(to > from);
+    drop(source_vectors);
+    let archive = Archive::at(&candidate);
+    let vectors = polylogue_store::vectors::Vectors::snapshot(&archive, 1024).unwrap();
+    assert_eq!(
+        vectors.query_vector("example/paid", "final reef").unwrap(),
+        Some(vec![1., 2.])
+    );
+    assert_eq!(
+        open_read(&archive.embeddings_db())
+            .unwrap()
+            .query_row("SELECT count(*) FROM embedded", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
+    drop(vectors);
+
+    for name in ["prior.jsonl", "warm.jsonl", "final.jsonl"] {
+        fs::remove_file(home.file(name)).unwrap();
+    }
+    home.root = candidate;
+    assert_eq!(search_hits(&home.root, "cedar"), 1);
+    assert_eq!(search_hits(&home.root, "reef"), 0);
+    catch_up(&home, from, to);
+    assert_eq!(home.texts("warm"), ["warm harbor"]);
+    assert_eq!(home.texts("final"), ["final reef"]);
+    assert_eq!(search_hits(&home.root, "reef"), 1);
+    assert_eq!(original_bytes(&home.root), manifest);
+    assert_eq!(
+        IndexFiles::read(&home.root).unwrap().installed,
+        Installed::Current {
+            archive: archive_id(&open_archive(&archive).unwrap().0).unwrap(),
+            position: Position(to)
+        }
+    );
+}
+
+#[test]
+fn continuation_refuses_a_replaced_branch_or_regressed_record() {
+    let mut home = ClaudeHome::new();
+    home.append("prior.jsonl", &claude_user("one", "prior", "checked cedar"));
+    read_sources(&home, true);
+    let earlier = fork(&mut home, "source");
+    let candidate = home.dir.path().join("candidate");
+    let pending = continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap();
+
+    let segment = home.root.join("segments/current.hb");
+    let old_segment = home.root.join("segments/old.hb");
+    fs::rename(&segment, &old_segment).unwrap();
+    fs::copy(&old_segment, &segment).unwrap();
+    assert!(
+        pending
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("was replaced")
+    );
+    assert!(!candidate.exists());
+
+    let pending = continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap();
+    let (conn, position) = open_archive(&Archive::at(&home.root)).unwrap();
+    drop(conn);
+    let conn = Connection::open(home.root.join("archive.db")).unwrap();
+    meta_set(&conn, "write_counter", (position - 1).to_string()).unwrap();
+    drop(conn);
+    assert!(
+        pending
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("record position regressed")
+    );
+    assert!(!candidate.exists());
+}
