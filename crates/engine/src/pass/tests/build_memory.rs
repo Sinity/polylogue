@@ -521,7 +521,12 @@ fn a_first_pass_over_a_new_archive_parses_each_file_once_in_the_rebuild() {
 fn a_live_spool_found_before_index_install_is_planned_for_capture_only() {
     let home = ClaudeHome::new();
     let (archive, _lock) = polylogue_store::Archive::open_or_create(&home.root).unwrap();
-    let mut engine = Engine::new(home.config(4096), archive).unwrap();
+    let config = Config {
+        home: home.home.clone(),
+        chunk: 4096,
+        ..crate::test_config()
+    };
+    let mut engine = Engine::new(config, archive).unwrap();
     let spool = engine
         .config
         .spool_dir(polylogue_sources::hook_spool::ORIGIN);
