@@ -23,7 +23,7 @@ fn frames(mut bytes: &[u8]) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn install_agent_chrome_writes_and_removes_the_host_manifest() {
+fn install_chrome_writes_and_removes_the_host_manifest() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config");
     std::fs::create_dir_all(config.join("chromium")).unwrap();
@@ -34,9 +34,19 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
             .output()
             .unwrap()
     };
-    let out = run(&["install", "chrome"]);
-    assert!(!out.status.success(), "an extension ID is required");
     let out = run(&["install", "chrome", "--extension-id", "abcdefghijklmnop"]);
+    assert!(
+        !out.status.success(),
+        "Chrome extension IDs have 32 letters"
+    );
+    let out = run(&[
+        "install",
+        "chrome",
+        "--program",
+        crate::BIN,
+        "--extension-id",
+        "abcdefghijklmnopabcdefghijklmnop",
+    ]);
     assert!(
         out.status.success(),
         "{}",
@@ -47,13 +57,10 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(
         manifest["allowed_origins"][0],
-        "chrome-extension://abcdefghijklmnop/"
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
     );
     assert_eq!(manifest["type"], "stdio");
-    assert_eq!(
-        manifest["path"].as_str().unwrap(),
-        std::fs::canonicalize(crate::BIN).unwrap().to_str().unwrap()
-    );
+    assert_eq!(manifest["path"].as_str().unwrap(), crate::BIN);
     // Only the existing browser's directory is written.
     assert!(!config.join("google-chrome").exists());
     let out = run(&["install", "chrome", "--remove"]);
@@ -68,7 +75,7 @@ fn native(environment: &crate::Fixture, message: &serde_json::Value) -> serde_js
     use serde_json::json;
     let mut child = environment
         .native_command()
-        .arg("chrome-extension://abcdefghijklmnop/")
+        .arg("chrome-extension://abcdefghijklmnopabcdefghijklmnop/")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
