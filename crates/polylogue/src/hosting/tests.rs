@@ -511,7 +511,10 @@ fn a_hosted_session_survives_its_daemon_connection() {
     hosting.quit(&second);
     wait_until("the closed host connection", || !second.open());
     assert!(
-        outcomes.try_recv().is_err(),
+        matches!(
+            outcomes.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
         "a sent prompt has no drop outcome"
     );
     // The host wrote the session's statuses, then its end, and left.
@@ -568,10 +571,19 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
         );
     }
     assert!(client.state.0.locked().queued.is_empty());
-    assert!(client.send("after EOF", Some("rejected")).is_err());
+    assert_eq!(
+        client
+            .send("after EOF", Some("rejected"))
+            .unwrap_err()
+            .to_string(),
+        "the hosted session's host is gone"
+    );
     drop(client);
     assert!(
-        outcomes.try_recv().is_err(),
+        matches!(
+            outcomes.recv_timeout(Duration::from_secs(5)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ),
         "closing twice reports nothing again"
     );
 }
@@ -603,7 +615,10 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
     let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
     let client =
         HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into()).unwrap();
-    assert!(client.interrupt().is_err(), "no prompt runs yet");
+    assert_eq!(
+        client.interrupt().unwrap_err().to_string(),
+        "no prompt is running"
+    );
     client.send("work", None).unwrap();
     wait_until("the permission request", || client.request().is_some());
     client.interrupt().unwrap();

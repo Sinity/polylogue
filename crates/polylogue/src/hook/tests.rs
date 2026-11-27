@@ -324,7 +324,15 @@ fn install_writes_a_file_and_refuses_symlinks() {
     assert!(text.contains("polylogue internal hook SessionStart"));
     let link = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
-    assert!(install(&link, Harness::ClaudeCode, || None, true).is_err());
+    assert_eq!(
+        install(&link, Harness::ClaudeCode, || None, true)
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "{} is a symlink to a managed file; configure its source instead",
+            link.display()
+        )
+    );
 }
 
 #[test]

@@ -117,10 +117,7 @@ fn malformed_primary_configuration_does_not_reclassify_a_standalone_archive() {
     blocked(&runtime, &path(&w));
     drop(runtime);
     assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
-    assert!(
-        Archive::open_or_create(&w.root).is_ok(),
-        "failed startup kept its lock"
-    );
+    Archive::open_or_create(&w.root).expect("failed startup kept its lock");
 }
 
 #[test]

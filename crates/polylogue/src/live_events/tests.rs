@@ -268,7 +268,13 @@ fn root_gone_retries_after_the_process_spool_becomes_writable() {
             std::fs::rename(&process, spool.join("saved-process")).unwrap();
         }
         std::fs::write(&process, b"blocked").unwrap();
-        assert!(watcher.append_process(&spool, &observed).is_err());
+        assert_eq!(
+            watcher
+                .append_process(&spool, &observed)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
         assert!(!watcher.pending.bytes.is_empty());
         std::fs::remove_file(&process).unwrap();
         let later = jiff::Timestamp::from_second(now().as_second() + 10).unwrap();
@@ -320,7 +326,13 @@ fn a_partial_process_spool_write_retries_only_its_unwritten_suffix() {
         Default::default(),
     );
     let observed = watcher.update_roots(&[root("s", 10, 500, "b1")], now());
-    assert!(watcher.append_process(&spool, &observed).is_err());
+    assert_eq!(
+        watcher
+            .append_process(&spool, &observed)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotADirectory
+    );
     let expected = watcher.pending.bytes.clone();
     std::fs::remove_file(&spool).unwrap();
     let mut writer = FullAfterPrefix {
@@ -328,7 +340,12 @@ fn a_partial_process_spool_write_retries_only_its_unwritten_suffix() {
         remaining: 13,
         interrupted: true,
     };
-    assert!(write_pending(&mut watcher.pending.bytes, &mut writer).is_err());
+    assert_eq!(
+        write_pending(&mut watcher.pending.bytes, &mut writer)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::StorageFull
+    );
     assert_eq!(watcher.pending.bytes, expected[13..]);
     drop(writer);
     let suffix = watcher.pending.bytes.clone();
@@ -438,7 +455,10 @@ fn a_registry_change_is_preserved_after_its_reader_has_advanced() {
     let lines = reader.read(now(), |_| None);
     assert_eq!(lines.len(), 1);
     let mut pending = PendingLines::new("registry", "claude-registry", Default::default());
-    assert!(pending.append(&spool, "boot", &lines).is_err());
+    assert_eq!(
+        pending.append(&spool, "boot", &lines).unwrap_err().kind(),
+        std::io::ErrorKind::NotADirectory
+    );
     let repeated = reader.read(now(), |_| None);
     assert!(repeated.is_empty(), "the reader has consumed the change");
     std::fs::remove_file(&spool).unwrap();

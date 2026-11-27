@@ -8,6 +8,21 @@ fn catalog_and_named_host_inputs_are_typed_and_closed() {
     }))
     .unwrap();
     assert_eq!(host.machine.as_deref(), Some("named-host"));
-    assert!(serde_json::from_value::<Arguments>(serde_json::json!({"machine":true})).is_err());
-    assert!(serde_json::from_value::<Arguments>(serde_json::json!({"author":"operator"})).is_err());
+    for (input, expected) in [
+        (
+            serde_json::json!({"machine":true}),
+            "invalid type: boolean `true`, expected a string",
+        ),
+        (
+            serde_json::json!({"author":"operator"}),
+            "unknown field `author`, expected one of `key`, `value`, `machine`",
+        ),
+    ] {
+        assert_eq!(
+            serde_json::from_value::<Arguments>(input)
+                .unwrap_err()
+                .to_string(),
+            expected
+        );
+    }
 }

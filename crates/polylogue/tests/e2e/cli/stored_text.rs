@@ -62,6 +62,7 @@ pub(super) fn bundle(
     directory: &Path,
 ) -> Vec<polylogue_model::bundle::Record> {
     std::fs::create_dir(directory).unwrap();
+    wait_caught_up(fixture);
     let output = cli(
         fixture,
         &[
@@ -76,7 +77,7 @@ pub(super) fn bundle(
             directory.to_str().unwrap(),
         ],
     );
-    assert!(matches!(output.status.code(), Some(0 | 5)), "{output:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     std::fs::read_to_string(directory.join("records.jsonl"))
         .unwrap()
         .lines()

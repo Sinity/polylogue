@@ -36,21 +36,16 @@ pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -
     let out = cli(env, &args);
     let answer: command_surface::Answer<serde_json::Value> = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
-    assert_eq!(
-        out.status.code(),
-        Some(i32::from(answer.exit_code())),
-        "{out:?}"
-    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
     match answer.outcome {
-        command_surface::Outcome::Ok(page) | command_surface::Outcome::Empty(page) => {
-            read_page(page)
-        }
+        command_surface::Outcome::Ok(page) => read_page(page),
         other => panic!("a current reading was expected: {other:?}: {out:?}"),
     }
 }
 pub(super) fn portable(env: &crate::Fixture, reference: &str, path: &Path) -> Vec<Record> {
     std::fs::create_dir_all(path).unwrap();
     let reference = target(reference);
+    wait_caught_up(env);
     let out = cli(
         env,
         &[
@@ -63,7 +58,7 @@ pub(super) fn portable(env: &crate::Fixture, reference: &str, path: &Path) -> Ve
             path.to_str().unwrap(),
         ],
     );
-    assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
     let records: Vec<Record> = std::fs::read_to_string(path.join("records.jsonl"))
         .unwrap()
         .lines()
@@ -247,7 +242,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
                 destination.to_str().unwrap(),
             ],
         );
-        assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
         assert!(
             std::fs::read_to_string(destination)
                 .unwrap()

@@ -1049,12 +1049,12 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
         let detail = query_failure_detail(&f, query_language::ErrorKind::NotAQuery, 0);
         let correction = detail["suggestion"].as_str().unwrap();
         assert_same_question(correction, "messages where cargo");
-        assert!(run_q(&w, ask(correction)).is_ok());
+        assert_eq!(q(&w, correction)["unit"], "messages");
     }
     // A quoted word is searched as written, never corrected to "messages".
     assert_eq!(q(&w, "\"messges\" cargo")["outcome"], "empty");
     for words in ["brief yesterday", "bug fix", "date parsing"] {
-        assert!(run_q(&w, ask(words)).is_ok());
+        assert_eq!(q(&w, words)["unit"], "sessions", "{words}");
     }
 }
 
@@ -1472,7 +1472,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     fixture.fx.corrupt_kept_body("broken", "not JSON").unwrap();
     // A query reads only the kept results it names; one naming the damaged
     // result fails with the storage error, never an empty or default body.
-    assert!(run_q(&fixture, ask("sessions")).is_ok());
+    assert_eq!(q(&fixture, "sessions")["outcome"], "rows");
     let failure = run_q(&fixture, ask("result:broken")).unwrap_err();
     assert_eq!(failure.code(), "store");
     assert_eq!(
@@ -1543,7 +1543,7 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
         fixture.corrupt_kept_body("broken", &body).unwrap();
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
-        assert!(run(&reader, ask("sessions")).is_ok());
+        assert_eq!(run(&reader, ask("sessions")).unwrap()["outcome"], "empty");
         for failure in [
             run(&reader, ask("result:broken")).unwrap_err(),
             save_rows(&reader, ask("result:broken")).unwrap_err(),
@@ -1638,7 +1638,11 @@ fn shared_query_diagnostics_keep_correction_and_byte_position_at_the_operation_b
             r#"repo:"morrow""#.into()
         ))
     );
-    assert!(polylogue_query::parse(r#"repo:"morrow""#).is_ok());
+    let query = polylogue_query::parse(r#"repo:"morrow""#).unwrap();
+    let polylogue_query::ast::Source::Unit { unit, .. } = query.source else {
+        panic!("expected a unit selection");
+    };
+    assert_eq!(unit, "sessions");
 }
 
 mod metadata;

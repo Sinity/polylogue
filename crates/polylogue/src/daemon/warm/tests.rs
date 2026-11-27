@@ -528,8 +528,9 @@ fn one_provider_call_per_query_text_in_flight() {
         reads.into_iter().map(|read| read.join().unwrap()).collect()
     });
     listener.set_nonblocking(true).unwrap();
-    assert!(
-        listener.accept().is_err(),
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
         "a second provider call was made"
     );
     assert_eq!(answers, vec![Ok(()); readers]);

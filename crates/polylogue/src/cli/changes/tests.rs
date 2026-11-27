@@ -102,22 +102,46 @@ fn stopped_output_never_forwards_a_complete_new_checkpoint() {
             bytes: Vec::new(),
             left: cutoff,
         };
-        assert!(receive(&input[..], &mut output, Some("g:1:1")).is_err());
+        assert_eq!(
+            receive(&input[..], &mut output, Some("g:1:1"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe,
+            "cutoff {cutoff}"
+        );
         assert!(completed(&output.bytes).is_empty(), "cutoff {cutoff}");
     }
 }
 
 #[test]
 fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new_checkpoint() {
-    for mutant in [
-        "count",
-        "generation",
-        "replacement",
-        "row-position",
-        "no-header",
+    let mut output = Vec::new();
+    assert_eq!(
+        receive(&wire(&example())[..], &mut output, Some("g:1:1")).unwrap(),
+        0
+    );
+    assert_eq!(completed(&output)[0]["position"], "g:2:2");
+    for (field, message) in [
+        (
+            "count",
+            "the change feed completion does not describe its delivered batch",
+        ),
+        (
+            "generation",
+            "the change feed completion does not describe its delivered batch",
+        ),
+        (
+            "replacement",
+            "the change feed completion does not describe its delivered batch",
+        ),
+        (
+            "row-position",
+            "an event advanced the completed change position",
+        ),
+        ("no-header", "the change feed omitted its header"),
     ] {
         let mut lines = example();
-        match mutant {
+        match field {
             "count" => lines.last_mut().unwrap()["count"] = json!(3),
             "generation" => lines.last_mut().unwrap()["position"] = json!("other:2:2"),
             "replacement" => lines.last_mut().unwrap()["replacement"] = json!(true),
@@ -128,11 +152,10 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
             _ => unreachable!(),
         }
         let mut output = Vec::new();
-        assert!(
-            receive(&wire(&lines)[..], &mut output, Some("g:1:1")).is_err(),
-            "{mutant}"
-        );
-        assert!(completed(&output).is_empty(), "{mutant}");
+        let error = receive(&wire(&lines)[..], &mut output, Some("g:1:1")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{field}");
+        assert_eq!(error.to_string(), message, "{field}");
+        assert!(completed(&output).is_empty(), "{field}");
     }
 }
 
@@ -300,7 +323,9 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
     }
     let input = wire(&example());
     let mut output = FlushFails(Vec::new());
-    assert!(receive(&input[..], &mut output, Some("g:1:1")).is_err());
+    let error = receive(&input[..], &mut output, Some("g:1:1")).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.to_string(), "synthetic flush failure");
     // Bytes may have escaped. Failure does not prove the receiver rejected
     // them; replay sends the same IDs and the previous completed position.
     let mut replay = Vec::new();

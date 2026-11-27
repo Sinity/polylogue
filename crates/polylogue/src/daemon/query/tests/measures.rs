@@ -130,8 +130,15 @@ fn catalog_measures_use_selected_sessions_and_typed_fields() {
     assert!(
         q(&archive, "sessions | measure \"compare:origin,words\"")["data"]["sessions"].is_array()
     );
-    assert!(run_q(&archive, ask("sessions | measure time:unsupported")).is_err());
-    assert!(run_q(&archive, ask("sessions | measure compare:unsupported")).is_err());
+    let time = run_q(&archive, ask("sessions | measure time:unsupported")).unwrap_err();
+    assert_eq!(time.code(), "bad_request");
+    assert_eq!(time.message, "time takes no arguments");
+    let comparison = run_q(&archive, ask("sessions | measure compare:unsupported")).unwrap_err();
+    assert_eq!(comparison.code(), "bad_value");
+    let reason = comparison.reason().unwrap();
+    assert_eq!(reason.name, "unknown_choice");
+    assert_eq!(reason.fields["field"], "compare");
+    assert_eq!(reason.fields["value"], "unsupported");
 }
 
 #[test]

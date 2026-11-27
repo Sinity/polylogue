@@ -340,11 +340,9 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
         polylogue_model::Code::NotFound,
         "nothing",
     ));
-    assert!(
-        crate::commands::declarations()
-            .validate_answer("rows", &failed)
-            .is_ok()
-    );
+    crate::commands::declarations()
+        .validate_answer("rows", &failed)
+        .unwrap();
 }
 
 #[test]

@@ -1,12 +1,4 @@
 use super::*;
-fn accepts(arguments: &Value) -> bool {
-    crate::daemon::handler::policy(
-        command("rows").unwrap(),
-        arguments,
-        polylogue_model::authorship::Channel::Mcp,
-    )
-    .is_ok()
-}
 #[test]
 fn authored_steps_are_admitted_and_transport_identity_fields_are_refused() {
     for step in [
@@ -18,7 +10,16 @@ fn authored_steps_are_admitted_and_transport_identity_fields_are_refused() {
         json!({"verb":"save","name":"reviewed"}),
     ] {
         let arguments = json!({"selection":"session:claude-code:s1","steps":[step]});
-        assert!(accepts(&arguments), "{arguments}");
+        let policy = crate::daemon::handler::policy(
+            command("rows").unwrap(),
+            &arguments,
+            polylogue_model::authorship::Channel::Mcp,
+        )
+        .unwrap();
+        assert!(policy.changes_archive, "{arguments}");
+        let declarations = declarations();
+        let steps = declarations.steps("rows", "steps").unwrap();
+        steps.validate_step(&arguments["steps"][0]).unwrap();
         for name in [
             "author",
             "via",
@@ -29,7 +30,22 @@ fn authored_steps_are_admitted_and_transport_identity_fields_are_refused() {
         ] {
             let mut invalid = arguments.clone();
             invalid["steps"][0][name] = json!("caller-controlled");
-            assert!(!accepts(&invalid), "{invalid}");
+            let refused = crate::daemon::handler::policy(
+                command("rows").unwrap(),
+                &invalid,
+                polylogue_model::authorship::Channel::Mcp,
+            )
+            .unwrap_err();
+            assert_eq!(refused.code(), "bad_request", "{invalid}");
+            let failure = steps.validate_step(&invalid["steps"][0]).unwrap_err();
+            assert_eq!(failure.kind, command_surface::FailureKind::BadRequest);
+            assert_eq!(
+                failure.message,
+                format!(
+                    "{}: unknown argument {name}",
+                    arguments["steps"][0]["verb"].as_str().unwrap()
+                )
+            );
         }
     }
 }
@@ -65,21 +81,14 @@ fn rows_declares_closed_authored_steps_and_uses_the_write_tool() {
     let row = command("rows").unwrap();
     assert!(row.http && row.writes);
     let steps = declarations().steps("rows", "steps").unwrap();
-    assert!(
-        steps
-            .validate_step(&json!({"verb":"note","text":"hello","as":"decision"}))
-            .is_ok()
-    );
-    assert!(
-        steps
-            .validate_step(&json!({"verb":"note","text":"hello","author":"operator"}))
-            .is_err()
-    );
-    assert!(
-        steps
-            .validate_step(&json!({"verb":"edit","text":"hello","bases":["annotation:a@b"]}))
-            .is_err()
-    );
+    steps
+        .validate_step(&json!({"verb":"edit","text":"hello"}))
+        .unwrap();
+    let refusal = steps
+        .validate_step(&json!({"verb":"edit","text":"hello","bases":["annotation:a@b"]}))
+        .unwrap_err();
+    assert_eq!(refusal.kind, command_surface::FailureKind::BadRequest);
+    assert_eq!(refusal.message, "edit: unknown argument bases");
     let request = crate::client::request(
         "rows",
         json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"hello"}]}),

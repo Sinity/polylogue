@@ -137,6 +137,7 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
     assert_eq!(reconstructed.text(), expected);
     let destination = directory.as_path().join("bundle");
     std::fs::create_dir(&destination).unwrap();
+    wait_caught_up(&fixture);
     let delivered = cli(
         &fixture,
         &[
@@ -151,10 +152,7 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
             destination.to_str().unwrap(),
         ],
     );
-    assert!(
-        matches!(delivered.status.code(), Some(0 | 5)),
-        "{delivered:?}"
-    );
+    assert_eq!(delivered.status.code(), Some(0), "{delivered:?}");
     let records = std::fs::read_to_string(destination.join("records.jsonl")).unwrap();
     let mut values = records
         .lines()
@@ -163,18 +161,9 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         panic!("manifest must lead the bundle");
     };
     manifest.validate().unwrap();
-    eprintln!(
-        "bundle snapshot: positions={:?}, caught_up={}, freshness={:?}, incomplete={:?}, coverage={:?}",
-        manifest.read_position,
-        manifest.freshness.up_to_date(),
-        manifest.freshness.sinex,
-        manifest.incomplete,
-        manifest.coverage
-    );
-    let degraded = !manifest.freshness.up_to_date()
-        || !manifest.incomplete.is_empty()
-        || !manifest.coverage.is_empty();
-    assert_eq!(delivered.status.code(), Some(if degraded { 5 } else { 0 }));
+    assert!(manifest.freshness.up_to_date(), "{manifest:?}");
+    assert!(manifest.incomplete.is_empty(), "{manifest:?}");
+    assert!(manifest.coverage.is_empty(), "{manifest:?}");
 
     let mut messages = 0;
     for record in values {

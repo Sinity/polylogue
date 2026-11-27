@@ -114,7 +114,7 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     old.shutdown().unwrap();
     let _server = Server::start(Arc::clone(&first.daemon)).unwrap();
     drop(old);
-    assert!(UnixStream::connect(first.daemon.archive.socket()).is_ok());
+    UnixStream::connect(first.daemon.archive.socket()).unwrap();
 }
 
 #[test]
