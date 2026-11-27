@@ -181,11 +181,11 @@ pub(super) struct Reading {
     header: ReadHeader,
     /// The lines that open the reading, before its first entry.
     lead: Vec<ReadItem>,
-    omission: Option<PositionedOmission>,
-    selection: Option<((usize, usize), ReadItem)>,
+    omission: Option<PositionedItem>,
+    selection: Option<PositionedItem>,
 }
 
-struct PositionedOmission {
+struct PositionedItem {
     place: (usize, usize),
     after: bool,
     item: ReadItem,
@@ -303,7 +303,7 @@ impl Reading {
                 lead.push(item);
                 None
             } else if let Some(place) = omission.next {
-                Some(PositionedOmission {
+                Some(PositionedItem {
                     place,
                     after: false,
                     item,
@@ -312,7 +312,7 @@ impl Reading {
                 let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
                 shown
                     .last_before((usize::MAX, usize::MAX))?
-                    .map(|entry| PositionedOmission {
+                    .map(|entry| PositionedItem {
                         place: entry.place(),
                         after: true,
                         item,
@@ -392,28 +392,17 @@ impl Reading {
             &mut laid.items,
             options,
         )?;
-        if let Some(omission) = &self.omission
-            && let Some(slot) = entries
+        for positioned in [&self.omission, &self.selection].into_iter().flatten() {
+            if let Some(slot) = entries
                 .iter()
-                .position(|entry| entry.place() == omission.place)
-        {
-            let items = &mut laid.items[slot];
-            if omission.after {
-                items.push(omission.item.clone());
-            } else {
-                items.insert(0, omission.item.clone());
-            }
-        }
-        if let Some((place, item)) = &self.selection
-            && let Some(slot) = entries.iter().position(|entry| entry.place() == *place)
-        {
-            if matches!(
-                entries[slot].entry.key,
-                EntryKey::Message { block: None, .. }
-            ) {
-                laid.items[slot].push(item.clone());
-            } else {
-                laid.items[slot].insert(0, item.clone());
+                .position(|entry| entry.place() == positioned.place)
+            {
+                let items = &mut laid.items[slot];
+                if positioned.after {
+                    items.push(positioned.item.clone());
+                } else {
+                    items.insert(0, positioned.item.clone());
+                }
             }
         }
         still_wanted()?;
@@ -430,7 +419,7 @@ fn selected_item(
     runs: &compose::Runs,
     options: &ReadOptions,
     source: &Source,
-) -> Result<Option<((usize, usize), ReadItem)>, Error> {
+) -> Result<Option<PositionedItem>, Error> {
     let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
         return Ok(None);
     };
@@ -465,7 +454,11 @@ fn selected_item(
                     expand: None,
                 },
             };
-            return Ok(Some((place, item)));
+            return Ok(Some(PositionedItem {
+                place,
+                after: block.is_none(),
+                item,
+            }));
         }
     }
     Ok(None)
