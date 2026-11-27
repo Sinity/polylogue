@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 14;
+pub const VERSION: u32 = 15;
 
 parser_modules! {
     mod fields;
@@ -268,9 +268,7 @@ pub struct ParserState {
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
-    /// The subagent threads a `SubAgentActivity` item already stated a
-    /// spawn of: an agent reports many activity items, and the relation is
-    /// stated once per child.
+    /// The subagent threads whose `started` activity has stated a spawn.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     spawned: BTreeSet<String>,
     model: Option<String>,
@@ -1072,12 +1070,15 @@ impl Rollout {
                 RecordOutcome::Used
             }
             "SubAgentActivity" => {
-                if let (Some(parent), Some(child)) = (
-                    self.own(parser_state),
-                    item.str("agent_thread_id")
-                        .filter(|s| !s.is_empty())
-                        .and_then(session_id),
-                ) && parser_state.spawned.insert(child.to_string())
+                // An interaction may name the current agent's parent or peer.
+                if item.str("kind") == Some("started")
+                    && let (Some(parent), Some(child)) = (
+                        self.own(parser_state),
+                        item.str("agent_thread_id")
+                            .filter(|s| !s.is_empty())
+                            .and_then(session_id),
+                    )
+                    && parser_state.spawned.insert(child.to_string())
                 {
                     let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
                     link(

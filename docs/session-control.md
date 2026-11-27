@@ -168,7 +168,7 @@ Signal rules and their shipped table are [operations.md](operations.md#notices).
 ## Delegation records
 
 A **delegation** is a parent session handing work to a child session, recorded from structured records only:
-- harness spawns: Claude Code `Agent` and `Task` calls with their subagent transcripts; Codex `spawn_agent` and its spawn edges; Hermes delegation;
+- Harness spawns include Claude Code `Agent` and `Task` calls with their subagent transcripts, and Hermes delegation. Codex records spawns through `spawn_agent`, parent fields and `SubAgentActivity` records of kind `started`. Other Codex agent activity remains visible as events.
 - launches from a shell: a child harness started by a parent's tool call (`claude -p`, `codex exec`, or through any runner), shown by the parent's session variables in the child's first hook line or by a process link ([live sessions](live-sessions.md#live-state)).
 
 Text similarity and prompt matching never establish one.
