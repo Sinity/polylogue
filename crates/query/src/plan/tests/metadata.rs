@@ -53,13 +53,16 @@ fn saved_outputs_ignore_parser_atoms() {
             kind: FieldKind::Reference,
             ..Field::default()
         });
-        assert!(
-            matches!(validate_object(&changed), Err(QueryError::Invalid { .. })),
-            "previously recorded parser atoms must be refused, not rewritten"
+        assert_eq!(
+            refusal(&changed),
+            "saved output schema differs from its saved definition"
         );
         let mut changed = object.clone();
         changed.source_outputs[0].schema.fields[0].kind = FieldKind::Json;
-        assert!(validate_object(&changed).is_err());
+        assert_eq!(
+            refusal(&changed),
+            "saved output schema differs from its saved definition"
+        );
         let mut changed = object.clone();
         changed.source_outputs[0]
             .schema
@@ -69,13 +72,22 @@ fn saved_outputs_ignore_parser_atoms() {
             .unwrap()
             .values
             .push("invented-kind".into());
-        assert!(validate_object(&changed).is_err());
+        assert_eq!(
+            refusal(&changed),
+            "saved output schema differs from its saved definition"
+        );
         let mut changed = object.clone();
         changed.source_outputs[0].schema.fields.swap(0, 1);
-        assert!(validate_object(&changed).is_err());
+        assert_eq!(
+            refusal(&changed),
+            "saved output schema differs from its saved definition"
+        );
         let mut changed = object.clone();
         changed.source_outputs[0].schema.main_time = None;
-        assert!(validate_object(&changed).is_err());
+        assert_eq!(
+            refusal(&changed),
+            "saved output schema differs from its saved definition"
+        );
     }
 }
 
@@ -136,10 +148,12 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
             };
             *quoted = !*quoted;
             duplicate.source_outputs.push(snapshot);
-            assert!(
-                validate_object(&duplicate).is_err(),
-                "duplicate output snapshot differing only in quoting"
-            );
+            let error = validate_object(&duplicate).unwrap_err();
+            let QueryError::Language { error, .. } = error else {
+                panic!("expected a query language error, got {error:?}");
+            };
+            assert_eq!(error.kind, query_language::ErrorKind::Ambiguous);
+            assert_eq!(error.message, "duplicate source output schema");
             let replayed = replay(&object, catalog_fingerprint()).unwrap();
             assert_eq!(
                 identity::normal_form(replayed.expanded_query().query(), replayed.catalog())
