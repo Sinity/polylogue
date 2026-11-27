@@ -122,6 +122,111 @@ fn status_says_what_it_answers_from() {
     assert!(value.notices.is_some() && value.running.is_some());
 }
 
+fn status_is_waiting(limit: &polylogue_store::read::limit::ReadLimit) {
+    use std::time::{Duration, Instant};
+    let until = Instant::now() + Duration::from_secs(10);
+    while limit.stage() != Some("status wait") {
+        assert!(Instant::now() < until, "status did not reach its wait");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_plain_status_wait_crosses_a_generation_change_without_old_figures() {
+    use crate::test_daemon::Call;
+    use polylogue_store::{cancellation::CancelOnDrop, read::limit::ReadLimit};
+    use serde_json::json;
+
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut old = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    old.store.as_mut().unwrap().messages = 42;
+    let old = std::sync::Arc::new(old);
+    d.status_snapshot.clear(d);
+
+    let plain = ReadLimit::without_deadline(Default::default());
+    let deep = ReadLimit::without_deadline(Default::default());
+    let mut plain_wait = Call::new("status", json!({"wait":"1m"})).within(&plain);
+    plain_wait.deadline = command_surface::Deadline::None;
+    let mut deep_wait = Call::new("status", json!({"wait":"1m", "vectors":true})).within(&deep);
+    deep_wait.deadline = command_surface::Deadline::None;
+
+    std::thread::scope(|scope| {
+        let _stop_plain = CancelOnDrop::new(plain.cancellation.clone());
+        let _stop_deep = CancelOnDrop::new(deep.cancellation.clone());
+        let waiting = scope.spawn(|| plain_wait.answer(d));
+        let reading_vectors = scope.spawn(|| deep_wait.answer(d));
+        status_is_waiting(&plain);
+        status_is_waiting(&deep);
+
+        d.archive.advance_generation_for_test().unwrap();
+        assert!(matches!(
+            old.scope.check(),
+            Err(polylogue_store::StoreError::ScopeChanged)
+        ));
+        // The previous snapshot can still be in memory when the index changes.
+        *d.status_snapshot.0.locked() = Latest::Read(old);
+        d.status.changed();
+
+        let reply = Call::new("status", json!({})).answer(d);
+        let (value, _) = crate::test_answers::degraded(reply);
+        assert_eq!(
+            value["answers_from"],
+            json!({"kind":"not_read_yet", "since":"install"})
+        );
+        assert!(value["store"].is_null(), "{value}");
+        assert_eq!(value["caught_up"], false);
+
+        let reader = d.reads.reader().unwrap();
+        let commits = d.writes.as_ref().unwrap().commits_made();
+        d.status_snapshot.refresh(d, &reader, commits);
+        let (value, vector_reply) = (
+            crate::test_answers::ok(waiting.join().unwrap()),
+            reading_vectors.join().unwrap(),
+        );
+        assert_eq!(value["answers_from"]["kind"], "snapshot");
+        assert_eq!(value["store"]["messages"], 1, "{value}");
+        assert_eq!(value["caught_up"], true);
+        assert_eq!(
+            crate::test_answers::refusal(vector_reply).code.as_deref(),
+            Some("scope_changed")
+        );
+    });
+}
+
+#[test]
+fn cancelling_a_sleeping_status_wait_wakes_it() {
+    use crate::test_daemon::Call;
+    use polylogue_store::{cancellation::CancelOnDrop, read::limit::ReadLimit};
+    use serde_json::json;
+    use std::time::Duration;
+
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let limit = ReadLimit::without_deadline(Default::default());
+    let request =
+        Call::new("status", json!({"wait":"1m", "after_changes":u64::MAX})).within(&limit);
+    std::thread::scope(|scope| {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let _stop = CancelOnDrop::new(limit.cancellation.clone());
+        scope.spawn(move || {
+            let _ = send.send(request.answer(d));
+        });
+        status_is_waiting(&limit);
+        limit.cancellation.cancel();
+        let reply = receive.recv_timeout(Duration::from_secs(4));
+        if reply.is_err() {
+            d.status.changed();
+        }
+        assert_eq!(
+            crate::test_answers::refusal(reply.expect("cancellation did not wake status"))
+                .code
+                .as_deref(),
+            Some("cancelled")
+        );
+    });
+}
+
 #[test]
 fn verification_retains_runtime_pending_and_named_problem_outcomes() {
     let daemon = crate::test_daemon::start("synthetic source");

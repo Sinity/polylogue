@@ -64,7 +64,7 @@ fn start_with_deployment(
                 "the test daemon's first index was not installed within a minute",
             ));
         }
-        seen = runtime.daemon.status.wait_past(seen, until);
+        seen = runtime.daemon.status.wait_past(seen, until, None);
     }
     Ok(runtime)
 }

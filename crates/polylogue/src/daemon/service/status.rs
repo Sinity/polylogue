@@ -23,6 +23,7 @@ fn mode(d: &Daemon) -> crate::protocol::status::Mode {
 /// status request reads only memory and never waits for a reader, the
 /// writer's lock or a query whose cost grows with the archive.
 struct Snapshot {
+    scope: polylogue_store::ReadScopeToken,
     read_at: polylogue_model::Timestamp,
     /// The writer's commit count loaded before its reader opened: the
     /// snapshot shows at least those commits.
@@ -43,6 +44,7 @@ impl Snapshot {
         let now = read_at.as_millisecond();
         let reading = reader.completeness(&polylogue_engine::reading_contracts());
         Self {
+            scope: reader.scope_token(),
             read_at: read_at.into(),
             commits_read,
             missing_context: crate::hook::missing_context(reader).ok(),
@@ -110,11 +112,17 @@ impl StatusSnapshot {
     /// last index build began.
     #[cfg(test)]
     pub(crate) fn is_read(&self) -> bool {
-        matches!(*self.0.locked(), Latest::Read(_))
+        matches!(self.latest(), Latest::Read(_))
     }
 
     fn latest(&self) -> Latest {
-        self.0.locked().clone()
+        let latest = self.0.locked().clone();
+        if let Latest::Read(snapshot) = &latest
+            && snapshot.scope.check().is_err()
+        {
+            return Latest::NotRead(crate::protocol::status::NotReadSince::Install);
+        }
+        latest
     }
 }
 
@@ -122,6 +130,10 @@ type Build = (
     polylogue_store::archive::index_build::IndexBuild,
     polylogue_store::archive::build_progress::BuildProgress,
 );
+
+fn build_serves_no_index(d: &Daemon, build: &Option<Build>) -> bool {
+    build.is_some() && !d.archive.index_files().is_ok_and(|files| files.serves())
+}
 
 /// Status from the latest snapshot and the daemon's own state; degraded
 /// when the index is not current. `vectors` are the counts a deep request
@@ -138,7 +150,7 @@ pub(super) fn answer(
     let build = d.archive.build_progress();
     // A snapshot from before a build that serves no index is of an index
     // that can no longer be read.
-    if build.is_some() && !d.archive.index_files().is_ok_and(|files| files.serves()) {
+    if build_serves_no_index(d, &build) {
         return unread(d, AnswersFrom::Build, build, vectors, whole_log, changes);
     }
     let snapshot = match d.status_snapshot.latest() {
@@ -315,14 +327,35 @@ pub(super) fn answer(
             .iter()
             .filter_map(|thread| thread.worker.as_ref()?.problem(&thread.name)),
     );
-    capture_note(
+    let reply = capture_note(
         d,
         if !blocked && freshness.up_to_date() && missing.is_empty() {
             command_surface::Answer::ok(status)
         } else {
             command_surface::Answer::degraded(status, missing)
         },
-    )
+    );
+    // A plain wait spans generations, so validate the snapshot it composed
+    // from instead of the scope in use when the request was accepted.
+    if snapshot.scope.check().is_ok() {
+        return reply;
+    }
+    let build = d.archive.build_progress();
+    let source = if build_serves_no_index(d, &build) {
+        AnswersFrom::Build
+    } else {
+        AnswersFrom::NotReadYet {
+            since: crate::protocol::status::NotReadSince::Install,
+        }
+    };
+    let vectors = reply.value().and_then(|status| {
+        status
+            .vectors
+            .clone()
+            .map(Ok)
+            .or_else(|| status.vectors_error.clone().map(Err))
+    });
+    unread(d, source, build, vectors, whole_log, changes)
 }
 
 /// Answers with `answer` once the status it composes has caught up after
@@ -354,7 +387,9 @@ pub(super) fn wait(
             return Ok(current);
         }
         ReadLimit::set_stage("status wait");
-        call.daemon.status.wait_past(seen, until);
+        call.daemon
+            .status
+            .wait_past(seen, until, Some(&call.limit.cancellation));
     }
 }
 

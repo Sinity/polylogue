@@ -65,6 +65,8 @@ pub(crate) struct Policy {
     /// Refused while writes are blocked; over HTTP only by POST.
     pub changes_archive: bool,
     pub bound: Bound,
+    /// A read's reply must remain in the index generation it started in.
+    pub pin_scope: bool,
     /// Which readers it may take.
     pub lane: Lane,
     pub late: Late,
@@ -103,6 +105,7 @@ impl Policy {
         access: ToolAccess::Read,
         changes_archive: false,
         bound: Bound::Whole,
+        pin_scope: true,
         lane: Lane::Ordinary,
         late: Late::Refuse,
         pages: false,
@@ -609,7 +612,7 @@ fn respond<O: Operation>(
         return daemon.write_refusal().answer();
     }
     let limit = limit(request.deadline, &policy, row.latency, caller);
-    let scope = if policy.changes_archive {
+    let scope = if policy.changes_archive || !policy.pin_scope {
         None
     } else {
         match daemon.reads.scope_token() {
