@@ -115,6 +115,50 @@ fn partial_retry_is_idempotent_and_keeps_first_last() {
     );
 }
 #[test]
+fn an_incomplete_append_advances_wire_length_and_keeps_past_completion() {
+    let mut incremental = database();
+    let mut rebuilt = database();
+    let complete = step("v1", 0..10, true, vec![root()]);
+    store(&mut incremental, source(1, 1, 10, 1), &complete);
+
+    let mut pending = ParsePart::new(Output::default(), RecordCounts::default(), 10..10, true);
+    pending.parse_version = "v1".into();
+    store(&mut incremental, source(1, 1, 15, 2), &pending);
+    store(&mut rebuilt, source(1, 1, 15, 1), &complete);
+
+    let report = |conn| read(conn, Scope::current(None)).unwrap();
+    let before = report(&incremental);
+    for observed in [&before, &report(&rebuilt)] {
+        let coverage = &observed.coverage[0];
+        assert_eq!(coverage.status(), CoverageStatus::Partial);
+        assert_eq!(coverage.parsed_bytes, 10);
+        assert_eq!(coverage.known_source_bytes, 15);
+        assert_eq!(at(observed, "").types["object"].count, 1);
+    }
+    assert_eq!(
+        at(&before, "").complete_presence,
+        Some(Occurrence::from(source(1, 1, 10, 1)))
+    );
+    assert_eq!(at(&report(&rebuilt), "").complete_presence, None);
+
+    // Replaying the old complete range cannot shrink the inspected length.
+    store(&mut incremental, source(1, 1, 10, 1), &complete);
+    assert_eq!(report(&incremental), before);
+
+    let rest = step("v1", 10..15, true, vec![root()]);
+    for conn in [&mut incremental, &mut rebuilt] {
+        store(conn, source(1, 1, 15, 3), &rest);
+        let observed = report(conn);
+        assert_eq!(observed.coverage[0].status(), CoverageStatus::Complete);
+        assert_eq!(at(&observed, "").types["object"].count, 2);
+        assert_eq!(
+            at(&observed, "").complete_presence,
+            Some(Occurrence::from(source(1, 1, 15, 3)))
+        );
+    }
+}
+
+#[test]
 fn wire_shape_completed_chain_includes_earlier_chunks_in_presence() {
     let mut conn = database();
     store(
