@@ -2,16 +2,13 @@ use super::*;
 use crate::daemon::{server, service};
 
 /// Every current note annotation.
-fn notes(host: &BrowserHost) -> Vec<Value> {
-    let Some(Ok(data)) = host
-        .ask(
-            "rows",
-            serde_json::json!({"selection": "annotations where kind:note"}),
-        )
-        .map(crate::protocol::into_value)
-    else {
-        panic!("notes unavailable")
-    };
+fn notes(host: &Arc<BrowserHost>) -> Vec<Value> {
+    let data = call(
+        host,
+        "rows",
+        json!({"selection":"annotations where kind:note"}),
+    )
+    .json();
     assert_eq!(data["kind"], "listing");
     data["reply"]["rows"].as_array().unwrap().clone()
 }
@@ -37,20 +34,11 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     let mut runtime =
         crate::test_daemon::start_runtime(&root, config.clone(), service::ArchiveMode::Standalone)
             .unwrap();
-    let host = Arc::new(
-        BrowserHost::at(
-            &config,
-            &runtime.daemon.archive,
-            &runtime.daemon.config.paths,
-        )
-        .unwrap(),
-    );
+    let host = Arc::new(BrowserHost::at(&config, &runtime.daemon.archive).unwrap());
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     assert_eq!(
-        exchange(
+        store_capture(
             &host,
-            "POST",
-            "/v1/captures",
             &capture("selection-session", "Exact  provider\npassage")
         )
         .status,
@@ -64,10 +52,10 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let input = selection();
-    let saved = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
+    let saved = save_note(&host, input.to_string().as_bytes());
     assert_eq!(saved.status, 200, "{}", saved.json());
-    assert_eq!(saved.json()["note"]["id"], input["request_id"]);
-    assert_eq!(saved.json()["note"]["repeat"], false);
+    assert_eq!(saved.json()["id"], input["request_id"]);
+    assert_eq!(saved.json()["repeat"], false);
     runtime.stop_accepting();
     socket.shutdown().unwrap();
     runtime.shutdown().unwrap();
@@ -75,10 +63,10 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     let mut runtime =
         crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
     let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
-    let retry = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
+    let retry = save_note(&host, input.to_string().as_bytes());
     assert_eq!(retry.status, 200, "{}", retry.json());
-    assert_eq!(retry.json()["note"]["id"], input["request_id"]);
-    assert_eq!(retry.json()["note"]["repeat"], true);
+    assert_eq!(retry.json()["id"], input["request_id"]);
+    assert_eq!(retry.json()["repeat"], true);
     let data = notes(&host);
     assert_eq!(data.len(), 1);
     // This in-process host uses the test process's socket identity.
@@ -104,7 +92,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     );
     let mut changed = input;
     changed["body"] = "An edit needs a new note ID".into();
-    let conflict = exchange(&host, "POST", "/v1/notes", changed.to_string().as_bytes());
+    let conflict = save_note(&host, changed.to_string().as_bytes());
     assert_eq!(conflict.status, 409, "{}", conflict.json());
     runtime.stop_accepting();
     socket.shutdown().unwrap();
@@ -116,20 +104,17 @@ fn missing_or_malformed_browser_note_targets_never_acknowledge_a_save() {
     let w = test_daemon::start("unrelated");
     let host = host(&w);
     let input = selection();
-    let missing = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
+    let missing = save_note(&host, input.to_string().as_bytes());
     assert_eq!(missing.status, 409, "{}", missing.json());
     for field in ["message_id", "conversation_id", "page_url"] {
         let mut bad = input.clone();
         bad["source"][field] = "".into();
-        assert_eq!(
-            exchange(&host, "POST", "/v1/notes", bad.to_string().as_bytes()).status,
-            400
-        );
+        assert_eq!(save_note(&host, bad.to_string().as_bytes()).status, 400);
     }
     let mut elsewhere = input.clone();
     elsewhere["source"]["page_url"] = "https://chatgpt.com/c/another-session".into();
     assert_eq!(
-        exchange(&host, "POST", "/v1/notes", elsewhere.to_string().as_bytes()).status,
+        save_note(&host, elsewhere.to_string().as_bytes()).status,
         400
     );
     let data = notes(&host);
@@ -142,23 +127,12 @@ fn a_native_message_id_shared_by_two_conversations_is_not_guessed() {
     let host = host(&w);
     for session in ["selection-session", "another-session"] {
         assert_eq!(
-            exchange(
-                &host,
-                "POST",
-                "/v1/captures",
-                &capture(session, "shared native ID")
-            )
-            .status,
+            store_capture(&host, &capture(session, "shared native ID")).status,
             200
         );
     }
     w.wait_for(|status| status["store"]["sessions"] == 3);
-    let refused = exchange(
-        &host,
-        "POST",
-        "/v1/notes",
-        selection().to_string().as_bytes(),
-    );
+    let refused = save_note(&host, selection().to_string().as_bytes());
     assert_eq!(refused.status, 409, "{}", refused.json());
     let data = notes(&host);
     assert!(data.is_empty());

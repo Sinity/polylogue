@@ -12,6 +12,10 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         .parent()
         .ok_or_else(|| io::Error::other("capture has no parent"))?;
     fs::create_dir_all(dir)?;
+    // The provider directory must also survive a power loss.
+    if let Some(spool) = dir.parent() {
+        File::open(spool)?.sync_all()?;
+    }
     let lock_path = path.with_extension("lock");
     for target in [path, &lock_path] {
         if fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -145,6 +149,49 @@ fn open(path: &Path) -> io::Result<File> {
         .truncate(false)
         .mode(0o600)
         .open(path)
+}
+
+/// Stores the supplied capture bytes before acknowledging them.
+pub(super) fn store(
+    host: &super::BrowserHost,
+    bytes: &[u8],
+) -> Result<command_surface::Answer<serde_json::Value>, crate::daemon::Failure> {
+    use crate::daemon::Failure;
+    use polylogue_model::{JsonExt as _, Reason};
+    use serde_json::{Value, json};
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|_| Failure::refusal(Reason::CaptureNotJson {}))?;
+    if !value.is_object() {
+        return Err(Failure::refusal(Reason::CaptureNotJson {}));
+    }
+    let identity = |key| {
+        value
+            .pointer(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let (Some(provider), Some(conversation)) = (
+        identity("/session/provider"),
+        identity("/session/provider_session_id"),
+    ) else {
+        return Err(Failure::refusal(Reason::CaptureNamesNoConversation {}));
+    };
+    let raw = value
+        .object("raw_provider_payload")
+        .is_some_and(|o| !o.is_empty());
+    let turns = value
+        .pointer("/session/turns")
+        .and_then(Value::as_array)
+        .is_some_and(|t| !t.is_empty());
+    if !raw && !turns {
+        return Err(Failure::refusal(Reason::CaptureHasNoConversation {}));
+    }
+    let new = append(&host.capture_log(provider, conversation), bytes).map_err(Failure::io)?;
+    Ok(command_surface::Answer::ok(
+        json!({"provider": provider, "conversation": conversation,
+        "hash": blake3::hash(bytes).to_hex().as_str(), "new": new}),
+    ))
 }
 
 #[cfg(test)]

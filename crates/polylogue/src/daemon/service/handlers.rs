@@ -770,32 +770,21 @@ impl Operation for SelectionNote {
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
-        let input = crate::browser::notes::SelectionNote {
-            request_id: call.request_id.into(),
-            body: arguments.body,
-            quote: arguments.quote,
-            source: crate::browser::notes::Source {
-                provider: arguments.provider,
-                conversation_id: arguments.conversation_id,
-                message_id: arguments.message_id,
-                page_url: arguments.page_url,
-                selected_at: arguments.selected_at,
-            },
-        };
-        let (session, message_id) = input.references()?;
+        let input = arguments;
+        let (session, message_id) = input.references(call.request_id)?;
         let reader = call.reader()?;
         let message = polylogue_model::Reference::Message(message_id.clone());
         let intended = UserWrite::Assert {
             annotations: vec![input.annotation(session.clone(), message.clone())],
         };
         let selected_scope = reader.scope_token();
-        match repeated_request(&reader, &input.request_id, &intended, invocation) {
+        match repeated_request(&reader, call.request_id, &intended, invocation) {
             Ok(Some(previous)) => {
                 drop(reader);
                 return Ok(write_from_read(
                     d,
                     invocation,
-                    input.request_id,
+                    call.request_id.into(),
                     previous,
                     selected_scope,
                 ));
@@ -820,7 +809,7 @@ impl Operation for SelectionNote {
         Ok(write_from_read(
             d,
             invocation,
-            input.request_id,
+            call.request_id.into(),
             intended,
             selected_scope,
         ))

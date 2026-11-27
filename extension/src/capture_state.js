@@ -61,6 +61,47 @@
     }));
   }
 
+  /** Joins the spool's facts and the daemon's reply in the order asked. */
+  async function conversations(host, provider, ids) {
+    const spool = await host.spooled(provider, ids);
+    let archive = null;
+    try { archive = await host.call("internal conversations", { provider, ids }); }
+    catch (error) { if (error.code !== "daemon_required") throw error; }
+    return {
+      daemon: archive ? "running" : "no_answer",
+      conversations: ids.map((id, i) => {
+        const row = archive?.conversations[i];
+        return { ...row, id, state: row?.messages != null ? "archived" : spool.spooled[i] ? "spooled" : archive ? "missing" : "unknown" };
+      }),
+    };
+  }
+
+  /** Reads attachment names, then joins the archive's stored bytes to them. */
+  async function captureFiles(host, body) {
+    const listed = await host.call("internal capture-files", { capture: await body.text() });
+    let held = null;
+    const { provider, id: conversation } = listed.conversation;
+    try { held = await host.call("internal stored-files", { provider, conversation }); }
+    catch (error) { if (error.code !== "daemon_required") throw error; }
+    return { ...listed, downloading: held?.downloading === true,
+      files: listed.files.map((file) => {
+        const stored = held?.files.find((item) => item.id === file.file_id);
+        return { ...file, stored: stored ? { blob: stored.blob, size: stored.size } : null };
+      }),
+    };
+  }
+
+  /** A cheap setting read shows whether the daemon answers and actions are on. */
+  async function status(host) {
+    try {
+      const setting = await host.call("set", { key: "browser.actions" });
+      return { daemon: "running", chat_actions: setting.value?.type === "boolean" && setting.value.value === true };
+    } catch (error) {
+      if (error.code !== "daemon_required") throw error;
+      return { daemon: "no_answer", chat_actions: false };
+    }
+  }
+
   /** Whether the daemon has read a capture of the conversation. */
   function inArchive(state) {
     return state === IN_ARCHIVE || state === IN_ARCHIVE_FILES_DOWNLOADING;
@@ -75,6 +116,6 @@
     COULD_NOT_CHECK, NOT_A_CHAT_PAGE, NO_CONVERSATION_OPEN, HOST_NOT_INSTALLED, HOST_DID_NOT_ANSWER,
     IN_ARCHIVE, IN_ARCHIVE_FILES_DOWNLOADING, STORED_BEING_READ, STORED_DAEMON_NOT_ANSWERING,
     LAST_CAPTURE_FAILED, NOT_CAPTURED, DAEMON_DID_NOT_ANSWER,
-    STATES, of, ofArchiveAnswer, inArchive, holdsCapture,
+    STATES, of, ofArchiveAnswer, inArchive, holdsCapture, conversations, captureFiles, status,
   });
 })(globalThis);
