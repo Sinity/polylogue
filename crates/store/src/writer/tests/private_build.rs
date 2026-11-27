@@ -1062,3 +1062,66 @@ fn a_rebuild_chain_dropped_without_its_end_leaves_nothing() {
     crate::fixture::rebuild_from_runs(&archive, &sender, run.finish().unwrap()).unwrap();
     assert_eq!(messages(&serving(&archive)), 0);
 }
+
+/// Repeated statements of one event are normal within a reading. A second
+/// path into the rebuild's destination would instead make its load collide.
+#[test]
+fn a_replayed_event_cannot_collide_with_the_rebuilds_reading() {
+    for replay in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let [chain] = due_a_build(dir.path(), &["overlap"])[..] else {
+            panic!("the archive holds one input");
+        };
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        let sender = writer.sender();
+        let event = polylogue_model::Event {
+            session: Some(sid("overlap")),
+            kind: "marker".into(),
+            at: None,
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((0, 100)),
+            data: serde_json::json!({"state": "seen"}),
+        };
+        let mut reading = batch("overlap", Route::Live, 0, Vec::new(), &["overlap"]);
+        reading.parse[0].output.events = vec![event.clone(), event];
+        reading.change = Change::Reparse { chain };
+        reading.observation = None;
+
+        let rebuild = crate::index::rebuild::Rebuild::start(
+            &archive,
+            polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
+        let mut worker =
+            crate::index::rebuild::RebuildWorker::create(&archive, 0, 32 << 20).unwrap();
+        let mut open = worker
+            .begin(&sender, &reading.input, chain, reading.length)
+            .unwrap();
+        crate::parse::ParseSink::part(&mut open, reading.parse[0].clone()).unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
+        let runs = worker.finish().unwrap();
+
+        if replay {
+            let replayed = writer
+                .store_group(vec![crate::staging::PreparedBatch {
+                    batch: reading,
+                    files: Vec::new(),
+                }])
+                .unwrap();
+            assert!(
+                matches!(&replayed[..], [Err(StoreError::IndexBuilding(_))]),
+                "{replayed:?}"
+            );
+        }
+        rebuild.finish(runs, 0, 1, &sender).unwrap();
+        let index = crate::archive::open_read(&Paths::of(dir.path()).index).unwrap();
+        let events: i64 = index
+            .query_row("SELECT count(*) FROM event_parse", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(events, 1, "replay: {replay}");
+    }
+}
