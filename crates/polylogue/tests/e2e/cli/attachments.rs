@@ -293,6 +293,13 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
                 files_only.join("blobs").join(hash.to_string()),
             )
             .unwrap();
+            let inventory = serde_json::to_vec(&polylogue_model::bundle::InventoryRecord {
+                kind: polylogue_model::bundle::MemberKind::Blob,
+                reference: None,
+                file: blob_records[0].clone(),
+            })
+            .unwrap();
+            std::fs::write(files_only.join("members.jsonl"), &inventory).unwrap();
             let mut claims = std::fs::File::create(claims_only.join("records.jsonl")).unwrap();
             let mut files = std::fs::File::create(files_only.join("records.jsonl")).unwrap();
             for mut record in records {
@@ -305,6 +312,11 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
                     Record::Manifest(manifest) => {
                         manifest.inventory = None;
                         let mut files_manifest = manifest.clone();
+                        files_manifest.inventory = Some(polylogue_model::bundle::FileDescriptor {
+                            path: "members.jsonl".into(),
+                            hash: polylogue_model::BlobHash::of(&inventory),
+                            size: inventory.len() as u64,
+                        });
                         files_manifest.counts = polylogue_model::bundle::Counts {
                             blobs: 1,
                             ..Default::default()
@@ -325,7 +337,9 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             for path in [files_only, claims_only] {
                 let report = cli(&separate, &["--json", "import", path.to_str().unwrap()]);
                 assert!(report.status.success(), "{report:?}");
-                assert_eq!(json(&report)["pass"]["errors"], json!([]), "{report:?}");
+                let report = json(&report);
+                assert_eq!(report["pass"]["errors"], json!([]), "{report}");
+                assert_eq!(report["refused"], json!([]), "{report}");
             }
             wait_status(&separate, |status| status["store"]["messages"] == 1);
             let not_written = fixture._dir.path().join("unavailable.bin");
