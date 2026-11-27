@@ -15,6 +15,7 @@ use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
 use crossbeam_channel::{Receiver, Select, Sender, TryRecvError, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
+use polylogue_store::archive::writer::Position;
 use polylogue_store::index::rebuild::{Rebuild, RebuildStage, RebuildWorker, StageRecord};
 use polylogue_store::parse::ParseSink as _;
 use polylogue_store::{Change, InputKey};
@@ -23,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Inputs whose chains are planned per page.
-const PLANNED_INPUTS: usize = 256;
+pub(crate) const PLANNED_INPUTS: usize = 256;
 
 /// The memory one input byte takes while its range is parsed: a parsed
 /// range holds about ten times its bytes.
@@ -266,6 +267,7 @@ impl Engine {
     pub(crate) fn build_index(&mut self) -> Result<(Pass, Vec<StageRecord>), EngineError> {
         let mut pass = Pass::default();
         let mut rebuild = Rebuild::start(&self.archive, self.config.clock.clone())?;
+        let cut = rebuild.position();
         // Messages that name an asset find it when they are assembled: the
         // asset lookup comes from stored observations and sidecars.
         self.refresh_import_assets(&mut pass, Some(&mut rebuild))?;
@@ -316,7 +318,7 @@ impl Engine {
                 .collect::<std::io::Result<_>>()?;
             drop(running);
             let mut result = self
-                .plan_build(prepare, plans_tx, through, &mut pass)
+                .plan_build(prepare, plans_tx, through, cut, &mut pass)
                 .and_then(|()| {
                     self.receive_while_answering(&finished, &mut pass)
                         .map(|_| ())
@@ -462,6 +464,7 @@ impl Engine {
         prepare: &Prepare,
         plans: Sender<Plan>,
         through: Option<String>,
+        cut: Position,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let versions = crate::reading_contracts()
@@ -479,10 +482,10 @@ impl Engine {
         // The whole build's chains and bytes are counted before the first
         // page is planned, so its progress has its total from the start.
         let counting = std::time::Instant::now();
-        let (chains, bytes) = self
-            .reads
-            .reader()?
-            .count_chains_behind_index(&versions, &through)?;
+        let (chains, bytes) =
+            self.reads
+                .reader()?
+                .count_chains_behind_index_at(&versions, &through, Some(cut))?;
         prepare.chains.store(chains, Ordering::Relaxed);
         prepare.bytes.store(bytes, Ordering::Relaxed);
         prepare.progress();
@@ -493,8 +496,8 @@ impl Engine {
             counting.elapsed().as_millis()
         );
         // What planning finds is the exact total: the count includes chains
-        // whose recorded refusal planning leaves out, and a file stored
-        // meanwhile can have grown.
+        // whose recorded refusal planning leaves out. Later commits
+        // are left for the pass after installation.
         let (mut planned_chains, mut planned_bytes) = (0, 0);
         let mut after = None::<String>;
         loop {
@@ -511,10 +514,11 @@ impl Engine {
                 prepare.progress();
                 return Ok(());
             };
-            let behind = reader.chains_behind_index(
+            let behind = reader.chains_behind_index_at(
                 &versions,
                 polylogue_store::read::RevisionChains::All,
                 Some(&ids),
+                Some(cut),
             )?;
             drop(reader);
             let mut page = Vec::new();

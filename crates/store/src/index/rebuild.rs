@@ -363,7 +363,7 @@ impl Rebuild {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        crate::alternates::project(&tx)?;
+        crate::alternates::project_through(&tx, Some(self.position))?;
         crate::meta_set(
             &tx,
             crate::index::file::ARCHIVE_POSITION,

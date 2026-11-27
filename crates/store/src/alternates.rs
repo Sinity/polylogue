@@ -3,6 +3,7 @@
 mod rows;
 mod search;
 mod sql;
+pub(crate) use search::project_through;
 pub use search::{AlternateMatch, SCHEMA, project};
 pub(crate) use sql::{current_sql, withdrawn_sql};
 #[cfg(test)]

@@ -21,6 +21,7 @@ impl Engine {
         if rebuild.is_none() && !self.archive.index_files()?.serves() {
             return Ok(());
         }
+        let cut = rebuild.as_ref().map(|rebuild| rebuild.position());
         let mut install = |engine: &Self, staged: ExportItems| -> Result<(), EngineError> {
             match rebuild.as_deref_mut() {
                 Some(rebuild) => rebuild.import_assets(staged)?,
@@ -28,7 +29,13 @@ impl Engine {
             }
             Ok(())
         };
-        let (members, through) = self.reads.reader()?.unindexed_import_members()?;
+        let (members, through) = {
+            let reader = self.reads.reader()?;
+            match cut {
+                Some(cut) => reader.import_members_through(cut)?,
+                None => reader.unindexed_import_members()?,
+            }
+        };
         let mut staged = ExportItems::new()?;
         for source in members {
             let member = &source.membership.member;
@@ -52,6 +59,12 @@ impl Engine {
             install(self, staged)?;
         }
 
+        // The live index supplies this list and the current revisions.
+        // For a rebuild, its own member list becomes readable at install;
+        // the ordinary pass then parses sidecars from that list.
+        if cut.is_some() {
+            return Ok(());
+        }
         let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
         for (input, member) in sidecars {
             let reader = self.reads.reader()?;

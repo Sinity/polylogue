@@ -1,6 +1,7 @@
 //! Derived import associations. The engine parses the sources; reads check
 //! the archive's current state before returning any bytes.
 use crate::ConnExt as _;
+use crate::archive::writer::Position;
 use crate::row::{Rows as _, row};
 use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -300,6 +301,21 @@ impl Reader<'_> {
         Ok((out, through))
     }
 
+    /// The import members needed by a fresh index of this cut, regardless
+    /// of what an older installed index has already taken in.
+    pub fn import_members_through(
+        &self,
+        cut: Position,
+    ) -> Result<(Vec<ObservedMember>, Option<i64>)> {
+        let conn = self.conn()?;
+        let mut out = Vec::new();
+        let through = visit_import_members_at(conn, "source_", 0, None, Some(cut), |member| {
+            out.push(member);
+            Ok(())
+        })?;
+        Ok((out, through))
+    }
+
     pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
         let mut pending = Vec::new();
@@ -356,12 +372,31 @@ pub(crate) fn visit_import_members(
     prefix: &str,
     after: i64,
     input: Option<&str>,
+    visit: impl FnMut(ObservedMember) -> Result<()>,
+) -> Result<Option<i64>> {
+    visit_import_members_at(conn, prefix, after, input, None, visit)
+}
+
+fn visit_import_members_at(
+    conn: &Connection,
+    prefix: &str,
+    after: i64,
+    input: Option<&str>,
+    cut: Option<Position>,
     mut visit: impl FnMut(ObservedMember) -> Result<()>,
 ) -> Result<Option<i64>> {
-    let through: i64 = conn.scalar(
-        &format!("SELECT COALESCE(max(commit_seq),0) FROM {prefix}observation"),
-        [],
-    )?;
+    let through: i64 = match cut {
+        Some(position) => conn.scalar(
+            &format!(
+                "SELECT COALESCE(max(commit_seq),0) FROM {prefix}observation WHERE commit_seq<=?1"
+            ),
+            [position.0],
+        )?,
+        None => conn.scalar(
+            &format!("SELECT COALESCE(max(commit_seq),0) FROM {prefix}observation"),
+            [],
+        )?,
+    };
     // A ZIP is the source of its members, not one of the attachments among them.
     let mut originals =
         std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
