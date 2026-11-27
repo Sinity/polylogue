@@ -308,12 +308,16 @@ After any staging check, a member that changed head or stopped being ready
 waits for the next cycle. The remaining members are tested again together.
 A red batch with unchanged members is split in half and the oldest half
 tested first. The queue checks the other half for changes before testing it.
-A pull request red on its own has its failed jobs run once more: if they pass it
-merges and the cycle prints the tests that failed the first time as "failed
-once, passed on rerun"; if they fail again the queue comments on it with the
-run, the failed jobs and tests and the master commit (and the pull requests
-merged from the same batch), and skips it while its head is the one that
-comment names. A new head or a branch update puts it back.
+A pull request red on its own has its failed jobs run once more. The queue
+waits for the next numbered attempt of the same run on the same staging
+commit. If that attempt passes, the queue merges the pull request and prints
+the tests that failed the first time as "failed once, passed on rerun". If the
+attempt fails, the queue comments with links to both attempts, the jobs that
+failed on the rerun, the tests reported before it and the master commit (and
+the pull requests merged from the same batch). The queue skips the pull
+request while its head is the one that comment names. A new head or a branch
+update puts it back. If the next attempt cannot be confirmed, the pull
+request waits for another cycle.
 
 The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
 flight (its run finishes unused); members already merged stay merged, and the
