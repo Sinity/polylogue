@@ -226,24 +226,17 @@ impl Operation for Help {
         )
     };
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-        if arguments.to.is_some() || arguments.format.is_some() {
-            let option = if arguments.to.is_some() {
-                "to"
-            } else {
-                "format"
-            };
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("help --{option} is not built yet"),
-            ));
-        }
         if arguments.all {
             return Ok(ok(serde_json::json!({"manual": crate::manual::text()})));
         }
         let topic = arguments.topic.as_deref().unwrap_or("");
         let subject = match topic {
-            "units" | "fields" | "transforms" => topic,
+            "units" | "fields" | "transforms" | "capabilities" => topic,
             "query" => "syntax",
+            "unbuilt" => return Ok(ok(serde_json::json!({"manual": crate::unbuilt::text()}))),
+            "views" | "kinds" | "keys" | "saved" => {
+                return Err(crate::unbuilt::refusal("help", topic).into());
+            }
             _ => {
                 let steps = crate::daemon::verbs::declarations();
                 if let Some(verb) = steps.verbs().iter().find(|verb| verb.verb() == topic) {
@@ -257,10 +250,12 @@ impl Operation for Help {
                 if let Some(line) = crate::explain::removed_word(topic) {
                     return Ok(ok(serde_json::json!({ "manual": line })));
                 }
-                return Ok(error(
-                    polylogue_model::Code::NotBuilt,
-                    format!("help {topic} is not built yet"),
-                ));
+                if crate::commands::is_cli_command(topic) {
+                    return Err(crate::unbuilt::refusal("help", "COMMAND").into());
+                }
+                return Err(Failure::bad_value(format!(
+                    "help {topic}: no such topic, verb or command; topics: query, units, fields, transforms, capabilities, unbuilt"
+                )));
             }
         };
         crate::explain::answer(
@@ -387,12 +382,6 @@ impl Operation for Import {
             return Err(Failure::bad_request(format!(
                 "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
             )));
-        }
-        if arguments.withdraw_missing {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                "import --withdraw-missing is not built yet",
-            ));
         }
         let paths = arguments
             .paths

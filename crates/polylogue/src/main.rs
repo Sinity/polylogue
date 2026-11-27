@@ -36,6 +36,7 @@ mod socket;
 mod test_answers;
 #[cfg(test)]
 mod test_daemon;
+mod unbuilt;
 mod web;
 
 use cli::invocation::Shape;
@@ -137,12 +138,16 @@ fn run() -> ExitCode {
             if matches!(invocation.shape, Shape::Help) {
                 argv[1] = "help".into();
             }
+            let argv_words = argv[1..].to_vec();
             let matches = match cli::command().try_get_matches_from(argv) {
                 Ok(matches) => matches,
                 Err(error) => {
                     client_pipe_signal();
                     if start.hook {
                         return hook_startup_error(error);
+                    }
+                    if let Some(unbuilt) = cli::unbuilt_option(&error, &argv_words) {
+                        return cli::fail_with(process.output, invocation.json, &unbuilt, &[]);
                     }
                     return cli::parse_error(error, process.output);
                 }

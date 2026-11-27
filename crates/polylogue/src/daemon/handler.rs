@@ -21,7 +21,7 @@ use polylogue_model::authorship::Channel;
 use polylogue_reading::operation::{Context, Invocation};
 pub(crate) use polylogue_store::Lane;
 use polylogue_store::read::limit::ReadLimit;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
@@ -45,7 +45,17 @@ pub(crate) trait Operation: 'static {
     fn failure(_reply: &Self::Reply) -> Option<command_surface::FailureKind> {
         None
     }
+    /// The same request answered as one reply, for a caller that cannot
+    /// hold a stream; none when it does not stream.
+    fn without_stream(_arguments: &Self::Arguments) -> Option<Self::Arguments> {
+        None
+    }
+    /// The reply as text for a model, when it has one other than its JSON.
+    const MODEL_TEXT: Option<ModelText<Self::Reply>> = None;
 }
+
+/// A reply as text for a model, or why it cannot be.
+pub(crate) type ModelText<Reply> = fn(&Reply) -> Result<String, String>;
 
 /// How one request is treated before and while it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,8 +283,16 @@ impl Events for Transport<'_> {
 pub(crate) trait Row: Sync {
     fn operation(&self) -> TypeId;
     fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command);
+    /// The schema of the operation's request type.
+    fn arguments(&self) -> schemars::Schema;
     /// Decodes the arguments and states how they are treated.
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure>;
+    /// The request answered as one reply, when it would stream.
+    fn without_stream(&self, arguments: &Value) -> Result<Option<Value>, Failure>;
+    /// The failure a successful reply carries inside it.
+    fn failure_inside(&self, reply: &Value) -> Option<command_surface::FailureKind>;
+    /// The reply as text for a model, when it has one other than its JSON.
+    fn model_text(&self, reply: &Value) -> Option<Result<String, String>>;
     /// The answer, and the failure its reply carries inside it.
     fn respond(
         &self,
@@ -304,8 +322,31 @@ impl<O: Operation> Row for Handled<O> {
             .expect("declared command is unique");
     }
 
+    fn arguments(&self) -> schemars::Schema {
+        schemars::schema_for!(O::Arguments)
+    }
+
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure> {
         O::policy(&decode::<O::Arguments>(arguments)?, channel)
+    }
+
+    fn without_stream(&self, arguments: &Value) -> Result<Option<Value>, Failure> {
+        O::without_stream(&decode::<O::Arguments>(arguments)?)
+            .map(|arguments| serde_json::to_value(arguments).map_err(Failure::internal))
+            .transpose()
+    }
+
+    fn failure_inside(&self, reply: &Value) -> Option<command_surface::FailureKind> {
+        O::failure(&O::Reply::deserialize(reply).ok()?)
+    }
+
+    fn model_text(&self, reply: &Value) -> Option<Result<String, String>> {
+        let text = O::MODEL_TEXT?;
+        Some(
+            O::Reply::deserialize(reply)
+                .map_err(|error| error.to_string())
+                .and_then(|reply| text(&reply)),
+        )
     }
 
     fn respond(
@@ -346,6 +387,9 @@ pub(crate) fn policy(
     arguments: &Value,
     channel: Channel,
 ) -> Result<Policy, Failure> {
+    if let Some(unbuilt) = crate::unbuilt::in_arguments(row.name, arguments) {
+        return Err(unbuilt.into());
+    }
     match row.run {
         crate::commands::Run::Daemon(operation) => operation.policy(arguments, channel),
         _ => Err(Failure::bad_request(format!(
@@ -456,6 +500,9 @@ fn check_envelope(row: &Command, request: &RunnableRequest) -> Result<(), Failur
     let Some(object) = request.arguments.as_object() else {
         return Err(Failure::bad_request("arguments must be an object"));
     };
+    if let Some(unbuilt) = crate::unbuilt::in_arguments(row.name, &request.arguments) {
+        return Err(unbuilt.into());
+    }
     if let Some(description) = declarations
         .descriptions()
         .iter()

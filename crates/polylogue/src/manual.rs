@@ -9,15 +9,28 @@ pub fn card() -> &'static str {
 }
 
 /// The card, the guide, and every tool operation with its CLI spelling,
-/// help and arguments, unlisted ones included.
+/// help and arguments, unlisted ones included, and every verb the tool adds
+/// with its signature.
 pub fn text() -> String {
     let mut text = format!(
         "{}\n{}",
         card(),
         include_str!("../../../docs/agent-guide.md")
     );
+    let offered = crate::daemon::verbs::offered_over_mcp();
+    let verbs = crate::daemon::verbs::declarations();
     for tool in crate::commands::Tool::ALL {
         let _ = writeln!(text, "\n## `{}`\n", tool.name());
+        for verb in verbs.verbs() {
+            if offered.contains(&(verb.verb(), tool.access())) {
+                let _ = writeln!(
+                    text,
+                    "- step `{}`: {}",
+                    verb.signature(),
+                    crate::commands::verb_sentence(verb)
+                );
+            }
+        }
         for command in crate::mcp::operations(tool) {
             let arguments: Vec<&str> = crate::commands::declarations()
                 .spec_named(command.name)

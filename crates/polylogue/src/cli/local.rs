@@ -244,14 +244,6 @@ fn install_with_output(
         }
     };
     let target = arguments.target.as_str();
-    let not_built = |part: &str| {
-        fail(
-            startup.client.output,
-            json,
-            polylogue_model::Code::NotBuilt,
-            &format!("install {part} is not built yet"),
-        )
-    };
     if arguments.instructions {
         return match instructions::install(startup, &arguments, json, output) {
             Ok(()) => ExitCode::SUCCESS,
@@ -306,7 +298,13 @@ fn install_with_output(
         );
     };
     if arguments.dry_run {
-        return not_built("--dry-run");
+        let unbuilt = crate::unbuilt::refusal("install", "HARNESS --dry-run");
+        return fail(
+            startup.client.output,
+            json,
+            polylogue_model::Code::NotBuilt,
+            &unbuilt.message,
+        );
     }
     let path = match arguments.settings {
         Some(path) => std::path::PathBuf::from(path),
@@ -491,8 +489,8 @@ fn completion_script(shell: &str, program: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// A command declared but not built: a typed refusal.
-pub fn not_built(
+/// The action of the command table's template, which every row replaces.
+pub fn no_action(
     c: &Command,
     _: &command_surface::ParsedCommand,
     output: crate::config::OutputConfig,
@@ -501,8 +499,8 @@ pub fn not_built(
     fail(
         output,
         json,
-        polylogue_model::Code::NotBuilt,
-        &format!("`{}` is not built yet", c.name),
+        polylogue_model::Code::Internal,
+        &format!("`{}` has no action in the command table", c.name),
     )
 }
 
