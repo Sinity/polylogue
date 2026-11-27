@@ -38,6 +38,20 @@ fn open_refuses_mode_mismatch_before_creating_files() {
 }
 
 #[test]
+fn a_new_archive_records_the_same_standalone_mode_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert_eq!(
+        fs::read(archive.root.join("meta.json")).unwrap(),
+        b"{\"mode\":\"standalone\"}\n"
+    );
+    assert_eq!(
+        Archive::recorded_mode(&archive.root).unwrap(),
+        Some(Mode::Standalone)
+    );
+}
+
+#[test]
 fn a_second_open_is_refused_while_the_lock_is_held() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");

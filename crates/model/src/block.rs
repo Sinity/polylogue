@@ -202,12 +202,13 @@ pub enum ErrorReason {
     ExitCode(i64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum UnknownReason {
-    StatusFieldUnreadable,
-    /// Started in the background; completion has not been seen yet.
-    RunningInBackground,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum UnknownReason {
+        StatusFieldUnreadable => "status_field_unreadable",
+        /// Started in the background; completion has not been seen yet.
+        RunningInBackground => "running_in_background",
+    }
 }
 
 impl UnknownReason {
@@ -240,17 +241,16 @@ pub struct Attachment {
     pub direction: AttachmentDirection,
 }
 
-/// Whether the attachment went to the model or came from it.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum AttachmentDirection {
-    /// The source records the media without establishing model delivery or authorship.
-    Unknown,
-    #[default]
-    Input,
-    Output,
+crate::stored_names! {
+    /// Whether the attachment went to the model or came from it.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub enum AttachmentDirection {
+        /// The source records the media without establishing model delivery or authorship.
+        Unknown => "unknown",
+        #[default]
+        Input => "input",
+        Output => "output",
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,60 @@ use crate::*;
 use crossbeam_channel::RecvTimeoutError;
 use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
+use polylogue_store::activity::{self, Doing};
+
+/// The loop has one current phase. Worker and per-root work can report
+/// nested activity without counting the same time twice.
+struct PassProgress {
+    phase: &'static str,
+    began: Instant,
+    doing: Doing,
+    phases: Vec<(&'static str, Duration)>,
+}
+
+impl PassProgress {
+    fn new() -> Self {
+        let phase = "preparing the pass";
+        Self {
+            phase,
+            began: Instant::now(),
+            doing: activity::doing(phase),
+            phases: Vec::new(),
+        }
+    }
+
+    fn enter(&mut self, phase: &'static str) {
+        if self.phase != phase {
+            self.record(Instant::now());
+            self.phase = phase;
+            self.doing = activity::doing(phase);
+        }
+    }
+
+    fn record(&mut self, now: Instant) {
+        let elapsed = now.duration_since(self.began);
+        if let Some((_, total)) = self
+            .phases
+            .iter_mut()
+            .find(|(phase, _)| *phase == self.phase)
+        {
+            *total += elapsed;
+        } else {
+            self.phases.push((self.phase, elapsed));
+        }
+        self.began = now;
+    }
+
+    fn finish(mut self, pass: &mut Pass) {
+        self.record(Instant::now());
+        pass.phases = self
+            .phases
+            .into_iter()
+            .map(|(phase, elapsed)| (phase.into(), elapsed.as_millis() as f64 / 1000.0))
+            .collect();
+        pass.seconds = pass.phases.iter().map(|(_, seconds)| seconds).sum();
+    }
+}
 
 /// The longest a burst of file events delays the next pass.
 const COALESCE: Duration = Duration::from_secs(2);
@@ -301,6 +355,7 @@ impl Engine {
                     }
                 }
             }
+            let _doing = activity::doing_on("running a collector", origin.name);
             let spool = self.config.root(origin.root).join(
                 origin
                     .spool_dir()
@@ -325,28 +380,31 @@ impl Engine {
 
     /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
-        let started = Instant::now();
+        let _doing = activity::doing("running a pass");
+        let mut progress = PassProgress::new();
         self.planned.clear();
-        let (mut total, seen) = match self.one_pass(true, &Default::default()) {
-            Ok(done) => done,
-            Err(error) => {
-                if !matches!(error, EngineError::Stopped) {
-                    self.failure_log.pass_ended(
-                        &[polylogue_model::Failure::of(&error)],
-                        crate::failure_log::Looked {
-                            files: &HashSet::new(),
-                            walked: false,
-                            completed: false,
-                        },
-                    );
+        let (mut total, seen) =
+            match self.one_pass_with_progress(true, &Default::default(), &mut progress) {
+                Ok(done) => done,
+                Err(error) => {
+                    if !matches!(error, EngineError::Stopped) {
+                        self.failure_log.pass_ended(
+                            &[polylogue_model::Failure::of(&error)],
+                            crate::failure_log::Looked {
+                                files: &HashSet::new(),
+                                walked: false,
+                                completed: false,
+                            },
+                        );
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
+            };
         let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
         // A database capture can still be running after all other work ends:
         // pass again with what it wrote.
         while total.capture_pending && self.captures.pending() {
+            progress.enter("waiting for database capture");
             let completed = self.captures.completed(true);
             total.inputs_seen += completed.inputs_seen;
             total.bytes_stored += completed.bytes_stored;
@@ -356,11 +414,11 @@ impl Engine {
             if completed.finished && self.capture_checked.is_some() {
                 self.capture_checked = Some(Instant::now());
             }
-            let (next, seen) = self.one_pass(false, &paths)?;
+            let (next, seen) = self.one_pass_with_progress(false, &paths, &mut progress)?;
             paths.extend(seen);
             total.add(next);
         }
-        total.seconds = started.elapsed().as_secs_f64();
+        progress.finish(&mut total);
         let planned = std::mem::take(&mut self.planned);
         self.failure_log.pass_ended(
             &total.errors,
@@ -392,19 +450,32 @@ impl Engine {
         self.lookups_at = None;
     }
 
-    /// One pass. An archive without a current index, a new one included, stores the files no earlier pass stored, builds the index
-    /// from the record as it then stands, and reads what arrived since.
+    #[cfg(test)]
     fn one_pass(
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        let mut progress = PassProgress::new();
+        let (mut pass, seen) = self.one_pass_with_progress(discover, paths, &mut progress)?;
+        progress.finish(&mut pass);
+        Ok((pass, seen))
+    }
+
+    /// One pass. An archive without a current index, a new one included, stores the files no earlier pass stored, builds the index
+    /// from the record as it then stands, and reads what arrived since.
+    fn one_pass_with_progress(
+        &mut self,
+        discover: bool,
+        paths: &std::collections::BTreeSet<PathBuf>,
+        progress: &mut PassProgress,
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
         self.found_before_build = None;
         if self.archive.index_build().is_none() {
-            return self.read_pass(discover, paths);
+            return self.read_pass(discover, paths, progress);
         }
         self.plan_build_steps();
-        let (mut built, mut seen) = self.read_pass(discover, paths)?;
+        let (mut built, mut seen) = self.read_pass(discover, paths, progress)?;
         // Requests are answered as they come and storing goes on, as the
         // build answers them while it reads: a stream of requests never
         // keeps the build from starting.
@@ -415,7 +486,7 @@ impl Engine {
                 .flat_map(|(_, found)| found.iter().map(|f| f.path.clone()))
                 .chain(paths.iter().cloned())
                 .collect();
-            let (more, again) = self.read_pass(false, &looked_at)?;
+            let (more, again) = self.read_pass(false, &looked_at, progress)?;
             built.add(more);
             seen.extend(again);
             if let Some((true, found)) = first {
@@ -428,7 +499,9 @@ impl Engine {
             return Ok((built, seen));
         }
         built.capture_pending = false;
+        progress.enter("building the index");
         built.add(self.build_index()?.0);
+        progress.enter("preparing the pass");
         // The turn after the build looks again at what the storing turn
         // found ([`Engine::read_turn`]). After a walk it is a discovery turn,
         // so a known file the walk did not find is observed gone; otherwise
@@ -438,7 +511,7 @@ impl Engine {
         if !walked {
             self.load()?;
         }
-        let (mut pass, more) = self.read_pass(walked, paths)?;
+        let (mut pass, more) = self.read_pass(walked, paths, progress)?;
         // The storing turn counted the files this turn looks at again.
         pass.inputs_seen = 0;
         built.add(pass);
@@ -455,8 +528,9 @@ impl Engine {
         mut fresh: Vec<Plan>,
         mut pass: Pass,
         seen: HashSet<PathBuf>,
-        started: Instant,
+        progress: &mut PassProgress,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        progress.enter("storing new files");
         let mut bytes = 0;
         for plan in &mut fresh {
             if matches!(plan.source, pool::Bytes::File) {
@@ -490,7 +564,6 @@ impl Engine {
         }
         pass.capture_pending |= self.yielding() || self.poll_request();
         self.pass_open = pass.capture_pending;
-        pass.seconds = started.elapsed().as_secs_f64();
         Ok((pass, seen))
     }
 
@@ -498,6 +571,7 @@ impl Engine {
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
+        progress: &mut PassProgress,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
         if self
             .read_scope
@@ -520,6 +594,7 @@ impl Engine {
             let result = self.read_turn(
                 discover || (self.config.reads_sources && !self.watched_loaded),
                 paths,
+                progress,
             )?;
             // A completed reset can race the last SQL read. Its cached progress
             // cannot establish completion in the new scope.
@@ -566,9 +641,11 @@ impl Engine {
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
+        progress: &mut PassProgress,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
-        let continuing = self.pass_open;
+        progress.enter("loading source state");
         let started = Instant::now();
+        let continuing = self.pass_open;
         self.load()?;
         if discover && !self.readings_pending {
             self.readings_pending = self.stored_readings_are_behind()?;
@@ -584,9 +661,13 @@ impl Engine {
         let found_before_build = self.found_before_build.take();
         let walked = sources && discover && found_before_build.is_none();
         if sources && (walked || collectors_due) {
+            progress.enter("collecting source data");
             self.collectors_at = Some(Instant::now());
             errors.extend(self.run_collectors());
             errors.extend(self.refresh_lookups().err());
+        }
+        if sources {
+            progress.enter("finding source files");
         }
         let (mut found, unreadable) = if let Some((_, found)) = found_before_build {
             let found = found
@@ -638,10 +719,12 @@ impl Engine {
             );
         }
         let (deferred_database, database_changed) = if sources {
+            progress.enter("checking database captures");
             self.capture_databases(&found, discover, &mut pass)?
         } else {
             (false, false)
         };
+        progress.enter("planning file reads");
         let mut found: Vec<_> = found
             .into_iter()
             .filter(|f| !f.origin.is_row_dump(&f.path))
@@ -691,7 +774,6 @@ impl Engine {
             && !deferred_database
             && !self.captures.pending()
         {
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, HashSet::new()));
         }
         // The asset lookup comes from stored observations and sidecars, so
@@ -712,7 +794,7 @@ impl Engine {
         let fresh = self.plan_found(fresh, &mut pass, &mut seen)?;
         if building {
             seen.extend(found.into_iter().map(|f| f.path));
-            return self.store_for_build(fresh, pass, seen, started);
+            return self.store_for_build(fresh, pass, seen, progress);
         }
         let mut changed_inputs = (fresh.len() + self.rollout_captures.len()) as u64;
         if !fresh.is_empty() || !self.rollout_captures.is_empty() {
@@ -724,7 +806,9 @@ impl Engine {
                     self.rollout_captures.len()
                 ),
             );
+            progress.enter("storing and reading new files");
             self.execute(fresh, &mut pass)?;
+            progress.enter("planning file reads");
         }
         // Known files that changed since they were read (sessions being
         // written) are read next, before the catch-up of stored chains;
@@ -747,6 +831,7 @@ impl Engine {
                     self.rollout_captures.len()
                 ),
             );
+            progress.enter("storing and reading changed files");
             self.execute(changed_plans, &mut pass)?;
         }
         let mut live_waiting = false;
@@ -759,6 +844,7 @@ impl Engine {
                     pass.bytes_read as f64 / 1e6
                 ),
             );
+            progress.enter("reading newest stored files");
             live_waiting = self.reparse_behind(RevisionChains::Newest, &mut pass)?;
         }
         if self.yielding() || live_waiting {
@@ -766,9 +852,9 @@ impl Engine {
             seen.extend(found.into_iter().map(|f| f.path));
             pass.inputs_changed = changed_inputs;
             pass.capture_pending = true;
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
+        progress.enter("planning file reads");
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Keep stored parsing reachable when a provider disappears.
         let unseen: Vec<PathBuf> = self
@@ -782,6 +868,7 @@ impl Engine {
             .map(|(path, _)| path.clone())
             .collect();
         for path in unseen {
+            activity::progressed();
             let state = &self.inputs[&path];
             if sources && state.facts.is_some() && path.try_exists().is_ok_and(|exists| !exists) {
                 let batch = polylogue_store::Batch {
@@ -816,6 +903,7 @@ impl Engine {
         changed_inputs += (plans.len() + self.rollout_captures.len()) as u64;
         pass.inputs_changed = changed_inputs;
         if plans.is_empty() && self.rollout_captures.is_empty() {
+            progress.enter("committing changes");
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
@@ -853,14 +941,15 @@ impl Engine {
                 ),
             );
         }
+        if !plans.is_empty() || !self.rollout_captures.is_empty() {
+            progress.enter("storing and reading changed files");
+        }
         self.execute(plans, &mut pass)?;
         if self.yielding() {
             pass.capture_pending = true;
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if self.archive.stop().is_cancelled() {
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if self.readings_pending {
@@ -875,6 +964,7 @@ impl Engine {
                         pass.bytes_read as f64 / 1e6
                     ),
                 );
+                progress.enter("computing session figures");
                 pass.sessions_derived += self.derive()?;
             }
             if !self.poll_request() {
@@ -882,22 +972,22 @@ impl Engine {
                     "reading older stored files",
                     format_args!("{} sessions derived", pass.sessions_derived),
                 );
+                progress.enter("reading older stored files");
                 live_waiting = self.reparse_behind(RevisionChains::Older, &mut pass)?;
             }
         }
         if self.yielding() || live_waiting {
             pass.capture_pending = true;
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if self.poll_request() {
             pass.capture_pending = true;
-            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
             // Local parsing may have made a deferred database runnable. Start
             // that real work in this batch; a still-pending reading just yields.
+            progress.enter("checking database captures");
             self.capture_databases(&[], false, &mut pass)?;
         }
         pass.capture_pending |= self.captures.pending();
@@ -910,6 +1000,7 @@ impl Engine {
                     pass.bytes_read as f64 / 1e6
                 ),
             );
+            progress.enter("computing session figures");
             pass.sessions_derived += self.derive()?;
             if pass.errors.is_empty() {
                 // A source admitted behind the bookmark gets the next pass;
@@ -935,7 +1026,6 @@ impl Engine {
             );
         }
         self.pass_open = pass.capture_pending;
-        pass.seconds = started.elapsed().as_secs_f64();
         Ok((pass, seen))
     }
 
@@ -949,7 +1039,9 @@ impl Engine {
         let mut plans = Vec::new();
         for f in found {
             seen.insert(f.path.clone());
-            let Ok(meta) = std::fs::metadata(&f.path) else {
+            let metadata = std::fs::metadata(&f.path);
+            activity::progressed();
+            let Ok(meta) = metadata else {
                 continue;
             };
             pass.inputs_seen += 1;
@@ -1665,6 +1757,7 @@ impl Engine {
             if self.poll_request() {
                 break;
             }
+            activity::progressed();
             let stored_source = c.imported || !self.config.reads_sources;
             let route = |origin: &'static OriginSpec| {
                 if c.imported {
@@ -2115,7 +2208,9 @@ impl Engine {
             if self.archive.stop().is_cancelled() || self.poll_request() {
                 break;
             }
-            let Some(mut plan) = self.admit(plan, pass)? else {
+            let admitted = self.admit(plan, pass)?;
+            activity::progressed();
+            let Some(mut plan) = admitted else {
                 continue;
             };
             // A file read from its first byte over a chain whose parse holds
@@ -2177,6 +2272,7 @@ impl Engine {
         mut parser: Box<dyn ExportParser>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
+        let _doing = activity::doing_on("reading an export", plan.path.display().to_string());
         if !self.load_stored(&mut plan)? {
             return Ok(());
         }
@@ -2438,6 +2534,7 @@ impl Engine {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 outstanding -= 1;
+                activity::progressed();
                 progress.file_done(self, pass);
                 let d = match d {
                     pool::Finished::Range(done) => *done,
@@ -2739,11 +2836,10 @@ impl Engine {
             let pending;
             self.planned.clear();
             let mut completed = false;
-            let passed = {
-                let _doing = polylogue_store::activity::doing("running a pass");
-                self.one_pass(discover, &changed)
-            };
-            let mut finished = match passed {
+            let doing = activity::doing("running a pass");
+            let mut progress = PassProgress::new();
+            let mut finished = match self.one_pass_with_progress(discover, &changed, &mut progress)
+            {
                 Err(EngineError::Stopped) => {
                     // Writes the pass queued before stopping are committed.
                     if let Err(error) = self.flush_writes() {
@@ -2791,6 +2887,7 @@ impl Engine {
                     } else {
                         vec![polylogue_model::Failure::of(&e)]
                     };
+                    progress.enter("committing changes");
                     match self.flush_writes() {
                         Ok(report) => errors.extend(report.errors),
                         Err(error) => errors.push(polylogue_model::Failure::of(&error)),
@@ -2816,6 +2913,8 @@ impl Engine {
                     }
                 }
             };
+            progress.finish(&mut finished);
+            drop(doing);
             finished.errors.append(&mut watch_errors);
             let planned = std::mem::take(&mut self.planned);
             self.failure_log.pass_ended(
