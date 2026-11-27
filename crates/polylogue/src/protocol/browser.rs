@@ -46,6 +46,17 @@ pub struct ChatAttachment {
     pub attachment: String,
 }
 
+/// The extension asks for the running reader's authenticated address.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderUrl {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderAddress {
+    pub url: String,
+}
+
 /// The extension instance `by` takes the import job it holds or the
 /// oldest waiting one.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -193,4 +204,12 @@ pub struct StoredFile {
     #[schemars(with = "String")]
     pub blob: polylogue_model::BlobHash,
     pub size: Option<u64>,
+}
+
+/// A capture whose attachment names the extension asks the parser to read.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureFiles {
+    /// The capture JSON, preserving the submitted bytes
+    pub capture: String,
 }

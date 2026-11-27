@@ -22,7 +22,7 @@ fn link_statement_identity_preserves_recorded_coordinates() {
     let from_child = Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent: s("claude-code:p"),
         child: s("claude-code:agent-1"),
         branch_point: None,
@@ -59,6 +59,6 @@ fn link_statement_identity_preserves_recorded_coordinates() {
     let mut different = from_parent;
     different.kind = LinkKind::Reference;
     let reference = different.clone();
-    different.how = Some(ReferenceReason::Send);
+    different.reason = Some(ReferenceReason::Send);
     assert_ne!(reference.selection_tag(), different.selection_tag());
 }

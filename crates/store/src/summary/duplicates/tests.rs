@@ -75,7 +75,7 @@ fn unmarked_sessions_do_not_read_all_message_rows_and_marks_without_capture_clea
             .execute(
                 "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256)
              INSERT INTO message(id,session_pk,input_pk,session_order,role,written_by,attrs_json)
-             SELECT printf('gemini:%d-%d',?1,i),?1,?2,printf('%08d',i),'user','human',?3 FROM n",
+             SELECT printf('gemini:%d-%d',?1,i),?1,?2,CAST(printf('%08d',i) AS BLOB),'user','human',?3 FROM n",
                 params![session, input, attrs],
             )
             .unwrap();

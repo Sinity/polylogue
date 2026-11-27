@@ -102,14 +102,14 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
         query: "sessions".into(),
         denominator: None,
         rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-        read_at: r#"{"now":1}"#.into(),
+        read_position: r#"{"now":1}"#.into(),
         watch: None,
         outcomes: Some(polylogue_model::user::SaveReport {
             saved: None,
             request: "declared-line".into(),
             repeat: false,
             pending: false,
-            kept: polylogue_model::user::KeptPart {
+            saved_rows: polylogue_model::user::KeptPart {
                 result: "result:declared-line".into(),
                 rows: 0,
                 at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
@@ -119,13 +119,13 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
     })));
     saved
         .effect
-        .kept_results
+        .saved_rows
         .push(polylogue_model::authored::KeptResult {
             id: "declared-line".into(),
             name: None,
             query: "sessions".into(),
             ran_at: saved.request.at,
-            read_at: r#"{"now":1}"#.into(),
+            read_position: r#"{"now":1}"#.into(),
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
         });
     let authored = prepared(UserWrite::Assert {

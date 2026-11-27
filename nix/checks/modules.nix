@@ -4,6 +4,7 @@
   homeManager,
   homeModules,
   nixosModules,
+  polylogue-extension,
 }:
 let
   inherit (pkgs) lib;
@@ -68,6 +69,25 @@ let
     (home { services.polylogue.archives.first.path = lib.mkForce "/home/alice/moved"; }).config;
   homeBinary = (home { services.polylogue.package = lib.mkForce otherApp; }).config;
   homeSpecial = (home { home.homeDirectory = lib.mkForce "/home/alice 50% $USER"; }).config;
+  browserDirectories = [
+    "/home/alice/.config/browser one"
+    "/home/alice/.config/browser two"
+  ];
+  homeBrowser =
+    (home {
+      services.polylogue.browser = {
+        enable = true;
+        userDataDirectories = browserDirectories;
+      };
+    }).config;
+  browserWrapper = lib.findFirst (
+    package: lib.getName package == "polylogue-first"
+  ) null homeBrowser.home.packages;
+  browserManifests = map (
+    directory:
+    homeBrowser.home.file."${directory}/NativeMessagingHosts/com.polylogue.browser_capture.json".source
+  ) browserDirectories;
+  browserFiles = homeBrowser.home.file."${homeBrowser.xdg.dataHome}/polylogue/extension";
   systemBase = (system { }).config;
   systemSetting =
     (system {
@@ -125,7 +145,20 @@ assert lib.assertMsg (
     ''"/home/alice 50%% $$USER/.nix-profile/bin/polylogue-first" "daemon"''
   ]
 ) "Systemd must preserve literal spaces, dollars and percent signs in the wrapper path.";
-# This artifact inspects unit text; it does not execute the paths it names.
-pkgs.writeText "polylogue-module-evaluation.json" (
-  builtins.unsafeDiscardStringContext (builtins.toJSON unitSummary)
-)
+assert lib.assertMsg (
+  browserFiles.recursive
+  && toString browserFiles.source == "${polylogue-extension}/share/polylogue/extension"
+) "The Home Manager link must point at the packaged unpacked extension.";
+pkgs.runCommand "native_host_manifest_names_archive_wrapper_and_extension_key_id"
+  {
+    nativeBuildInputs = [ pkgs.jq ];
+    unitSummaryJson = builtins.unsafeDiscardStringContext (builtins.toJSON unitSummary);
+  }
+  ''
+    for manifest in ${lib.escapeShellArgs (map toString browserManifests)}; do
+      jq -e --arg path "${browserWrapper}/bin/polylogue-first" \
+        --arg id pcfmanpibdomhkfjiginenedmjjfgned \
+        '.path == $path and .allowed_origins == ["chrome-extension://" + $id + "/"]' "$manifest"
+    done
+    printf '%s\n' "$unitSummaryJson" > "$out"
+  ''

@@ -134,7 +134,7 @@ impl Part {
 impl Fold for SessionSpan {
     type State = State;
     const NAME: &'static str = "session_span";
-    const VERSION: i64 = 4;
+    const VERSION: i64 = 5;
 
     fn step(state: &mut State, row: &SessionRow, _: &Context<'_>, _: &mut Output) -> Result<Flow> {
         match row {

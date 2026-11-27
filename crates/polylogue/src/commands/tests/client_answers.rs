@@ -44,12 +44,8 @@ fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::Parse
         .skip(1)
         .map(|word| (*word).to_owned())
         .collect::<Vec<_>>();
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .map_err(|error| error.message)?;
+    let parsed = crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false)
+        .map_err(|error| error.message)?;
     if parsed.first == crate::cli::line::FirstWord::Command {
         return crate::cli::parse(argv);
     }
@@ -295,7 +291,7 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
     let value = answer.as_ref().expect("session read succeeds");
     let page = crate::test_answers::read(command_surface::Answer::ok(value.clone()));
     assert_eq!(
-        &page.snapshot.read_at, position,
+        &page.snapshot.read_position, position,
         "the page must report the independently observed position"
     );
     assert!(
@@ -471,10 +467,10 @@ fn every_client_answers_the_same_request_identically() {
             // Keep the complete raw answer. Only its expected per-invocation
             // descriptor differs, and that value was observed outside the answer.
             let mut expected = cli.as_ref().unwrap().clone();
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
                 serde_json::to_value(mcp_position.unwrap()).unwrap();
             assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
                 serde_json::to_value(http_position.unwrap()).unwrap();
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;

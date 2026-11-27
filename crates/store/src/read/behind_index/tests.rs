@@ -285,7 +285,7 @@ fn failed_and_refused_chains_wait_for_new_bytes_or_a_new_parser_version() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
-    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES(71,1,'failed','v',0,10,'malformed','original failure'),(72,1,'failed','v',10,0,'refused','original refusal');").unwrap();
+    index.execute_batch("INSERT INTO input_ref(pk,id,origin) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES(71,1,'failed','v',0,10,'malformed','original failure'),(72,1,'failed','v',10,0,'refused','original refusal');").unwrap();
     let reads = fixture.reads().unwrap();
     let behind = |version: &str| {
         reads

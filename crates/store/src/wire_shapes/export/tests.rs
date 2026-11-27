@@ -4,7 +4,7 @@ use polylogue_model::{BlobHash, Output, RecordCounts, RecordOutcome};
 
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,format TEXT); INSERT INTO input_ref VALUES(1,'input','fixture');").unwrap();
+    conn.execute_batch("CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,origin TEXT); INSERT INTO input_ref VALUES(1,'input','fixture');").unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }
@@ -21,13 +21,13 @@ fn source(length: u64) -> Source<'static> {
         observed_at_ms: Some(100),
     }
 }
-fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobHash) -> ParseStep {
+fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobHash) -> ParsePart {
     let complete = matches!(delivery_source, ExportDeliverySource::Complete { .. });
     let end = match delivery_source {
         ExportDeliverySource::Complete { length, .. } => length,
         _ => 0,
     };
-    let mut step = ParseStep::new(Output::default(), RecordCounts::default(), 0..end, complete);
+    let mut step = ParsePart::new(Output::default(), RecordCounts::default(), 0..end, complete);
     step.parse_version = "crate::export::VERSION=2".into();
     step.reset = ordinal == 0;
     if matches!(delivery_source, ExportDeliverySource::Item { .. }) {
@@ -48,7 +48,7 @@ fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobH
         .unwrap();
     step
 }
-fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()> {
+fn apply_step(conn: &mut Connection, length: u64, step: &ParsePart) -> Result<()> {
     let tx = conn.transaction()?;
     apply(&tx, source(length), step)?;
     tx.commit()?;
@@ -61,7 +61,7 @@ fn assert_rejected(result: Result<()>, reason: &str) {
     }
 }
 fn state(conn: &Connection) -> String {
-    conn.query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
+    conn.query_row("SELECT state FROM wire_parse", [], |row| row.get(0))
         .unwrap()
 }
 
@@ -138,7 +138,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     apply_step(&mut conn, 2, &complete).unwrap();
     let reading: Reading = serde_json::from_str(&state(&conn)).unwrap();
     assert_eq!(reading.status(), CoverageStatus::Complete);
-    assert_eq!(reading.parsed_upto, 2);
+    assert_eq!(reading.parsed_to, 2);
     assert!(matches!(
         reading.last.covered,
         ReadRange::Export {
@@ -213,7 +213,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
     let reading: Reading = serde_json::from_str(&original).unwrap();
     assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.reached_end);
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
-    assert_eq!(reading.parsed_upto, 0);
+    assert_eq!(reading.parsed_to, 0);
     conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parser_version TEXT,state TEXT,parsed_to INTEGER,waiting INTEGER,failure_kind TEXT); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsed',0,0,NULL);").unwrap();
     let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
     assert_eq!(report.coverage.len(), 1);
@@ -308,7 +308,7 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let finished: Reading = serde_json::from_str(&saved).unwrap();
     assert!(!finished.refused_export);
     assert!(finished.reached_end);
-    assert_eq!(finished.parsed_upto, 2);
+    assert_eq!(finished.parsed_to, 2);
     assert_eq!(finished.export_cursor.unwrap().last_ordinal, 2);
     assert_eq!(finished.unreadable, 1);
     assert_eq!(finished.status(), CoverageStatus::Unreadable);
@@ -336,7 +336,7 @@ fn stored_rows(
     Vec<(String, i64, i64, i64)>,
 ) {
     let shapes = conn
-        .prepare("SELECT path,unknown_kinds,unknown_tables,unused,first,last FROM wire_shape ORDER BY path")
+        .prepare("SELECT path,unknown_kinds,unknown_tables,unused,first_position,last_position FROM wire_shape ORDER BY path")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
@@ -345,7 +345,7 @@ fn stored_rows(
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     let types = conn
-        .prepare("SELECT json_type,count,first,last FROM wire_type ORDER BY path,json_type")
+        .prepare("SELECT json_type,count,first_position,last_position FROM wire_type ORDER BY path,json_type")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))

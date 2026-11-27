@@ -76,15 +76,38 @@ fn unconsumed_tail_is_incomplete_not_an_extra_skipped_record() {
 
 #[test]
 fn invalid_selection_fails_before_any_scan() {
-    for args in [
-        vec![],
-        vec!["unknown-origin", "synthetic"],
-        vec!["claude-code"],
-        vec!["claude-code", "--threads", "0", "synthetic.jsonl"],
-        vec!["claude-code", "--threads", "no", "synthetic.jsonl"],
+    for (args, expected) in [
+        (vec![], "expected origin name"),
+        (vec!["unknown-origin", "synthetic"], "unknown origin"),
+        (vec!["claude-code"], "select at least one input file"),
+        (
+            vec!["claude-code", "--threads", "0", "synthetic.jsonl"],
+            "--threads requires a positive integer",
+        ),
+        (
+            vec!["claude-code", "--threads", "no", "synthetic.jsonl"],
+            "--threads requires a positive integer",
+        ),
     ] {
-        assert!(input::selection(args.into_iter().map(str::to_owned)).is_err());
+        assert_eq!(
+            input::selection(args.into_iter().map(str::to_owned))
+                .err()
+                .unwrap(),
+            expected
+        );
     }
+    let selected = input::selection(
+        ["claude-code", "--threads", "2", "synthetic.jsonl"]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .unwrap();
+    assert_eq!(selected.origin, "claude-code");
+    assert_eq!(selected.threads, 2);
+    assert_eq!(
+        selected.files,
+        vec![std::path::PathBuf::from("synthetic.jsonl")]
+    );
 }
 
 struct Document;

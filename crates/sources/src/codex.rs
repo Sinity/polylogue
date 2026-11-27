@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 parser_modules! {
     mod fields;
@@ -42,7 +42,7 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -204,6 +204,11 @@ pub struct ParserState {
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
+    /// The subagent threads a `SubAgentActivity` item already stated a
+    /// spawn of: an agent reports many activity items, and the relation is
+    /// stated once per child.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    spawned: BTreeSet<String>,
     model: Option<String>,
     #[serde(default)]
     usage: usage::Observer,
@@ -462,7 +467,7 @@ impl Rollout {
             parser_state.branch_relation = Some(Link {
                 kind,
                 copies_prefix: false,
-                how: None,
+                reason: None,
                 parent: fork_parent,
                 child: id.clone(),
                 branch_point: None,
@@ -484,7 +489,7 @@ impl Rollout {
                 parser_state.branch_relation = Some(Link {
                     kind,
                     copies_prefix: true,
-                    how: None,
+                    reason: None,
                     parent: copied_parent.clone(),
                     child: id,
                     branch_point: None,
@@ -1008,7 +1013,8 @@ impl Rollout {
                     item.str("agent_thread_id")
                         .filter(|s| !s.is_empty())
                         .and_then(session_id),
-                ) {
+                ) && parser_state.spawned.insert(child.to_string())
+                {
                     let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
                     link(
                         out,
@@ -1224,7 +1230,7 @@ fn link(
     let value = Link {
         kind,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: at,

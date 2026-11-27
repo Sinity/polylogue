@@ -28,7 +28,7 @@ fn a_pass_captures_a_database_while_serving_files() {
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(w.texts("live"), ["beside the capture"]);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
+        w.count("SELECT count(*) AS n FROM input_ref WHERE origin='codex-database'"),
         1
     );
 }
@@ -80,7 +80,7 @@ fn inputs_are_serviced_while_a_database_is_read() {
     assert!(!complete.capture_pending);
     assert!(complete.errors.is_empty(), "{:?}", complete.errors);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
+        w.count("SELECT count(*) AS n FROM input_ref WHERE origin='codex-database'"),
         1
     );
     let reader = w.reads();
@@ -132,7 +132,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     assert!(finished.last_pass.errors.is_empty(), "{finished:?}");
     assert!(!finished.last_pass.capture_pending, "{finished:?}");
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
+        w.count("SELECT count(*) AS n FROM input_ref WHERE origin='codex-database'"),
         1
     );
 }

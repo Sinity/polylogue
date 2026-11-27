@@ -176,7 +176,6 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     loop {
         let page = page(d, target, inherited, view, 8, cursor.as_ref());
         assert!(serde_json::to_vec(&page).unwrap().len() <= 25_000);
-        assert!(page.records.is_empty());
         text.page(&page);
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {
@@ -731,7 +730,9 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
         format!("{record}\n"),
     )
     .unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["messages"] == 2);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 2 && status["store"]["messages"] == 2
+    });
     assert_eq!(
         all(
             &d.daemon,

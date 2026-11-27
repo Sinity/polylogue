@@ -1,39 +1,27 @@
-// Polylogue's native messaging host, `com.polylogue.browser_capture`, which
-// is the `polylogue` binary. Chrome starts one host process per port. One
-// exchange: `request` (method, path, headers), the body as `body` frames of
-// at most 64 KiB, each acknowledged with `body_ack`, then `body_end`; the
-// host answers `response` (status, headers), then one `response_body` frame
-// per `response_next` until `response_end`. A refusal is an `error` frame.
-
+// Logical requests to Polylogue's native messaging host. Each port carries
+// one message and its whole shared answer; large messages use ordered parts.
 import { decode, encode } from "./base64.js";
 
 export const HOST_NAME = "com.polylogue.browser_capture";
 const CHUNK_BYTES = 64 * 1024;
 
 export class HostError extends Error {
-  constructor(code, status = null, message = code) {
+  constructor(code, status = null, message = code, reason = null) {
     super(message);
     this.code = code;
     this.status = status;
+    this.reason = reason;
   }
 }
 
-/** One request to the host; resolves `{status, headers, body: Blob}`. */
-export function exchange(runtime, method, path, body = null) {
+/** One logical message, reassembled before the caller sees the answer. */
+export function exchange(runtime, message) {
   return new Promise((resolve, reject) => {
     let port;
-    try {
-      port = runtime.connectNative(HOST_NAME);
-    } catch {
-      reject(new HostError("host_missing"));
-      return;
-    }
-    const content = body === null ? null : body instanceof Blob ? body : new Blob([body]);
-    let sent = 0;
-    let answer = null;
-    let phase = "upload";
-    let acknowledged = -1;
-    const responseBytes = [];
+    try { port = runtime.connectNative(HOST_NAME); }
+    catch { reject(new HostError("host_missing")); return; }
+    const parts = [];
+    let sequence = 0;
     let done = false;
     const finish = (error, value) => {
       if (done) return;
@@ -43,101 +31,65 @@ export function exchange(runtime, method, path, body = null) {
       try { port.disconnect(); } catch { /* Already closed. */ }
       if (error) reject(error); else resolve(value);
     };
-    const sendNext = async () => {
-      if (done) return;
-      if (!content || sent >= content.size) {
-        phase = "response";
-        port.postMessage({ type: "body_end" });
-        return;
-      }
-      const chunk = new Uint8Array(await content.slice(sent, sent + CHUNK_BYTES).arrayBuffer());
-      if (done) return;
-      const sequence = Math.floor(sent / CHUNK_BYTES);
-      sent += chunk.length;
-      phase = "ack";
-      port.postMessage({ type: "body", sequence, data: encode(chunk) });
-    };
     const onMessage = (frame) => {
       try {
-        if (frame?.type === "error") return finish(new HostError(frame.error));
-        if (frame?.type === "body_ack" && phase === "ack" && frame.sequence === acknowledged + 1) {
-          acknowledged = frame.sequence;
-          phase = "upload";
-          return void sendNext().catch((e) => finish(e));
+        if (frame?.version !== 2) throw new HostError("native_version_mismatch", null, "Reload the extension to use this browser host.");
+        if (frame.type === "part") {
+          if (frame.sequence !== sequence || typeof frame.last !== "boolean") throw new HostError("host_answer_unreadable");
+          parts.push(decode(frame.data));
+          sequence += 1;
+          if (!frame.last) return;
+          const bytes = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
+          let offset = 0;
+          for (const part of parts) { bytes.set(part, offset); offset += part.length; }
+          frame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+        } else if (sequence) throw new HostError("host_answer_unreadable");
+        if (frame.version !== 2 || frame.type !== "answer" || !frame.answer || typeof frame.answer.outcome !== "string") {
+          throw new HostError("host_answer_unreadable");
         }
-        if (frame?.type === "response" && phase === "response" && !answer && Number.isInteger(frame.status)) {
-          phase = "body";
-          answer = { status: frame.status, headers: frame.headers || {} };
-          port.postMessage({ type: "response_next" });
-          return;
-        }
-        if (frame?.type === "response_body" && phase === "body" && answer) {
-          responseBytes.push(decode(frame.data));
-          port.postMessage({ type: "response_next" });
-          return;
-        }
-        if (frame?.type === "response_end" && phase === "body" && answer) {
-          return finish(null, { ...answer, body: new Blob(responseBytes) });
-        }
-        finish(new HostError("host_answer_unreadable"));
-      } catch { finish(new HostError("host_answer_unreadable")); }
+        finish(null, frame.answer);
+      } catch (error) { finish(error instanceof HostError ? error : new HostError("host_answer_unreadable")); }
     };
-    const onDisconnect = () => {
-      // Reading lastError tells a missing host from one that stopped.
-      finish(new HostError(runtime.lastError ? "host_missing" : "host_stopped"));
-    };
+    const onDisconnect = () => finish(new HostError(runtime.lastError ? "host_missing" : "host_stopped"));
     port.onMessage.addListener(onMessage);
     port.onDisconnect.addListener(onDisconnect);
-    port.postMessage({ type: "request", version: 1, method, path, headers: { "content-type": "application/json" } });
-    void sendNext().catch((e) => finish(e));
+    try {
+      const value = { ...message, version: 2 };
+      const bytes = new TextEncoder().encode(JSON.stringify(value));
+      if (bytes.length <= CHUNK_BYTES) port.postMessage(value);
+      else for (let at = 0; at < bytes.length; at += CHUNK_BYTES) {
+        port.postMessage({ version: 2, type: "part", sequence: at / CHUNK_BYTES,
+          data: encode(bytes.subarray(at, at + CHUNK_BYTES)), last: at + CHUNK_BYTES >= bytes.length });
+      }
+    } catch (error) { finish(error); }
   });
 }
 
-/** The host's routes, as the background uses them. */
+/** Messages accepted by the host. Operations use the daemon's names. */
 export class Host {
-  constructor(runtime) {
-    this.runtime = runtime;
+  constructor(runtime) { this.runtime = runtime; }
+
+  async message(message) {
+    const answer = await exchange(this.runtime, message);
+    if (answer.outcome === "error") {
+      const failure = answer.error;
+      if (!failure?.code) throw new HostError("host_answer_unreadable");
+      throw new HostError(failure.code, null, failure.message, failure.reason ?? null);
+    }
+    if (!["ok", "empty", "degraded"].includes(answer.outcome) || !("value" in answer)) throw new HostError("host_answer_unreadable");
+    return answer.value;
   }
 
-  async json(method, path, body = null) {
-    const sent = body === null || body instanceof Blob ? body : JSON.stringify(body);
-    const answer = await exchange(this.runtime, method, path, sent);
-    const text = await answer.body.text();
-    let value = null;
-    try {
-      value = text ? JSON.parse(text) : null;
-    } catch {
-      // A refusal may carry no JSON; an acknowledgement that does not parse is not one.
-      if (answer.status < 400) throw new HostError("host_answer_unreadable");
-    }
-    if (answer.status >= 400) {
-      throw new HostError(value?.error || `host_http_${answer.status}`, answer.status, value?.message || value?.error);
-    }
-    return value;
+  status() { return this.message({ type: "status" }); }
+
+  call(operation, args = {}, request_id = crypto.randomUUID()) {
+    return this.message({ type: "call", operation, arguments: args, request_id });
   }
 
-  status() { return this.json("GET", "/v1/status"); }
-  reader() { return this.json("GET", "/v1/reader"); }
-  /** Stores a capture; answers once it is synced to disk. */
-  storeCapture(body) { return this.json("POST", "/v1/captures", body); }
-  /** The conversation a capture holds and the files it names. */
-  captureFiles(body) { return this.json("POST", "/v1/captures/files", body); }
-  conversations(provider, ids) { return this.json("POST", "/v1/conversations", { provider, ids }); }
-  saveNote(note) { return this.json("POST", "/v1/notes", note); }
-  chatActions() { return this.json("GET", "/v1/chat-actions"); }
-  claimChatAction(by) { return this.json("GET", `/v1/chat-actions?by=${encodeURIComponent(by)}`); }
-  reportChatAction(id, update) { return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/report`, update); }
-  /** The operator's answer to a held turn: "allow" or "deny". */
-  answerChatAction(id, value) {
-    return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/answer`, { value });
+  /** Stores the capture's exact JSON bytes; answers once they are synced. */
+  async storeCapture(body) {
+    return this.message({ type: "capture", capture: body instanceof Blob ? await body.text() : body });
   }
-  async chatAttachment(id, attachment) {
-    const answer = await exchange(this.runtime, "GET",
-      `/v1/chat-actions/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachment)}`);
-    if (answer.status >= 400) throw new HostError(`host_http_${answer.status}`, answer.status);
-    return answer.body;
-  }
-  importJobs() { return this.json("GET", "/v1/import_job"); }
-  claimImportJob(by) { return this.json("POST", "/v1/import_job/claim", { by }); }
-  reportImportJob(id, by, report) { return this.json("POST", `/v1/import_job/${encodeURIComponent(id)}/report`, { by, ...report }); }
+
+  spooled(provider, ids) { return this.message({ type: "spooled", provider, ids }); }
 }

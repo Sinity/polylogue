@@ -1,5 +1,7 @@
 use super::*;
 use polylogue_model::{TimeAccuracy, TimeQuality, Timestamp};
+use query_language::semantics::Truth;
+use query_language::time::{Time, TimeValue};
 use rusqlite::params;
 
 fn conn() -> Connection {
@@ -42,19 +44,22 @@ fn attribute(conn: &Connection, bytes: &[u8], name: &str) -> Option<String> {
     )
     .unwrap()
 }
-fn before(conn: &Connection, bytes: &[u8], at: &str) -> Option<bool> {
-    let predicate = TimePredicate::Compare {
-        condition: query_language::time::TimeCondition::Before {
-            at: at.parse().unwrap(),
-        },
-        invert: false,
+/// Whether the whole possible period of a stored latest time is before
+/// `at`: `None` when only part of it is, or when it has no known period.
+fn before(_: &Connection, bytes: &[u8], at: &str) -> Option<bool> {
+    let time = source_time(Some(bytes), "latest").unwrap();
+    let period = time.period()?;
+    let value = match period {
+        Time::Instant { at } => TimeValue::instant(at),
+        period => TimeValue::new(period, Precision::Bounded, None).unwrap(),
     };
-    conn.query_row(
-        "SELECT pl_time_test(?1,'latest',?2)",
-        params![bytes, serde_json::to_string(&predicate).unwrap()],
-        |r| r.get(0),
-    )
-    .unwrap()
+    match value.compare(&query_language::time::TimeCondition::Before {
+        at: at.parse().unwrap(),
+    }) {
+        Truth::True => Some(true),
+        Truth::False => Some(false),
+        Truth::Unknown => None,
+    }
 }
 
 #[test]
@@ -119,15 +124,7 @@ fn latest_activity_cannot_resolve_a_source_calendar_period_in_the_reader_zone() 
     let bytes = last(&conn, &[unresolved, point]);
     assert_eq!(attribute(&conn, &bytes, "precision"), None);
     assert_eq!(before(&conn, &bytes, "1970-01-02T00:00:00Z"), None);
-    let known = serde_json::to_string(&TimePredicate::Known).unwrap();
-    assert!(
-        conn.query_row(
-            "SELECT pl_time_test(?1,'latest',?2)",
-            params![bytes, known],
-            |r| r.get::<_, bool>(0)
-        )
-        .unwrap()
-    );
+    assert!(source_time(Some(&bytes), "latest").unwrap().at.is_some());
 }
 
 fn relates(

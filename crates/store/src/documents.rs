@@ -44,7 +44,7 @@ row! {
         shown: bool,
     }
     statements {
-        const OF_DOCUMENT = "SELECT r.id AS input, s.chain, s.source_start, s.source_end, s.hash,
+        const OF_DOCUMENT = "SELECT r.id AS input, s.chain, s.source_start, s.source_start + s.source_length AS source_end, s.hash,
             (s.input_pk=d.input_pk AND s.chain=d.source_chain) AS shown
             FROM document d JOIN document_parse s ON s.document_id=d.id JOIN input_ref r ON r.pk=s.input_pk
             WHERE d.pk=?1 ORDER BY r.id, s.chain, s.source_start, s.hash";
@@ -73,7 +73,7 @@ row! {
         start: Option<i64>,
         length: Option<i64>,
         data: Option<Vec<u8>>,
-        idx: u64,
+        position: u64,
     }
 }
 
@@ -156,7 +156,7 @@ impl DocumentRead<'_, '_> {
             return Ok(false);
         };
         self.reader.conn()?.exists(
-            "SELECT EXISTS(SELECT 1 FROM document_block WHERE document_pk=?1 AND idx=?2)",
+            "SELECT EXISTS(SELECT 1 FROM document_block WHERE document_pk=?1 AND position=?2)",
             params![self.pk, ordinal],
         )
     }
@@ -252,7 +252,11 @@ fn visit_blocks_selected_from(
     // Every stored ordinal is a nonnegative SQLite integer. A larger
     // upper bound includes every row rather than wrapping or refusing it.
     let end = end.and_then(|end| i64::try_from(end).ok());
-    let bound = if end.is_some() { "AND b.idx<?3" } else { "" };
+    let bound = if end.is_some() {
+        "AND b.position<?3"
+    } else {
+        ""
+    };
     let kinds = if text_only {
         "AND b.kind IN ('text','thinking','tool_result')"
     } else {
@@ -261,7 +265,7 @@ fn visit_blocks_selected_from(
     let data = if text_only { "NULL" } else { "b.data" };
     let order = if backwards { "DESC" } else { "ASC" };
     let statement = Statement::<DocumentBlockRow>::built(format!(
-        "SELECT b.body, g.body AS group_body, t.start, t.length, {data} AS data, b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN content_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
+        "SELECT b.body, g.body AS group_body, t.start, t.length, {data} AS data, b.position FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN content_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.position>=?2 {bound} {kinds} ORDER BY b.position {order}"
     ));
     let mut each = |row: DocumentBlockRow| {
         if let Some(reader) = reader {
@@ -270,7 +274,7 @@ fn visit_blocks_selected_from(
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }
-        let ordinal = row.idx;
+        let ordinal = row.position;
         Ok(visit(ordinal, decoded_block(row)?))
     };
     let _ = match end {

@@ -41,8 +41,18 @@ fn serving(archive: &Archive) -> ReadPool {
     ReadPool::serving(archive, 1, 8 << 20).unwrap()
 }
 
+/// The messages a reader of `pool` sees.
 fn messages(pool: &ReadPool) -> u64 {
-    pool.reader().unwrap().status(&[]).unwrap().messages
+    rows(&pool.reader().unwrap())
+}
+
+/// The messages `reader` sees.
+fn rows(reader: &crate::read::Reader<'_>) -> u64 {
+    reader
+        .query("SELECT count(*) AS n FROM message", &[])
+        .unwrap()[0]["n"]
+        .as_u64()
+        .unwrap()
 }
 
 fn journal_mode(path: &std::path::Path) -> String {
@@ -91,10 +101,10 @@ pub(in crate::writer) fn runs(
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     run.finish().unwrap().into_iter().collect()
 }
@@ -126,10 +136,10 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     writer.build(run.finish().unwrap()).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
@@ -184,10 +194,10 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
         let mut open = run
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let runs: Vec<_> = run.finish().unwrap().into_iter().collect();
     // Held once composition has ended, the build's progress holds each
@@ -453,10 +463,10 @@ fn private_build_crash_child() {
     let mut open = second
         .begin(&sender, &batch.input, chains[1], batch.length)
         .unwrap();
-    for step in &mut batch.parse {
-        crate::writer::ChainSink::step(&mut open, step).unwrap();
+    for step in std::mem::take(&mut batch.parse) {
+        crate::parse::ParseSink::part(&mut open, step).unwrap();
     }
-    open.finish().unwrap();
+    crate::parse::ParseSink::end(Box::new(open)).unwrap();
     runs.extend(second.finish().unwrap());
     writer.build(runs).unwrap();
     panic!("the configured durability boundary was not reached");
@@ -536,7 +546,7 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
         let reader = pipeline.reader().unwrap();
         // The stored bytes survive in the archive; the build file holds
         // nothing of the prepared runs.
-        assert_eq!(reader.status(&[]).unwrap().messages, 0, "{point}");
+        assert_eq!(rows(&reader), 0, "{point}");
         assert_eq!(reader.status(&[]).unwrap().inputs, 2, "{point}");
         drop(reader);
         let writer = Writer::start(&archive).unwrap();
@@ -606,7 +616,7 @@ fn a_pipeline_reader_opened_before_an_install_reads_the_installed_index() {
     let reader = checkout.expect("a pipeline reader opens the ready build before install");
     assert_eq!(selected_path, paths.ready);
     // Its read had not started: it starts on the installed index.
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     assert_eq!(reader.index_identity().unwrap(), {
         use std::os::unix::fs::MetadataExt as _;
         let installed = std::fs::metadata(&paths.index).unwrap();
@@ -657,7 +667,7 @@ fn a_request_read_that_meets_the_install_reads_the_installed_index() {
     crate::fault::clear();
 
     assert_eq!(opened, paths.ready);
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     assert_eq!(archive.index_db(), paths.index);
 }
 
@@ -685,7 +695,7 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     }
     let held = crate::fault::held();
     let checkout = pipeline.reader();
-    let started = checkout.as_ref().ok().map(|reader| reader.status(&[]));
+    let started = checkout.as_ref().ok().map(rows);
     crate::fault::release();
     let installed = installer.join();
     crate::fault::clear();
@@ -693,10 +703,10 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     assert!(held, "the install reached its rename boundary");
     installed.unwrap().unwrap();
     let reader = checkout.expect("open the ready build before install");
-    assert_eq!(started.unwrap().unwrap().messages, 1);
+    assert_eq!(started.unwrap(), 1);
     store_message(&archive, &writer, "ready-second", "written after install");
     drop(writer);
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     assert_eq!(messages(&pipeline), 2);
 }
 
@@ -857,15 +867,37 @@ fn a_restarted_read_starts_on_the_installed_index() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let pool = serving(&archive);
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     // The rebuild loads nothing, so the installed index holds no message.
     Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     reader.restart().unwrap();
-    assert_eq!(reader.status(&[]).unwrap().messages, 0);
+    assert_eq!(rows(&reader), 0);
     assert_eq!(reader.index_identity().unwrap(), {
         use std::os::unix::fs::MetadataExt as _;
         let installed = std::fs::metadata(&paths.index).unwrap();
         (installed.dev(), installed.ino())
     });
+}
+
+/// A rebuild's chain dropped without its end leaves nothing of it in the
+/// worker's runs.
+#[test]
+fn a_rebuild_chain_dropped_without_its_end_leaves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let chains = due_a_build(dir.path(), &["dropped"]);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let mut run = crate::writer::build::BuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    let mut batch = one_message("dropped", "dropped-m", "dropped text");
+    let sender = writer.sender();
+    let mut open = run
+        .begin(&sender, &batch.input, chains[0], batch.length)
+        .unwrap();
+    for step in std::mem::take(&mut batch.parse) {
+        crate::parse::ParseSink::part(&mut open, step).unwrap();
+    }
+    drop(open);
+    writer.build(run.finish().unwrap()).unwrap();
+    assert_eq!(messages(&serving(&archive)), 0);
 }

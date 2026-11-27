@@ -1,7 +1,7 @@
 //! Transfer units for the same selected, projected reading. Directory and file
 //! destinations belong to the client and never cross this boundary.
-use super::{Format, ReadDocument, ReadFooter, ReadHeader, ReadOptions, ReadPart};
-use crate::bundle::{Counts, ReadSnapshot, Record};
+use super::{Format, ReadDocument, ReadPart};
+use crate::bundle::Record;
 use serde::{Deserialize, Serialize};
 
 /// Paging and streaming share selection and view; only transfer changes.
@@ -24,13 +24,16 @@ impl ReadDelivery {
     }
 }
 
+/// One page of a reading: its document (header, items and footer) with the
+/// output choice and the compact snapshot the page was read at. A stream
+/// sends the same header in its `begin` event, the same items in `record`
+/// events, and the footer in its `complete` event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadPage {
     /// Effective output choice from the original acknowledged execution.
     pub format: Format,
     pub snapshot: ReadPageSnapshot,
-    pub records: Vec<Record>,
     pub document: ReadDocument,
 }
 
@@ -41,28 +44,18 @@ pub struct ReadPage {
 pub struct ReadPageSnapshot {
     pub query: String,
     pub ran_at: crate::Timestamp,
-    pub read_at: crate::ChangePosition,
+    pub read_position: crate::ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
 }
-impl From<&ReadSnapshot> for ReadPageSnapshot {
-    fn from(snapshot: &ReadSnapshot) -> Self {
+impl From<&crate::bundle::ReadSnapshot> for ReadPageSnapshot {
+    fn from(snapshot: &crate::bundle::ReadSnapshot) -> Self {
         Self {
             query: snapshot.query.clone(),
             ran_at: snapshot.ran_at,
-            read_at: snapshot.read_at.clone(),
+            read_position: snapshot.read_position.clone(),
             freshness: snapshot.freshness.clone(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReadBegin {
-    /// Effective output choice from the original acknowledged execution.
-    pub format: Format,
-    pub snapshot: ReadSnapshot,
-    pub header: ReadHeader,
-    pub options: ReadOptions,
 }
 
 /// Portable source records and presentation-only evidence are explicit kinds.
@@ -92,13 +85,6 @@ impl ReadRecord {
             Self::Original { parts, .. } | Self::Presentation { parts, .. } => parts,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ReadComplete {
-    pub footer: ReadFooter,
-    pub counts: Counts,
 }
 
 /// A bounded slice of a declared content-addressed blob. The receiver validates

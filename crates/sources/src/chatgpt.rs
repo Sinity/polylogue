@@ -413,7 +413,7 @@ fn conversation_with_sessions(
         sink.out.links.push(Link {
             kind: LinkKind::Fork,
             copies_prefix: true,
-            how: None,
+            reason: None,
             parent,
             child: sid.clone(),
             branch_point: Some(at.id),

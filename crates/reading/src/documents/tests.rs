@@ -103,7 +103,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
         },
         None,
         ReadFraming::Query {
-            question: QuestionId([7; 32]),
+            query_id: QuestionId([7; 32]),
         },
     )
     .unwrap();
@@ -161,6 +161,8 @@ fn header(id: &DocumentId) -> ReadHeader {
         },
         figures: vec![],
         zone: None,
+        snapshot: None,
+        options: None,
     }
 }
 
@@ -180,7 +182,7 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
             item_hash: BlobHash::of(&serde_json::to_vec(&original).unwrap()),
         };
         let framing = ReadFraming::Query {
-            question: QuestionId([7; 32]),
+            query_id: QuestionId([7; 32]),
         };
         let mut page = if backwards {
             PageBuilder::new_before(header(&id), PageBudget::default(), start, framing)
@@ -219,7 +221,7 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
         let mut changed = start;
         changed.item_hash = BlobHash::of(b"another complete item");
         let framing = ReadFraming::Query {
-            question: QuestionId([7; 32]),
+            query_id: QuestionId([7; 32]),
         };
         let mut page = if backwards {
             PageBuilder::new_before(header(&id), PageBudget::default(), changed, framing)

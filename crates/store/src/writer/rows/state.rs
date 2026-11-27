@@ -7,7 +7,7 @@ use polylogue_model::chain::{ChainState, Outcomes};
 /// The state after `step`, which starts at the stored state's end (or at
 /// the chain's first byte, replacing it) and reads through `length` stored
 /// bytes when it reaches their end.
-pub(super) fn next(previous: &ChainState, step: &ParseStep, length: u64) -> Result<ChainState> {
+pub(super) fn next(previous: &ChainState, step: &ParsePart, length: u64) -> Result<ChainState> {
     let counts = if step.reset {
         Outcomes::default()
     } else {
@@ -56,7 +56,7 @@ pub(super) fn check_start(
     input: &str,
     chain: i64,
     previous: &ChainState,
-    step: &ParseStep,
+    step: &ParsePart,
 ) -> Result<()> {
     if step.reset || step.delivery.is_some() {
         return Ok(());
