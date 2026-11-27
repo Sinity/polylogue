@@ -228,10 +228,14 @@ fn kept_declarations_with_array_paths_are_refused_or_resolved() {
         "/a/[]/b",
         "*",
     ] {
-        assert!(
-            check(&[(path, Rule::Kept("many values"))]).is_err(),
+        assert_eq!(
+            check(&[(path, Rule::Kept("many values"))]),
+            Err(
+                "a kept field path holds `[]` or `*`; declare it ReadWhole where the parser stores it"
+            ),
             "{path}"
         );
+        assert_eq!(check(&[(path, Rule::ReadWhole("many values"))]), Ok(()));
     }
     // The same values read whole by the element's parser are accepted, and
     // literal names that only contain the characters are one value each.

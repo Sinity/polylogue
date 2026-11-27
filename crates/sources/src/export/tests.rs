@@ -142,20 +142,32 @@ fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
         )),
         Err(ScanError::Callback(_))
     ));
-    let scan_state = Rc::new(RefCell::new(ScanState {
-        last: Some((0, b'!')),
-        ..Default::default()
-    }));
-    let mut callback = |_: Range<u64>, _: &RawValue| Ok(());
-    assert!(
-        ItemSeed {
+    // Normal reads present the same bytes to Serde and the span reader.
+    for observed in [b'1', b'0'] {
+        let scan_state = Rc::new(RefCell::new(ScanState {
+            last: Some((1, observed)),
+            ..Default::default()
+        }));
+        let mut items = Vec::new();
+        let result = ItemSeed {
             scan_state: &scan_state,
-            item: &mut callback
+            item: &mut |span, value: &RawValue| {
+                items.push((span, value.get().to_owned()));
+                Ok(())
+            },
         }
-        .deserialize(&mut serde_json::Deserializer::from_str("{}"))
-        .is_err()
-    );
-    assert!(matches!(scan_state.borrow().failure, Some(ScanError::Span)));
+        .deserialize(&mut serde_json::Deserializer::from_str("0"));
+        if observed == b'1' {
+            assert!(matches!(
+                finish_scan(result, &scan_state),
+                Err(ScanError::Span)
+            ));
+            assert_eq!(items.len(), 0);
+        } else {
+            assert_eq!(finish_scan(result, &scan_state).unwrap().elements, 1);
+            assert_eq!(items, [(1..2, "0".to_owned())]);
+        }
+    }
 }
 
 #[test]

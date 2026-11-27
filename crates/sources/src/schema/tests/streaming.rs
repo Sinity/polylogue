@@ -45,7 +45,11 @@ fn optional_fields_and_dynamic_names_keep_bounded_state_and_presence() {
     assert_eq!(schema.fields["/*"].present, 10000);
     assert_eq!(schema.fields["/*/text"].present, 10000);
     assert!(schema.fields["/fixed"].required);
-    assert!(compare(&schema, &schema).is_ok());
+    let diff = compare(&schema, &schema).unwrap();
+    assert_eq!(
+        (diff.comparable, diff.reasons, diff.changes, diff.tables),
+        (true, vec![], vec![], vec![])
+    );
 }
 
 #[test]
@@ -59,7 +63,11 @@ fn grouping_during_one_object_counts_each_parent_once() {
     assert_eq!(schema.fields["/*"].present, 1);
     assert_eq!(schema.fields["/*"].occurrences, 81);
     assert_eq!(schema.fields["/*/text"].present, 80);
-    assert!(compare(&schema, &schema).is_ok());
+    let diff = compare(&schema, &schema).unwrap();
+    assert_eq!(
+        (diff.comparable, diff.reasons, diff.changes, diff.tables),
+        (true, vec![], vec![], vec![])
+    );
 }
 
 #[test]
@@ -103,13 +111,21 @@ fn incremental_grouping_matches_whole_sample_across_merge_orders() {
 
 #[test]
 fn streaming_json_matches_serde_validation_and_scalar_kinds() {
-    let valid: &[&[u8]] = &[
-        br#"{"text":"a\u0000\uD834\uDD1E\"\\\/\b\f\n\r\t","n":-0.1e+400}"#,
-        "{\"é\":\"🦀\",\"x\":[[],{},null,true,false,-123,0,1E-2]}".as_bytes(),
-        br#"{"same":1,"same":2}"#,
+    use serde_json::{Value, error::Category, json};
+
+    let valid = [
+        (
+            br#"{"text":"a\u0000\uD834\uDD1E\"\\\/\b\f\n\r\t","n":-0.1e+400}"#.as_slice(),
+            json!({"text": "a\0𝄞\"\\/\u{8}\u{c}\n\r\t", "n": "-0.1e+400".parse::<serde_json::Number>().unwrap()}),
+        ),
+        (
+            "{\"é\":\"🦀\",\"x\":[[],{},null,true,false,-123,0,1E-2]}".as_bytes(),
+            json!({"é": "🦀", "x": [[], {}, null, true, false, -123, 0, "1E-2".parse::<serde_json::Number>().unwrap()]}),
+        ),
+        (br#"{"same":1,"same":2}"#.as_slice(), json!({"same": 2})),
     ];
-    for bytes in valid {
-        assert!(serde_json::from_slice::<serde_json::Value>(bytes).is_ok());
+    for (bytes, value) in valid {
+        assert_eq!(serde_json::from_slice::<Value>(bytes).unwrap(), value);
         for size in [1, 2, 7, 8192] {
             let mut observer = Observer::default();
             observer
@@ -121,34 +137,52 @@ fn streaming_json_matches_serde_validation_and_scalar_kinds() {
             );
         }
     }
-    let invalid: &[&[u8]] = &[
-        b"01",
-        b"+1",
-        b"1.",
-        b"1e",
-        b"--1",
-        b"[1,]",
-        b"{\"x\":0,}",
-        b"{\"x\":}",
-        b"[true false]",
-        b"{}{}",
-        b"\x0b0",
-        b"[",
-        b"{",
-        br#""\uD800""#,
-        br#""\uDC00""#,
-        br#""\uD800\u0000""#,
-        br#""\x00""#,
-        b"\"\xc0\x80\"",
-        b"\"\xed\xa0\x80\"",
-        b"\"\xf4\x90\x80\x80\"",
-        b"\"\n\"",
+    let invalid: &[(&[u8], &[u8], Category)] = &[
+        (b"01", b"1", Category::Syntax),
+        (b"+1", b"1", Category::Syntax),
+        (b"1.", b"1.0", Category::Eof),
+        (b"1e", b"1e0", Category::Eof),
+        (b"--1", b"-1", Category::Syntax),
+        (b"[1,]", b"[1]", Category::Syntax),
+        (b"{\"x\":0,}", b"{\"x\":0}", Category::Syntax),
+        (b"{\"x\":}", b"{\"x\":0}", Category::Syntax),
+        (b"[true false]", b"[true,false]", Category::Syntax),
+        (b"{}{}", b"{}", Category::Syntax),
+        (b"\x0b0", b" 0", Category::Syntax),
+        (b"[", b"[]", Category::Eof),
+        (b"{", b"{}", Category::Eof),
+        (br#""\uD800""#, br#""\uD800\uDC00""#, Category::Syntax),
+        (br#""\uDC00""#, br#""\u0000""#, Category::Syntax),
+        (br#""\uD800\u0000""#, br#""\uD800\uDC00""#, Category::Syntax),
+        (br#""\x00""#, br#""\u0000""#, Category::Syntax),
+        (b"\"\xc0\x80\"", b"\"\xc2\x80\"", Category::Syntax),
+        (
+            b"\"\xed\xa0\x80\"",
+            "\"\u{d000}\"".as_bytes(),
+            Category::Syntax,
+        ),
+        (
+            b"\"\xf4\x90\x80\x80\"",
+            "\"\u{100000}\"".as_bytes(),
+            Category::Syntax,
+        ),
+        (b"\"\n\"", br#""\n""#, Category::Syntax),
     ];
-    for bytes in invalid {
-        assert!(serde_json::from_slice::<serde_json::Value>(bytes).is_err());
+    for &(bytes, valid, category) in invalid {
+        assert_eq!(
+            serde_json::from_slice::<Value>(bytes)
+                .unwrap_err()
+                .classify(),
+            category,
+            "{bytes:?}"
+        );
         let mut observer = Observer::default();
-        assert!(observer.json(*bytes).is_err(), "{bytes:?}");
+        let error = observer.json(bytes).unwrap_err();
+        assert_eq!(error.classify(), Category::Data, "{bytes:?}");
+        assert_eq!(error.to_string(), "invalid JSON record", "{bytes:?}");
         assert_eq!(observer.counts(), (0, 0));
+        observer.json(valid).unwrap();
+        assert_eq!(observer.counts(), (1, 0));
     }
 }
 
@@ -160,21 +194,38 @@ fn invalid_capture_digest_and_array_tail_preserve_existing_structure() {
     let mut bytes = MAGIC.to_vec();
     bytes.extend(Header::of(b"{\"secret\":1}").encode());
     bytes.extend(b"{\"secret\":1}");
+    let second_header = bytes.len();
     bytes.extend(Header::of(b"{\"secret\":1}").encode());
     bytes.extend(b"{\"secret\":2}");
-    assert!(
-        observer
-            .read(io::Cursor::new(bytes), Framing::CaptureLog)
-            .is_err()
-    );
-    assert!(
-        observer
-            .read(io::Cursor::new(b"[{\"secret\":2}],"), Framing::Array)
-            .is_err()
-    );
+
+    let digest = observer
+        .read(io::Cursor::new(&bytes), Framing::CaptureLog)
+        .unwrap_err();
+    assert_eq!(digest.kind(), io::ErrorKind::Other);
+    assert_eq!(digest.to_string(), "invalid_capture");
+
+    let tail = observer
+        .read(io::Cursor::new(b"[{\"secret\":2}],"), Framing::Array)
+        .unwrap_err();
+    assert_eq!(tail.kind(), io::ErrorKind::Other);
+    assert_eq!(tail.to_string(), "invalid JSON record");
+
     let schema = observer.finish("synthetic".into(), vec![]);
     assert_eq!(schema.records, 1);
     assert!(!schema.fields.contains_key("/secret"));
+
+    let mut observer = Observer::default();
+    let matching = Header::of(b"{\"secret\":2}").encode();
+    bytes[second_header..second_header + matching.len()].copy_from_slice(&matching);
+    observer
+        .read(io::Cursor::new(bytes), Framing::CaptureLog)
+        .unwrap();
+    assert_eq!(observer.counts(), (2, 0));
+    observer
+        .read(io::Cursor::new(b"[{\"secret\":2}]"), Framing::Array)
+        .unwrap();
+    let schema = observer.finish("synthetic".into(), vec![]);
+    assert_eq!((schema.records, schema.fields["/secret"].present), (3, 3));
 }
 
 #[test]
@@ -207,9 +258,15 @@ fn deep_json_parsing_merging_finishing_and_cleanup_survive_in_a_subprocess() {
                 assert_eq!(schema.records, 2);
                 assert!(compare(&schema, &schema).unwrap().changes.is_empty());
                 let encoded = serde_json::to_vec(&schema).unwrap();
-                assert!(serde_json::from_slice::<Schema>(&encoded).is_ok());
+                assert_eq!(serde_json::from_slice::<Schema>(&encoded).unwrap(), schema);
                 let mut observer = Observer::default();
-                assert!(observer.json(open.repeat(20000).as_bytes()).is_err());
+                let prefix = open.repeat(20000);
+                let error = observer.json(prefix.as_bytes()).unwrap_err();
+                assert_eq!(error.classify(), serde_json::error::Category::Data);
+                assert_eq!(error.to_string(), "invalid JSON record");
+                let complete = format!("{prefix}0{}", close.repeat(20000));
+                observer.json(complete.as_bytes()).unwrap();
+                assert_eq!(observer.counts(), (1, 0));
                 observer.json(bytes.as_bytes()).unwrap();
                 drop(observer);
                 let array = format!("[{bytes}]");
@@ -248,7 +305,11 @@ fn grouping_joins_deep_subtrees_without_recursing() {
             let schema = combined.finish("synthetic".into(), vec![]);
             assert_eq!(schema.fields.len(), 1026);
             assert_eq!(schema.fields["/*"].occurrences, 51);
-            assert!(compare(&schema, &schema).is_ok());
+            let diff = compare(&schema, &schema).unwrap();
+            assert_eq!(
+                (diff.comparable, diff.reasons, diff.changes, diff.tables),
+                (true, vec![], vec![], vec![])
+            );
         })
         .unwrap()
         .join()
@@ -284,17 +345,27 @@ fn buffered_runs_validate_unicode_numbers_and_whitespace_across_reads() {
     let mut invalid = b"\"".to_vec();
     invalid.extend("é".repeat(8192).as_bytes());
     invalid.extend(b"\xff\"");
+    let mut valid = invalid.clone();
+    let last_character = valid.len() - 2;
+    valid[last_character] = b'a';
     for size in [1, 7, 8192] {
         let mut observer = Observer::default();
-        assert!(
-            observer
-                .json(Chunks {
-                    bytes: &invalid,
-                    size
-                })
-                .is_err()
-        );
+        let error = observer
+            .json(Chunks {
+                bytes: &invalid,
+                size,
+            })
+            .unwrap_err();
+        assert_eq!(error.classify(), serde_json::error::Category::Data);
+        assert_eq!(error.to_string(), "invalid JSON record");
         assert_eq!(observer.counts(), (0, 0));
+        observer
+            .json(Chunks {
+                bytes: &valid,
+                size,
+            })
+            .unwrap();
+        assert_eq!(observer.counts(), (1, 0));
     }
 }
 

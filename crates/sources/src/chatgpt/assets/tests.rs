@@ -46,34 +46,129 @@ fn naming_and_library_sidecars_map_their_fields() {
 
 #[test]
 fn malformed_sidecars_cannot_be_accepted_from_a_valid_prefix() {
-    for bytes in [
-        br#"{"file-A":"a"} trailing"#.as_slice(),
-        br#"{"file-A":"a","file-B":null}"#.as_slice(),
+    let names = "conversation_asset_file_names.json";
+    for (bytes, valid, category, expected, entries) in [
+        (
+            br#"{"file-A":"a"} trailing"#.as_slice(),
+            br#"{"file-A":"a"}"#.as_slice(),
+            serde_json::error::Category::Syntax,
+            "trailing characters at line 1 column 16",
+            vec![("file-A", "a")],
+        ),
+        (
+            br#"{"file-A":"a","file-B":null}"#.as_slice(),
+            br#"{"file-A":"a","file-B":"b"}"#.as_slice(),
+            serde_json::error::Category::Data,
+            "invalid type: null, expected a string at line 1 column 27",
+            vec![("file-A", "a"), ("file-B", "b")],
+        ),
     ] {
-        assert!(metadata("conversation_asset_file_names.json", bytes, |_| Ok(())).is_err());
+        let ScanError::Malformed(error) = metadata(names, bytes, |_| Ok(())).unwrap_err() else {
+            panic!("expected malformed names sidecar");
+        };
+        assert_eq!(error.classify(), category);
+        assert_eq!(error.to_string(), expected);
+        let mut actual = Vec::new();
+        metadata(names, valid, |entry| {
+            actual.push((entry.source_id, entry.name.unwrap()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            actual,
+            entries
+                .into_iter()
+                .map(|(id, name)| (id.to_owned(), name.to_owned()))
+                .collect::<Vec<_>>()
+        );
     }
-    assert!(
-        metadata(
-            "library_files.json",
-            br#"[{"file_id":null}]"#.as_slice(),
-            |_| Ok(())
-        )
-        .is_err()
+
+    let ScanError::Callback(message) = metadata(
+        "library_files.json",
+        br#"[{"file_id":null}]"#.as_slice(),
+        |_| Ok(()),
+    )
+    .unwrap_err() else {
+        panic!("expected a refusal for a null file ID");
+    };
+    assert_eq!(message, "library entry has no string file_id");
+    let mut entries = Vec::new();
+    metadata(
+        "library_files.json",
+        br#"[{"file_id":"file-A"}]"#.as_slice(),
+        |entry| {
+            entries.push(entry);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        entries,
+        [AssetMetadata {
+            source_id: "file-A".into(),
+            name: None,
+            media_type: None,
+            size: None
+        }]
     );
 }
 
 #[test]
 fn supplied_library_fields_with_unknown_types_do_not_silently_become_absent() {
-    for field in [
-        r#""file_name":7"#,
-        r#""mime_type":false"#,
-        r#""file_size_bytes":-1"#,
-        r#""file_size_bytes":1.5"#,
+    let name = "library_files.json";
+    for (field, invalid, valid, expected, declared) in [
+        (
+            "file_name",
+            "7",
+            r#""plot.png""#,
+            "library entry file_name must be a string or null",
+            (Some("plot.png"), None, None),
+        ),
+        (
+            "mime_type",
+            "false",
+            r#""image/png""#,
+            "library entry mime_type must be a string or null",
+            (None, Some("image/png"), None),
+        ),
+        (
+            "file_size_bytes",
+            "-1",
+            "0",
+            "library entry file_size_bytes must be an unsigned integer",
+            (None, None, Some(0)),
+        ),
+        (
+            "file_size_bytes",
+            "1.5",
+            "1",
+            "library entry file_size_bytes must be an unsigned integer",
+            (None, None, Some(1)),
+        ),
     ] {
-        let source = format!(r#"[{{"file_id":"file-Native",{field}}}]"#);
-        assert!(
-            metadata("library_files.json", source.as_bytes(), |_| Ok(())).is_err(),
-            "accepted {source}"
+        let source = format!(r#"[{{"file_id":"file-Native","{field}":{invalid}}}]"#);
+        let ScanError::Callback(message) =
+            metadata(name, source.as_bytes(), |_| Ok(())).unwrap_err()
+        else {
+            panic!("expected a refusal for {source}");
+        };
+        assert_eq!(message, expected, "{source}");
+        let source = format!(r#"[{{"file_id":"file-Native","{field}":{valid}}}]"#);
+        let mut entries = Vec::new();
+        metadata(name, source.as_bytes(), |entry| {
+            entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
+        let (name, media_type, size) = declared;
+        assert_eq!(
+            entries,
+            [AssetMetadata {
+                source_id: "file-Native".into(),
+                name: name.map(str::to_owned),
+                media_type: media_type.map(str::to_owned),
+                size,
+            }]
         );
     }
 }
@@ -121,15 +216,53 @@ fn absent_library_fields_are_unknown_and_empty_ids_are_rejected() {
         assert_eq!(entry.media_type, None);
         assert_eq!(entry.size, None);
     }
-    assert!(
-        metadata(
-            "library_files.json",
-            br#"[{"file_id":""}]"#.as_slice(),
-            |_| Ok(())
-        )
-        .is_err()
-    );
-    for bytes in [br#"{".dat":"a"}"#.as_slice(), br#"{"":"a"}"#.as_slice()] {
-        assert!(metadata("conversation_asset_file_names.json", bytes, |_| Ok(())).is_err());
+    let ScanError::Callback(message) = metadata(
+        "library_files.json",
+        br#"[{"file_id":""},{"file_id":"file-B","file_name":null,"mime_type":null,"file_size_bytes":null}]"#
+            .as_slice(),
+        |_| Ok(()),
+    )
+    .unwrap_err() else {
+        panic!("expected a refusal for an empty file ID");
+    };
+    assert_eq!(message, "library entry has no string file_id");
+    assert_eq!(entries[0].source_id, "file-A");
+
+    let names = "conversation_asset_file_names.json";
+    for (bytes, valid, column) in [
+        (
+            br#"{".dat":"a"}"#.as_slice(),
+            br#"{"file-A.dat":"a"}"#.as_slice(),
+            11,
+        ),
+        (
+            br#"{"":"a"}"#.as_slice(),
+            br#"{"file-A":"a"}"#.as_slice(),
+            7,
+        ),
+    ] {
+        let ScanError::Malformed(error) = metadata(names, bytes, |_| Ok(())).unwrap_err() else {
+            panic!("expected malformed names sidecar");
+        };
+        assert_eq!(error.classify(), serde_json::error::Category::Data);
+        assert_eq!(
+            error.to_string(),
+            format!("asset name has an empty provider file ID at line 1 column {column}")
+        );
+        let mut entries = Vec::new();
+        metadata(names, valid, |entry| {
+            entries.push(entry);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            entries,
+            [AssetMetadata {
+                source_id: "file-A".into(),
+                name: Some("a".into()),
+                media_type: None,
+                size: None
+            }]
+        );
     }
 }
