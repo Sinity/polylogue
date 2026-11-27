@@ -1,7 +1,7 @@
 //! `resume`: one session's resume command through its own tool, the open
 //! sessions here when there is no selection, or with `--in` its work
 //! continued in a new session of another harness.
-use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, not_built, sessions};
+use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, sessions};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
@@ -144,12 +144,6 @@ fn session(
     selection: &Selection,
     call: &StepCall<'_>,
 ) -> Result<Option<SessionId>, Failure> {
-    if step.fork {
-        return Err(not_built("resume", "fork"));
-    }
-    if step.anyway {
-        return Err(not_built("resume", "anyway"));
-    }
     if step.harness.is_none() && (step.at.is_some() || step.cwd.is_some() || step.stop_source) {
         return Err(Reason::ResumeOptionsNeedIn {}.into());
     }
