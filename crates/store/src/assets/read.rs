@@ -1,6 +1,8 @@
 use super::*;
+use polylogue_model::attachment_binding::{AttachmentBinding, AttachmentNamespace, AttachmentSlot};
+use polylogue_model::bundle::{self, Record};
 use polylogue_model::{Attachment, BlobHash, Block, MessageId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 polylogue_model::stored_names! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +48,10 @@ impl Reader<'_> {
         attachment_index: usize,
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
-        let (version,piece,source_input,source_chain):(Vec<u8>,crate::content::Piece,String,i64)=conn.query_row(
-            "SELECT m.version_hash,b.content_group,b.content_start,b.content_length,b.data_length,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.source_position,CAST(b.position AS TEXT))=?2",
+        let (version,piece,source_input,source_chain,origin):(Vec<u8>,crate::content::Piece,String,i64,String)=conn.query_row(
+            "SELECT m.version_hash,b.content_group,b.content_start,b.content_length,b.data_length,i.id,m.source_chain,i.origin FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.source_position,CAST(b.position AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
-            |r| Ok((r.get(0)?, crate::content::Piece::of(r, 1)?, r.get(5)?, r.get(6)?))).optional()?
+            |r| Ok((r.get(0)?, crate::content::Piece::of(r, 1)?, r.get(5)?, r.get(6)?, r.get(7)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
         let source = match crate::ordered_blocks::body(
             conn,
@@ -108,12 +110,33 @@ impl Reader<'_> {
             });
         }
         let scopes = import_scopes(conn, &source_input, source_chain)?;
-        let mut matches = std::collections::BTreeMap::<String, AssetMatch>::new();
-        let mut known = std::collections::HashMap::<String, Option<AssetSource>>::new();
+        let mut matches = BTreeMap::new();
         let identity = source.source_id.as_deref().filter(|id| !id.is_empty());
+        let mut candidate_count = None;
         if let Some(source_id) = identity {
-            for scope in &scopes {
-                scope_matches(conn, scope, source_id, &mut known, &mut matches)?;
+            if origin == bundle::FORMAT && source.blob.is_none() && !scopes.is_empty() {
+                let slot = AttachmentSlot {
+                    block: block as u64,
+                    attachment: attachment_index as u64,
+                    source_id: source_id.to_owned(),
+                };
+                let candidates: BTreeSet<_> = self
+                    .bundle_bindings(message, &version)?
+                    .into_iter()
+                    .filter(|claim| binding_matches_slot(claim, &slot))
+                    .flat_map(|claim| claim.candidates.into_iter().map(|c| (c.hash, c.size)))
+                    .collect();
+                for &(hash, size) in &candidates {
+                    for scope in &scopes {
+                        bundle_matches(conn, scope, hash, size, &mut matches)?;
+                    }
+                }
+                candidate_count = Some(candidates.len());
+            } else {
+                let mut known = HashMap::new();
+                for scope in &scopes {
+                    scope_matches(conn, scope, source_id, &mut known, &mut matches)?;
+                }
             }
         }
         let mut matches = matches.into_values().collect::<Vec<_>>();
@@ -123,11 +146,12 @@ impl Reader<'_> {
             unique(&mut asset.media_types);
             unique(&mut asset.declared_sizes);
         }
-        let state = match matches.len() {
-            1 => AttachmentState::Available,
-            0 if scopes.is_empty() || identity.is_none() => AttachmentState::Unknown,
-            0 => AttachmentState::Unavailable,
-            _ => AttachmentState::Ambiguous,
+        let state = match (candidate_count, matches.len()) {
+            (Some(2..), _) | (_, 2..) => AttachmentState::Ambiguous,
+            (_, 1) => AttachmentState::Available,
+            (Some(0), _) => AttachmentState::Unknown,
+            (_, 0) if scopes.is_empty() || identity.is_none() => AttachmentState::Unknown,
+            _ => AttachmentState::Unavailable,
         };
         let binding = blake3::hash(&serde_json::to_vec(&(
             message,
@@ -150,6 +174,94 @@ impl Reader<'_> {
             binding,
         })
     }
+
+    fn bundle_bindings(
+        &self,
+        message: &MessageId,
+        version: &[u8],
+    ) -> Result<Vec<AttachmentBinding>> {
+        let source = self
+            .stored_record(crate::items::RecordTable::Message, &message.to_string())?
+            .ok_or_else(|| StoreError::stored_data("bundle message has no stored source record"))?;
+        match serde_json::from_slice::<Record>(&source.bytes)? {
+            Record::Message(record)
+                if record.message.id == *message
+                    && record.source_version.0.as_slice() == version =>
+            {
+                Ok(record.bindings)
+            }
+            _ => Err(StoreError::stored_data(
+                "bundle source record differs from the selected message",
+            )),
+        }
+    }
+}
+
+fn binding_matches_slot(binding: &AttachmentBinding, slot: &AttachmentSlot) -> bool {
+    binding.block == slot.block
+        && binding.attachment == slot.attachment
+        && binding.source_id == slot.source_id
+}
+
+/// A portable candidate grants access only through a matching member admitted
+/// with the receiving import. Provider IDs and archive-wide blobs are not proof.
+fn bundle_matches(
+    conn: &Connection,
+    scope: &str,
+    hash: BlobHash,
+    size: u64,
+    matches: &mut BTreeMap<String, AssetMatch>,
+) -> Result<()> {
+    let input = hash.to_string();
+    let path = format!("blobs/{input}");
+    let mut stmt = conn.prepare_cached(
+        "SELECT member,observation FROM import_member
+         WHERE import_id=?1 AND input=?2
+           AND (member=?3 OR substr(member,-length(?3)-1)='/'||?3)
+         ORDER BY member,observation",
+    )?;
+    let mut members = stmt.query(params![scope, input, path])?;
+    let Some(current) = asset_source(conn, conn, "source_", &input)? else {
+        return Ok(());
+    };
+    if current.length != size || current.blob != Some(hash) {
+        return Ok(());
+    }
+    while let Some(member) = members.next()? {
+        let pin = if size == 0 {
+            let Some(pin) = super::empty::source(
+                conn,
+                conn,
+                "source_",
+                &input,
+                current.chain,
+                Some(&member.get::<_, String>(1)?),
+                None,
+            )?
+            else {
+                continue;
+            };
+            pin
+        } else {
+            current.clone()
+        };
+        matches
+            .entry(input.clone())
+            .or_insert_with(|| AssetMatch {
+                input: input.clone(),
+                chain: pin.chain,
+                blob: pin.blob,
+                source_version: pin.version,
+                size,
+                members: Vec::new(),
+                names: Vec::new(),
+                media_types: Vec::new(),
+                declared_sizes: Vec::new(),
+            })
+            .members
+            .push(member.get(0)?);
+    }
+    Ok(())
 }
 
 /// The import namespaces under which a message's source input was read.
@@ -269,29 +381,54 @@ impl Reader<'_> {
         &self,
         message: &MessageId,
         source_version: BlobHash,
-        slots: &[polylogue_model::attachment_binding::AttachmentSlot],
-    ) -> Result<Vec<polylogue_model::attachment_binding::AttachmentBinding>> {
-        use polylogue_model::attachment_binding::{
-            AttachmentBinding, AttachmentCandidate, AttachmentNamespace, StatedAttachmentSource,
-        };
+        slots: &[AttachmentSlot],
+    ) -> Result<Vec<AttachmentBinding>> {
+        use polylogue_model::attachment_binding::{AttachmentCandidate, StatedAttachmentSource};
         if slots.is_empty() {
             return Ok(Vec::new());
         }
         let conn = self.conn()?;
         let mut shown = conn.prepare(
-            "SELECT i.id,m.source_chain FROM message m
+            "SELECT i.id,m.source_chain,i.origin FROM message m
              JOIN input_ref i ON i.pk=m.input_pk
              WHERE m.id=?1 AND m.version_hash=?2 ORDER BY i.id,m.source_chain",
         )?;
         let shown = shown
             .query_map(
                 params![message.to_string(), source_version.0.as_slice()],
-                |r| <(String, i64)>::try_from(r),
+                |r| <(String, i64, String)>::try_from(r),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stated = Vec::new();
-        for (input, chain) in shown {
-            for scope in import_scopes(conn, &input, chain)? {
+        for (input, chain, origin) in shown {
+            let scopes = import_scopes(conn, &input, chain)?;
+            if scopes.is_empty() {
+                continue;
+            }
+            if origin == bundle::FORMAT {
+                let bindings = self.bundle_bindings(message, &source_version.0)?;
+                for scope in scopes {
+                    let context = AttachmentNamespace {
+                        input: input.clone(),
+                        chain,
+                        import_id: scope,
+                    };
+                    stated.extend(
+                        bindings
+                            .iter()
+                            .filter(|claim| {
+                                slots.iter().any(|slot| binding_matches_slot(claim, slot))
+                            })
+                            .cloned()
+                            .map(|mut claim| {
+                                claim.exported_from = context.clone();
+                                claim
+                            }),
+                    );
+                }
+                continue;
+            }
+            for scope in scopes {
                 let namespace = AttachmentNamespace {
                     input: input.clone(),
                     chain,
