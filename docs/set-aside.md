@@ -42,6 +42,16 @@ an input is a capture origin and stays ([capture.md](capture.md)). The text is
 in `docs/rewrite/polylogue-spec/spec/export-format.md` at revision
 `37d38a6c4a^`.
 
+### Archive values in completion while the daemon is down
+
+Completion offering sessions, tags, saved names and other archive values
+with the daemon not running, from a catalog file the daemon published after
+each commit, with candidates marked by the catalog's age. Nothing a completed
+line does can run while the daemon is down, so Tab now asks the daemon, and
+without it offers the grammar alone ([completion.md](completion.md#how-completion-works));
+a saved name as a first word is recognised once the daemon answers. The text
+is in `docs/completion.md` (The catalog file) at revision `6934671f9`.
+
 ### Tool results restored from `PostToolUse`
 
 The rule that a `PostToolUse` hook event restores a tool result the

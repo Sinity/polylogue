@@ -1,9 +1,14 @@
-//! Shell query completion preserves the full argument context and byte position.
+//! Shell completion: one request to the daemon per Tab for the archive's
+//! values, bounded by the completion deadline; without an answer in time,
+//! the grammar from the CLI's own tables and nothing else. The query keeps
+//! its full argument context and byte position.
 use clap_complete::CompletionCandidate;
+use query_language::complete::Completion;
 use std::{
     ffi::{OsStr, OsString},
     path::PathBuf,
     sync::OnceLock,
+    time::Duration,
 };
 
 /// The callback argv follows `--` and includes the invoked wrapper name.
@@ -12,11 +17,9 @@ pub struct Context {
     pub arguments: Vec<OsString>,
     pub index: usize,
     pub prefix: Option<String>,
-    pub catalog: Option<Catalog>,
-}
-pub struct Catalog {
-    pub path: PathBuf,
-    pub archive_key: String,
+    /// The archive whose daemon is asked; `None` when the configuration
+    /// does not load, and only the grammar is offered.
+    pub archive: Option<PathBuf>,
 }
 static INVOCATION: OnceLock<Context> = OnceLock::new();
 /// Main supplies its one captured process/configuration boundary.
@@ -45,15 +48,20 @@ impl clap_complete::engine::ValueCompleter for Query {
                 )
             })
             .unwrap_or_else(|| (current.to_owned(), current.len(), 0, current.len()));
-        let candidates = match invocation.and_then(|call| call.catalog.as_ref()) {
-            Some(catalog) => crate::completion_catalog::complete_file(
-                &catalog.path,
-                &catalog.archive_key,
-                &text,
-                position,
-            ),
-            None => crate::completion_catalog::grammar(&text, position),
-        };
+        let candidates = invocation
+            .and_then(|call| call.archive.as_deref())
+            .and_then(|archive| {
+                ask(
+                    archive,
+                    crate::protocol::complete::Arguments {
+                        text: text.clone(),
+                        position: Some(position as u64),
+                        ..Default::default()
+                    },
+                    Some(KEYSTROKE_WAIT),
+                )
+            })
+            .unwrap_or_else(|| crate::completion::grammar(&text, position));
         candidates
             .into_iter()
             .filter_map(|completion| {
@@ -69,12 +77,57 @@ impl clap_complete::engine::ValueCompleter for Query {
     }
 }
 
+/// How long one Tab waits for the daemon before offering the grammar alone.
+/// The completion class's budget is 50 ms per keystroke at p95
+/// (docs/latency.md); the wait is longer so that a loaded daemon still
+/// answers with values, while a daemon that is down refuses at once.
+pub(crate) const KEYSTROKE_WAIT: Duration = Duration::from_millis(250);
+
+/// The daemon's candidates, or `None` when no daemon answered within the
+/// budget or it refused; the caller then offers what needs no archive.
+pub(crate) fn ask(
+    archive: &std::path::Path,
+    arguments: crate::protocol::complete::Arguments,
+    wait: Option<Duration>,
+) -> Option<Vec<Completion>> {
+    let request = crate::client::request(
+        "internal complete",
+        serde_json::to_value(&arguments).ok()?,
+        polylogue_store::user_writes::new_request_id(),
+    );
+    let socket = polylogue_store::Archive::at(archive).socket();
+    let answer = match wait {
+        Some(wait) => crate::client::call_with_budget(&socket, &request, wait),
+        None => crate::client::Exchange::new(&request).call(&socket),
+    }
+    .ok()?;
+    let value = crate::protocol::into_value(answer).ok()?;
+    serde_json::from_value(value).ok()
+}
+
 pub(super) fn candidate(value: String, help: String) -> Option<CompletionCandidate> {
     if value.chars().any(char::is_control) || polylogue_render::terminal::escape(&value) != value {
         return None;
     }
     let help = (!help.is_empty()).then(|| polylogue_render::terminal::escape(&help));
     Some(CompletionCandidate::new(value).help(help.map(Into::into)))
+}
+
+/// Whether a saved query is named `word`: completing `query:WORD` offers
+/// the word itself. The answer decides how the line is read, so it waits
+/// for the daemon as any request does; `false` when no daemon runs.
+pub(crate) fn is_saved_name(archive: &std::path::Path, word: &str) -> bool {
+    let text = format!("query:{word}");
+    ask(
+        archive,
+        crate::protocol::complete::Arguments {
+            position: Some(text.len() as u64),
+            text,
+            ..Default::default()
+        },
+        None,
+    )
+    .is_some_and(|candidates| candidates.iter().any(|candidate| candidate.value == word))
 }
 
 /// Shell arguments are already decoded. Their query spelling is the same join
@@ -122,9 +175,6 @@ impl clap_complete::engine::ValueCompleter for Setting {
         let Some(prefix) = current.to_str() else {
             return vec![];
         };
-        let Some(catalog) = INVOCATION.get().and_then(|call| call.catalog.as_ref()) else {
-            return vec![];
-        };
         let key = if self.key {
             None
         } else {
@@ -145,14 +195,24 @@ impl clap_complete::engine::ValueCompleter for Setting {
                 .and_then(|setting| setting.get_one::<String>("key"))
                 .cloned()
         };
-        crate::completion_catalog::settings_file(
-            &catalog.path,
-            &catalog.archive_key,
-            key.as_deref(),
-            prefix,
-        )
-        .into_iter()
-        .filter_map(|(value, help)| candidate(value, help))
-        .collect()
+        INVOCATION
+            .get()
+            .and_then(|call| call.archive.as_deref())
+            .and_then(|archive| {
+                ask(
+                    archive,
+                    crate::protocol::complete::Arguments {
+                        text: prefix.to_owned(),
+                        setting: true,
+                        key: key.clone(),
+                        ..Default::default()
+                    },
+                    Some(KEYSTROKE_WAIT),
+                )
+            })
+            .unwrap_or_else(|| crate::completion::settings(key.as_deref(), prefix, &[], |_| None))
+            .into_iter()
+            .filter_map(|completion| candidate(completion.value, completion.help))
+            .collect()
     }
 }

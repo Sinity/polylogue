@@ -3,8 +3,7 @@
 //! stay in memory so `status` can show what the daemon said recently.
 //!
 //! It lives in the store because the store is the lowest crate whose code
-//! runs in the daemon and logs (the writer, the search thread, the
-//! completion catalog); the engine and the daemon depend on it. The model
+//! runs in the daemon and logs (the writer, the search thread); the engine and the daemon depend on it. The model
 //! crate does no I/O.
 //!
 //! Progress records (`log!(progress, ...)`, a rate logged once a minute) go

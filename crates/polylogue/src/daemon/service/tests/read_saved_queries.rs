@@ -22,12 +22,8 @@ fn read(d: &Daemon, selection: &str) -> ReadPage {
         "--budget".to_owned(),
         "100000".to_owned(),
     ];
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     assert_eq!(
         parsed.selection,
         Some(crate::cli::line::SelectionWord::Text(selection.to_owned()))
@@ -143,12 +139,8 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     // The real CLI parser consumes the exact generated command.
     let (words, stdin) = crate::cli::line::tests::shell_arguments(&command);
     assert!(stdin.is_empty());
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     assert_eq!(
         parsed.selection,
         Some(crate::cli::line::SelectionWord::Text(

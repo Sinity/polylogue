@@ -339,21 +339,6 @@ fn named_kept_bindings<'a>(
     Ok((kept, names))
 }
 
-pub(super) fn saved_queries_for_family(
-    conn: &Connection,
-    root: &str,
-) -> Result<SavedFamily, SelectionError> {
-    let family = crate::annotations::saved_family(conn, root)?.definitions;
-    let names = family
-        .iter()
-        .map(|(name, definitions)| (name.clone(), definitions.len()))
-        .collect();
-    Ok(SavedFamily {
-        names,
-        queries: saved_queries_from(conn, conn, None, family)?,
-    })
-}
-
 fn saved_queries_from(
     original: &Connection,
     conn: &Connection,

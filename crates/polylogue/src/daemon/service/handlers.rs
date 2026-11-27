@@ -45,7 +45,8 @@ impl Operation for Sql {
     }
 }
 
-/// Grammar completions at a UTF-8 byte offset in the full query text.
+/// Completions at a UTF-8 byte offset in the full query text, with the
+/// archive's values; or a setting's keys or values.
 pub(crate) struct Complete;
 impl Operation for Complete {
     type Arguments = protocol::complete::Arguments;
@@ -73,20 +74,22 @@ impl Operation for Complete {
                 "completion position must be a UTF-8 byte boundary within the query",
             ));
         }
-        let d = call.daemon;
-        let token = match d.archive.scope_token() {
-            Ok(token) => token,
-            Err(error) => return Ok(store_error(&error)),
+        let reader = call.reader()?;
+        let candidates = if arguments.setting {
+            let machine = call.daemon.config.requests.machine();
+            let authored = match reader.completion_setting_keys() {
+                Ok(keys) => keys,
+                Err(error) => return Ok(store_error(&error)),
+            };
+            crate::completion::settings(arguments.key.as_deref(), &text, &authored, |key| {
+                reader.setting_current(key, machine).ok()
+            })
+        } else {
+            match crate::completion::complete(&reader, &text, position) {
+                Ok(candidates) => candidates,
+                Err(error) => return Ok(store_error(&error)),
+            }
         };
-        let candidates = crate::completion_catalog::complete_file(
-            &d.completion_path,
-            &crate::runtime_dir::archive_key(&d.archive.root),
-            &text,
-            position,
-        );
-        if let Err(error) = token.check() {
-            return Ok(store_error(&error));
-        }
         Ok(if candidates.is_empty() {
             Answer::empty(candidates)
         } else {

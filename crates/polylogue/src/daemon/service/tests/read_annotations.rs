@@ -54,12 +54,8 @@ fn read(d: &Daemon, target: &str, hide: bool) -> ReadPage {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     assert_eq!(
         parsed.selection,
         Some(crate::cli::line::SelectionWord::Text(target.to_owned()))
@@ -226,12 +222,8 @@ fn historical_call(
         "--budget".into(),
         budget.to_string(),
     ];
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     let steps = parsed
         .steps
         .into_iter()
