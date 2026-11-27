@@ -84,7 +84,7 @@ fn search_writes_are_available_through_the_command_table() {
     let crate::protocol::line::StepAnswer::Saved(kept) = crate::test_answers::step(kept) else {
         panic!("expected saved selection")
     };
-    assert_eq!(kept.kept.result.as_str(), "result:mcp-kept-1");
+    assert_eq!(kept.saved_rows.result.as_str(), "result:mcp-kept-1");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &format!(
                 "result:{}",
                 serde_json::to_string(
-                    outcome["kept"]["result"]
+                    outcome["saved_rows"]["result"]
                         .as_str()
                         .unwrap()
                         .strip_prefix("result:")

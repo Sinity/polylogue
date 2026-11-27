@@ -96,7 +96,7 @@ pub struct StepsAnswer {
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
     /// The selection's query text, when it is a query
-    pub question: Option<String>,
+    pub query: Option<String>,
     pub count: u64,
     /// The rows were named one by one rather than matched by a query
     pub named: bool,

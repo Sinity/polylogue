@@ -64,8 +64,8 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         query: format!("query:{}", "a".repeat(64)),
         query_text: "sessions".into(),
         ran_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
-        read_at: polylogue_model::ChangePosition {
-            generation: "synthetic".into(),
+        read_position: polylogue_model::ChangePosition {
+            index_instance: "synthetic".into(),
             index: 1,
             archive: 1,
         },

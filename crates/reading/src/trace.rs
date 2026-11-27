@@ -112,7 +112,7 @@ pub(super) fn page(
                 snapshot,
                 header,
                 ReadFraming::Query {
-                    question: compiled.selection.question_id(),
+                    query_id: compiled.selection.question_id(),
                 },
                 digest,
                 None,

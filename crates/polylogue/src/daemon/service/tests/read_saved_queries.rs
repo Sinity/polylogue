@@ -61,14 +61,14 @@ fn history(page: &ReadPage) -> polylogue_model::saved_queries::SavedQueryRecord 
     let mut record = polylogue_model::saved_queries::SavedQueryRecord {
         name: header(page).name.clone(),
         revisions: vec![],
-        kept: vec![],
+        saved_rows: vec![],
         watch: None,
         dependents: vec![],
     };
     for item in history_items(page) {
         match item {
             SavedQueryItem::Revision(revision) => record.revisions.push(revision.clone()),
-            SavedQueryItem::Kept(kept) => record.kept.push(kept.clone()),
+            SavedQueryItem::Kept(kept) => record.saved_rows.push(kept.clone()),
             SavedQueryItem::Watch { reference } => record.watch.clone_from(reference),
             SavedQueryItem::Dependent { reference, .. } => {
                 record.dependents.push(reference.clone())
@@ -126,8 +126,8 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
         saved.selected_revision,
         saved_history.revisions[1].reference
     );
-    assert_eq!(saved.question.to_string(), before.revisions[1].hash);
-    assert_eq!(saved_history.kept.len(), 2);
+    assert_eq!(saved.query_id.to_string(), before.revisions[1].hash);
+    assert_eq!(saved_history.saved_rows.len(), 2);
     assert!(saved_history.watch.is_some());
     assert_eq!(saved_history.dependents.len(), 1);
     let calls = resaves(&first);
@@ -191,7 +191,7 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
         .unwrap()
         .unwrap();
     assert_eq!(after.revisions, before.revisions);
-    assert_eq!(after.kept, before.kept);
+    assert_eq!(after.saved_rows, before.saved_rows);
     assert_eq!(after.watch, before.watch);
     let old = read(&d.daemon, "query:focus@1");
     assert_eq!(
@@ -208,7 +208,7 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     let repeated = read(&d.daemon, "query:focus");
     let repeated_history = history(&repeated);
     assert_eq!(repeated_history.revisions, saved_history.revisions);
-    assert_eq!(repeated_history.kept, saved_history.kept);
+    assert_eq!(repeated_history.saved_rows, saved_history.saved_rows);
     assert_eq!(repeated_history.watch, saved_history.watch);
     assert_eq!(header(&repeated).selected_revision, saved.selected_revision);
     assert_eq!(data_items(&repeated), data_items(&first));

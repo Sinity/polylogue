@@ -8,7 +8,7 @@ fn build(pointer: &CatalogPointer, generation: &str, value: &str) -> CatalogWrit
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: polylogue_model::ChangePosition {
-            generation: generation.into(),
+            index_instance: generation.into(),
             index: 1,
             archive: 1,
         },
@@ -42,7 +42,7 @@ fn revoked_pointer_rejects_open_snapshots_and_old_writers() {
         .unwrap()
         .change_position()
         .unwrap()
-        .generation;
+        .index_instance;
     let old = archive.scope_token().unwrap();
     let writer = build(&pointer, &generation, "old-value");
     pointer.activate(&writer, &old).unwrap();
@@ -119,7 +119,7 @@ fn same_source_generation_rebuild_never_reuses_a_pinned_wal_namespace() {
     let next = Metadata {
         archive: "synthetic".into(),
         position: polylogue_model::ChangePosition {
-            generation: "same-source-generation".into(),
+            index_instance: "same-source-generation".into(),
             index: 2,
             archive: 2,
         },
@@ -239,7 +239,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         let metadata = Metadata {
             archive: "synthetic".into(),
             position: polylogue_model::ChangePosition {
-                generation: "generation".into(),
+                index_instance: "generation".into(),
                 index: 10,
                 archive: 20,
             },
@@ -293,7 +293,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         };
         match case {
             "archive" => current.archive = "other".into(),
-            "generation" => current.position.generation = "other".into(),
+            "generation" => current.position.index_instance = "other".into(),
             "index" => current.position.index -= 1,
             "archive_position" => current.position.archive -= 1,
             "grammar" => expected_catalog = query_language::catalog::Catalog::new("messages"),
@@ -376,7 +376,7 @@ fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: polylogue_model::ChangePosition {
-            generation: "generation".into(),
+            index_instance: "generation".into(),
             index: 1,
             archive: 1,
         },
@@ -450,7 +450,7 @@ fn resume_does_not_follow_a_cache_target_into_another_file() {
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: polylogue_model::ChangePosition {
-            generation: "g".into(),
+            index_instance: "g".into(),
             index: 1,
             archive: 1,
         },

@@ -1617,8 +1617,8 @@ fn saved_query_retry_and_printed_undo_keep_immutable_results() {
     assert_eq!(report["saved"]["id"], "save-cli-1.1");
     assert_eq!(report["saved"]["revision"], 1);
     assert_eq!(report["watch"]["id"], "save-cli-1.2");
-    assert_eq!(report["kept"]["result"], "result:save-cli-1");
-    assert_eq!(report["kept"]["rows"], 1);
+    assert_eq!(report["saved_rows"]["result"], "result:save-cli-1");
+    assert_eq!(report["saved_rows"]["rows"], 1);
     let undo = step["outcome"]["undo"].as_array().unwrap();
     assert_eq!(undo.len(), 1, "{first}");
     let retry = cli(&env, &args);

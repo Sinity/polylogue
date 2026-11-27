@@ -416,7 +416,7 @@ fn historical_session_positions_refuse_another_generation_and_future_counters() 
     let d = test_daemon::start("neutral target text");
     let current = d.daemon.reads.reader().unwrap().change_position().unwrap();
     let mut foreign = current.clone();
-    foreign.generation = "another-generation".into();
+    foreign.index_instance = "another-generation".into();
     let mut future_index = current.clone();
     future_index.index += 1000;
     let mut future_archive = current;

@@ -56,7 +56,7 @@ for line in client.feed(previous_position):
 
 Save a position only after applying the earlier lines in that batch. An error
 or interrupted iterator leaves the previous position in force; a new index
-generation asks the consumer to replace its local view. Breaking out early
+instance asks the consumer to replace its local view. Breaking out early
 requires closing the iterator (for example with `contextlib.closing`).
 
 Contract tests run through the repository's `check` operation: a real daemon

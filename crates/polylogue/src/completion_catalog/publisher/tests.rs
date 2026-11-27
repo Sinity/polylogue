@@ -12,7 +12,7 @@ fn an_unpublished_old_generation_is_rebuilt_before_the_next_activation() {
     let old = Metadata {
         archive: "synthetic".into(),
         position: ChangePosition {
-            generation: "retired-generation".into(),
+            index_instance: "retired-generation".into(),
             index: 0,
             archive: 0,
         },
@@ -32,7 +32,7 @@ fn an_unpublished_old_generation_is_rebuilt_before_the_next_activation() {
         .unwrap();
     let mut state = State::new(super::super::tests::request_metadata());
     // A build may finish before its activation is rejected by the scope fence.
-    state.writer = Some((old.position.generation, writer));
+    state.writer = Some((old.position.index_instance, writer));
     assert!(state.position.is_none());
     state.refresh(&reader, &path, "synthetic").unwrap();
     let cache = completion::CatalogReader::open(&path, "synthetic")
@@ -333,7 +333,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
                         query: "sessions | group by origin | count".into(),
                         denominator: Some("sessions".into()),
                         rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-                        read_at: "{}".into(),
+                        read_position: "{}".into(),
                         watch: None,
                         outcomes: None,
                     })),
@@ -397,7 +397,7 @@ fn late_kept_result_refreshes_inline_dependency() {
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows.clone(),
-                read_at: "{}".into(),
+                read_position: "{}".into(),
                 denominator: None,
                 watch: None,
                 outcomes: None,
@@ -716,7 +716,7 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     polylogue_store::fault::arm(
         "completion.full_snapshot",
-        &saved.generation,
+        &saved.index_instance,
         polylogue_store::fault::Action::Fail,
         0,
         1,
@@ -839,7 +839,7 @@ fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
                 UserWrite::Save(Box::new(Save {
                     name: name.map(str::to_owned), query: query.into(),
                     rows_json: r#"{"unit":"sessions","shape":"rows","columns":[{"name":"title","kind":"text"}],"rows":[],"identities":[]}"#.into(),
-                    read_at: "{}".into(), denominator: None, watch: None, outcomes: None,
+                    read_position: "{}".into(), denominator: None, watch: None, outcomes: None,
                 }))),
             scope: None, preparation: Some(crate::daemon::service::authored_preparation()), parent: None,
         }).unwrap()
@@ -931,7 +931,7 @@ fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snap
     daemon.restart_after_stop(|| {
         polylogue_store::fault::arm(
             "completion.full_snapshot",
-            &saved.generation,
+            &saved.index_instance,
             polylogue_store::fault::Action::Fail,
             0,
             1,
@@ -950,7 +950,7 @@ fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snap
         .unwrap()
         .metadata
         .position;
-    assert_eq!(current.generation, saved.generation);
+    assert_eq!(current.index_instance, saved.index_instance);
     assert!(current.index > saved.index || current.archive > saved.archive);
     // The untouched fault proves the real restarted worker never read all sessions.
     let error = State::new(daemon.daemon.config.requests.clone())

@@ -71,8 +71,8 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
         page.document.header.target
     );
     let Card::Run {
-        question,
-        read_at,
+        query_id: question,
+        read_position,
         author,
         count,
         exact,
@@ -83,9 +83,9 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     };
     assert_eq!(
         question.as_ref().and_then(Reference::question_id),
-        run.question
+        run.query_id
     );
-    assert_eq!(read_at, &run.read_at);
+    assert_eq!(read_position, &run.read_position);
     assert_eq!(author, &run.authorship.author);
     assert_eq!(*count, outcome.count);
     assert_eq!(*exact, Some(outcome.exact));
@@ -94,7 +94,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     assert_eq!(next.request.operation, "rows");
     assert_eq!(
         next.request.arguments,
-        json!({"selection":format!("query:{}",run.question.unwrap())})
+        json!({"selection":format!("query:{}",run.query_id.unwrap())})
     );
     let rerun = crate::test_answers::listing(Call::from_request(&next.request).answer(&d.daemon));
     assert_eq!(rerun.value().unwrap()["count"], 1);
@@ -105,7 +105,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     {
         let reader = d.daemon.reads.reader().unwrap();
         let read = reader.query_run(&read_id).unwrap().unwrap();
-        assert_eq!(read.question, None);
+        assert_eq!(read.query_id, None);
         assert!(
             matches!(read.binding, RunBinding::OriginalObject {execution} if execution.reference == Reference::Run(run.id.clone()))
         );
@@ -191,7 +191,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
         .query_object()
         .unwrap();
     run.id = RunId::parse("018f0000-0000-7000-8000-000000000023").unwrap();
-    run.question = Some(object.id);
+    run.query_id = Some(object.id);
     let RunBinding::Original { execution } = &mut run.binding else {
         panic!("query execution")
     };
@@ -212,7 +212,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
     assert!(matches!(
         only_card(&unavailable),
         Card::Run {
-            question: Some(_),
+            query_id: Some(_),
             ..
         }
     ));
@@ -346,12 +346,12 @@ fn object_read_runs_have_no_invented_question_or_followup() {
         .query_run(&id)
         .unwrap()
         .unwrap();
-    assert_eq!(run.question, None);
+    assert_eq!(run.query_id, None);
     let page = crate::test_answers::read(call(&run, "transcript", 100_000).answer(&d.daemon));
     assert!(matches!(
         only_card(&page),
         Card::Run {
-            question: None,
+            query_id: None,
             count: Some(1),
             outcome: Some(RunOutcome::Ok),
             ..

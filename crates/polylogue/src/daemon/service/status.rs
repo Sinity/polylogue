@@ -448,7 +448,7 @@ fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
             .iter()
             .filter(|request| {
                 matches!(
-                    request.request.write,
+                    request.write,
                     polylogue_model::user::UserWrite::DeliveryEvent { .. }
                 )
             })

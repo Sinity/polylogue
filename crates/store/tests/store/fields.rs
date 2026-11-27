@@ -167,7 +167,7 @@ fn deliveries_show_their_recipient_event_sender_and_outcome() {
     let morrow = Morrow::build(Set::Main);
     let (engine, _lock) = morrow.engine();
     let writer = engine.writer();
-    let deliver = |id: &str, recipient: u8, sender, event, about: u8, what| {
+    let deliver = |id: &str, recipient: u8, sender, event, about: u8, outcome| {
         let delivery = submit(
             &writer,
             id,
@@ -180,6 +180,7 @@ fn deliveries_show_their_recipient_event_sender_and_outcome() {
                 text: format!("context about #{about}"),
                 refs: vec![format!("session:{}", session(about))],
                 left_out: vec![],
+                prepared_position: None,
             }),
         );
         submit(
@@ -187,7 +188,7 @@ fn deliveries_show_their_recipient_event_sender_and_outcome() {
             &format!("{id}-outcome"),
             UserWrite::DeliveryEvent {
                 delivery: delivery.clone(),
-                what,
+                outcome,
                 detail: None,
             },
         );

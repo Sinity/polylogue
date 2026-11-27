@@ -13,7 +13,7 @@ fn populated(path: &Path) {
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: ChangePosition {
-            generation: "g".into(),
+            index_instance: "g".into(),
             index: 3,
             archive: 2,
         },
@@ -391,7 +391,7 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: ChangePosition {
-            generation: "g".into(),
+            index_instance: "g".into(),
             index: 1,
             archive: 1,
         },
@@ -610,7 +610,7 @@ fn saved_plan_metadata_survives_cache_serialization() {
     let metadata = Metadata {
         archive: "synthetic".into(),
         position: ChangePosition {
-            generation: "g".into(),
+            index_instance: "g".into(),
             index: 1,
             archive: 1,
         },
