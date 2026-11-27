@@ -36,6 +36,12 @@ elif args[:2] == ["api", "graphql"]:
             print("\t".join(fields))
 elif args[:2] == ["workflow", "run"]:
     staged = next(arg[4:] for arg in args if arg.startswith("rev="))
+    branch = args[args.index("--ref") + 1]
+    assert branch.startswith(f"land-queue-{staged}-")
+    assert git("ls-remote", "origin", "refs/heads/" + branch).split()[0] == staged
+    assert branch not in state["branches"]
+    state["branches"].append(branch)
+    state["revisions"].append(staged)
     base = git("ls-remote", "origin", "refs/heads/master").split()[0]
     subjects = git("log", "--reverse", "--format=%s", f"{base}..{staged}")
     state["stages"].append([line.split()[0][1:] for line in subjects.splitlines()])
@@ -43,7 +49,15 @@ elif args[:2] == ["workflow", "run"]:
     if (state["case"] == "red-change" and count == 1) or (state["case"] == "split-change" and count == 2):
         state["heads"]["2"] = state["changed"]
     save()
+    if state["case"] != "split-current":
+        print(f"https://github.com/synthetic/landing/actions/runs/{count}")
 elif args[:2] == ["run", "list"]:
+    branch = args[args.index("--branch") + 1]
+    assert branch == state["branches"][-1]
+    query = args[args.index("--jq") + 1]
+    assert state["revisions"][-1] in query
+    state["lookups"] += 1
+    save()
     print(len(state["stages"]))
 elif args[:2] == ["run", "watch"]:
     pass
@@ -53,8 +67,18 @@ elif args[:2] == ["run", "view"]:
         print("check")
     elif field == "status":
         print("in_progress")
-    elif field == "conclusion":
-        print("failure" if args[2] == "1" else "success")
+    elif field == "headBranch,headSha,status,conclusion":
+        index = int(args[2]) - 1
+        reply = {
+            "headBranch": state["branches"][index],
+            "headSha": state["revisions"][index],
+            "status": "completed",
+            "conclusion": "failure" if index == 0 else "success",
+        }
+        if state["case"] == "wrong-run":
+            reply.update(headBranch="another-branch", headSha=state["changed"], conclusion="success")
+        query = args[args.index("--jq") + 1]
+        subprocess.run(["jq", "-r", query], input=json.dumps(reply), text=True, check=True)
     else:
         raise RuntimeError(args)
 elif args[:2] == ["run", "download"]:
@@ -85,6 +109,8 @@ cases = {
     "split-change": ([["1", "2"], ["1"]], ["1"], 0),
     "split-current": ([["1", "2"], ["1"], ["2"]], ["1", "2"], 0),
     "rerun-change": ([["1"]], [], 1),
+    "wrong-run": ([["1", "2"]], [], 0),
+    "dry-run": ([], [], 0),
 }
 
 def exercise(script, case, parent):
@@ -101,7 +127,12 @@ def exercise(script, case, parent):
     base = run("git", "rev-parse", "HEAD")
     run("git", "push", "-q", "origin", "master")
     count = 3 if case == "red-change" else 1 if case == "rerun-change" else 2
-    state = {"case": case, "heads": {}, "stages": [], "reruns": 0, "merged": [], "comments": []}
+    foreign_branch = "refs/heads/land-queue-foreign"
+    run("git", "push", "-q", "origin", f"{base}:{foreign_branch}")
+    state = {
+        "case": case, "heads": {}, "stages": [], "reruns": 0, "merged": [], "comments": [],
+        "branches": [], "revisions": [], "lookups": 0,
+    }
     for number in range(1, count + 1):
         run("git", "checkout", "-q", "--detach", base)
         (folder / f"file-{number}").write_text(str(number))
@@ -122,16 +153,31 @@ def exercise(script, case, parent):
         path.write_text(body)
         path.chmod(0o700)
     env = {**os.environ, "FORGE_FIXTURE": str(fixture), "PATH": str(bin_dir) + ":" + os.environ["PATH"]}
-    result = subprocess.run(["bash", script, "--queue", "--once"], cwd=folder, env=env,
-                            text=True, capture_output=True, timeout=15)
+    command = ["bash", script, "--queue", "--once"]
+    if case == "dry-run":
+        command.append("--dry-run")
+    result = subprocess.run(command, cwd=folder, env=env, text=True, capture_output=True, timeout=15)
     actual = json.loads(fixture.read_text())
     stages, merged, reruns = cases[case]
+    refs = {
+        ref: sha
+        for sha, ref in (
+            row.split() for row in run("git", "ls-remote", "origin", "refs/heads/land-queue-*").splitlines()
+        )
+    }
+    expected_refs = {foreign_branch: base}
+    if case == "wrong-run" and actual["branches"]:
+        expected_refs["refs/heads/" + actual["branches"][0]] = actual["revisions"][0]
     passed = (result.returncode == 0 and actual["stages"] == stages and actual["merged"] == merged
-              and actual["reruns"] == reruns and not actual["comments"])
+              and actual["reruns"] == reruns and not actual["comments"] and refs == expected_refs
+              and actual["lookups"] == (len(stages) if case == "split-current" else 0))
+    if case == "dry-run":
+        passed &= "would push land-queue-" in result.stdout
     print(f"{case}: {'PASS' if passed else 'FAIL'}")
     if not passed:
         print(result.stdout, result.stderr)
         print("Observations:", {key: actual[key] for key in ("stages", "merged", "reruns", "comments")})
+        print("Remote staging refs:", refs)
     return passed
 
 if __name__ == "__main__":

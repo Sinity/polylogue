@@ -286,10 +286,11 @@ request. With the queue running an owner does not land by hand.
 cycle takes the oldest ready ones, at most eight, and builds one staging
 commit on master's tip that adds each as a squash commit, computed with
 `git merge-tree` and `git commit-tree`; one that does not merge onto the
-staging commit is left out of this batch. It pushes the staging commit to the
-branch `land-queue` and dispatches the `check` workflow on exactly that
-commit (`rev`), which runs every test. When the run is green and master has
-not moved since, or moved only in packages the batch does not change, it
+staging commit is left out of this batch. Each dispatch gets its own
+`land-queue-<commit>-<suffix>` branch and passes that exact commit to the
+`check` workflow as `rev`. The queue uses the returned run URL if available,
+or looks for the run on that branch with that commit. When the run is green
+and master has not moved since, or moved only in packages the batch does not change, it
 squash-merges the members in order with `--match-head-commit` and says
 whether master's tree is then identical to the tree the staging commit
 predicts. If master moved in a package the batch changes, it builds a new
@@ -316,8 +317,10 @@ comment names. A new head or a branch update puts it back.
 
 The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
 flight (its run finishes unused); members already merged stay merged, and the
-rest are ready pull requests on the next cycle. The staging branch is deleted
-when a cycle ends. Each cycle prints what is not in the batch (check running,
+rest are ready pull requests on the next cycle. Each cycle removes only its
+own staging branches whose runs it confirmed as finished. An abandoned
+branch can be removed once its run has finished. Each cycle prints what is
+not in the batch (check running,
 red on its own head with the failed jobs, conflicting, waiting on review
 threads, sent back, held, draft), then the batch, the staging commit, the
 run, the result, what merged, what was left out and what was sent back. It
@@ -327,10 +330,10 @@ conflicting or sent back; `--dry-run` prints the batch and its staging commit
 without pushing or merging.
 
 `python3 dev/test-land.py` exercises the queue with a local Git remote and a
-simulated forge, including head changes during failed checks and reruns.
+simulated forge. It uses `jq` to evaluate the run lookup and result filters.
 
-`dev/land <n>` lands one pull request by hand and refuses while the
-`land-queue` branch exists, so a hand merge does not move master under a
+`dev/land <n>` lands one pull request by hand and refuses while a
+`land-queue-*` branch exists, so a hand merge does not move master under a
 batch; `--now` merges anyway. It waits for the required check, polling once
 a minute, and compares the packages the pull request changes with those
 master changed since the base its check tested (the `check` job records it as
