@@ -2,7 +2,8 @@
 use super::*;
 use polylogue_model::{
     Reference, Route,
-    read::{ChainStep, TraceCard},
+    bundle::fragments::seek::SourceTextPiece,
+    read::{ChainStep, Source, TraceCard},
 };
 
 row! {
@@ -44,7 +45,88 @@ row! {
     }
 }
 
+row! {
+    struct CallSource {
+        message: MessageId,
+        ordinal: String,
+    }
+    statements {
+        const OF_CALL = "SELECT m.id AS message, coalesce(b.source_position,cast(b.position AS TEXT)) AS ordinal
+            FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+            JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk
+            WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2";
+    }
+}
+
 impl Reader<'_> {
+    /// A selected item and the original coordinates at which it is read.
+    pub fn reading_item(&self, reference: &Reference) -> Result<Option<Source>> {
+        let (message, block) = match reference {
+            Reference::ToolCall(session, call) => {
+                let Some(row) = self.call_source(session, call)? else {
+                    return Ok(None);
+                };
+                let block = row
+                    .ordinal
+                    .parse()
+                    .map_err(|_| StoreError::internal("invalid original block ordinal"))?;
+                return Ok(Some(Source {
+                    reference: reference.to_string(),
+                    ..Source::block(&row.message, session, block, false)
+                }));
+            }
+            Reference::Block { n, .. } => (self.trace_message(reference)?, Some(*n)),
+            Reference::Span { container, .. }
+                if matches!(
+                    container.as_ref(),
+                    Reference::Message(_) | Reference::Block { .. }
+                ) =>
+            {
+                let Some(message) = self.trace_message(container)? else {
+                    return Ok(None);
+                };
+                let Some(span) = self.select_span_source(reference)? else {
+                    return Ok(None);
+                };
+                let block = match span.seek().start.piece {
+                    SourceTextPiece::Body { body } => Some(body.block),
+                    SourceTextPiece::Separator { before, .. } => Some(before.block),
+                    SourceTextPiece::Empty => None,
+                };
+                (Some(message), block)
+            }
+            _ => return Ok(None),
+        };
+        let Some(message) = message else {
+            return Ok(None);
+        };
+        let Some(session) = self.message_session(&message)? else {
+            return Ok(None);
+        };
+        Ok(Some(Source {
+            reference: reference.to_string(),
+            message: Some(message),
+            block,
+            source_session: Some(session),
+            inherited: false,
+        }))
+    }
+
+    fn call_source(&self, session: &SessionId, call: &str) -> Result<Option<CallSource>> {
+        let conn = self.conn()?;
+        let rows = conn.all(&CallSource::OF_CALL, params![session.to_string(), call])?;
+        if rows.len() > 1 {
+            return Err(StoreError::Ambiguous {
+                reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
+                candidates: rows
+                    .into_iter()
+                    .map(|row: CallSource| format!("message:{}", row.message))
+                    .collect(),
+            });
+        }
+        Ok(rows.into_iter().next())
+    }
+
     /// The concrete message containing a traceable item. Unsupported families
     /// remain outside this API rather than masquerading as missing records.
     fn trace_message(&self, reference: &Reference) -> Result<Option<MessageId>> {
@@ -74,15 +156,7 @@ impl Reader<'_> {
                 Ok(message)
             }
             Reference::ToolCall(session, call) => {
-                let conn = self.conn()?;
-                let ids: Vec<MessageId> = conn.values("SELECT m.id FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2", params![session.to_string(), call])?;
-                if ids.len() > 1 {
-                    return Err(StoreError::Ambiguous {
-                        reference: reference.to_string(),
-                        candidates: ids.into_iter().map(|id| format!("message:{id}")).collect(),
-                    });
-                }
-                Ok(ids.into_iter().next())
+                Ok(self.call_source(session, call)?.map(|row| row.message))
             }
             _ => Err(polylogue_model::Reason::TraceTarget {}.into()),
         }
@@ -199,6 +273,7 @@ impl Reader<'_> {
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<TraceSource>();
     check.row::<TraceExtent>();
+    check.row::<CallSource>();
 }
 
 #[cfg(test)]

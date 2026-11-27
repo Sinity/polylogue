@@ -1,6 +1,6 @@
 //! Stored text stays exact; presentation escapes active controls and markup.
 use super::*;
-use polylogue_model::read::{ItemKind, ReadPage};
+use polylogue_model::read::{IndicatorKind, ItemKind, ReadPage};
 use serde_json::{Value, json};
 
 pub(super) fn with_source(records: &[Value], check: impl FnOnce(&crate::Fixture, &Path)) {
@@ -429,6 +429,163 @@ fn collapsed_tool_pairs_keep_selected_input_target() {
                 calls[0].result_source.as_ref().unwrap().reference,
                 "block:claude-code:u1#0"
             );
+        },
+    );
+}
+
+#[test]
+fn around_tool_call_reads_holding_message() {
+    with_source(
+        &[
+            source_record("m0", "user", json!("outside the window")),
+            source_record("m1", "user", json!("before the call")),
+            source_record(
+                "m2",
+                "assistant",
+                json!([
+                    {"type":"text","text":"beside the call"},
+                    {"type":"tool_use","id":"c1","name":"Bash","input":{"command":"synthetic"}}
+                ]),
+            ),
+            source_record(
+                "m3",
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"c1","content":"synthetic result"}]),
+            ),
+            source_record("m4", "assistant", json!("outside after the result")),
+        ],
+        |fixture, _| {
+            let target = "tool:claude-code:stored#c1";
+            for (show, hide, following_is_call) in [
+                ("tools:full,harness:full", "inherited", true),
+                ("harness:full", "tools", false),
+            ] {
+                let output = cli(
+                    fixture,
+                    &[
+                        "--deadline",
+                        "none",
+                        "--json",
+                        target,
+                        "read",
+                        "--around",
+                        "1",
+                        "--show",
+                        show,
+                        "--hide",
+                        hide,
+                        "--budget",
+                        "100000",
+                    ],
+                );
+                assert!(output.status.success(), "{output:?}");
+                let page = read_page(json(&output));
+                let items = &page.document.items;
+                let headers: Vec<_> = items
+                    .iter()
+                    .filter(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+                    .map(|item| item.source.reference.as_str())
+                    .collect();
+                assert_eq!(
+                    headers,
+                    [
+                        "message:claude-code:m1",
+                        "message:claude-code:m2",
+                        "message:claude-code:m3"
+                    ]
+                );
+                let marks: Vec<_> = items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| {
+                        matches!(
+                            item.kind,
+                            ItemKind::Indicator {
+                                indicator: IndicatorKind::Selected,
+                                ..
+                            }
+                        )
+                    })
+                    .collect();
+                let [(at, mark)] = marks.as_slice() else {
+                    panic!("expected one selection mark: {items:?}");
+                };
+                assert_eq!(mark.source.reference, target);
+                assert_eq!(
+                    mark.source.message.as_ref().unwrap().to_string(),
+                    "claude-code:m2"
+                );
+                assert_eq!(mark.source.block, Some(1));
+                if following_is_call {
+                    let ItemKind::Call { call } = &items[*at + 1].kind else {
+                        panic!("selection should mark the call: {items:?}");
+                    };
+                    assert_eq!(call.output.as_deref(), Some("synthetic result"));
+                } else {
+                    assert_eq!(items[*at - 1].source.reference, "message:claude-code:m2");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn span_read_marks_item() {
+    with_source(
+        &[
+            source_record("m1", "user", json!("outside")),
+            source_record(
+                "m2",
+                "assistant",
+                json!([{"type":"text","text":"first"},{"type":"text","text":"aλz"}]),
+            ),
+        ],
+        |fixture, _| {
+            for target in [
+                "block:claude-code:m2#1",
+                "span:block:claude-code:m2#1#b=1-3",
+                "span:message:claude-code:m2#c=8-9",
+            ] {
+                let output = cli(
+                    fixture,
+                    &[
+                        "--deadline",
+                        "none",
+                        "--json",
+                        target,
+                        "read",
+                        "--budget",
+                        "100000",
+                    ],
+                );
+                assert!(output.status.success(), "{output:?}");
+                let page = read_page(json(&output));
+                assert_eq!(texts(&page), ["first", "aλz"]);
+                let items = &page.document.items;
+                let marks: Vec<_> = items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| {
+                        matches!(
+                            item.kind,
+                            ItemKind::Indicator {
+                                indicator: IndicatorKind::Selected,
+                                ..
+                            }
+                        )
+                    })
+                    .collect();
+                let [(at, mark)] = marks.as_slice() else {
+                    panic!("expected one selection mark: {items:?}");
+                };
+                assert_eq!(mark.source.reference, target);
+                assert_eq!(
+                    mark.source.message.as_ref().unwrap().to_string(),
+                    "claude-code:m2"
+                );
+                assert_eq!(mark.source.block, Some(1));
+                assert!(matches!(&items[*at + 1].kind, ItemKind::Text { text } if text == "aλz"));
+            }
         },
     );
 }

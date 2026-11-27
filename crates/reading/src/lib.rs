@@ -131,8 +131,8 @@ pub fn resolve_start(
             Ok(())
         };
     }
-    if let Some(scope) =
-        session::scope(reader, &request.target)?.filter(|scope| scope.range.is_none())
+    if (request.target.starts_with("session:") || request.target.starts_with("root:"))
+        && let Some(scope) = session::scope(reader, &request.target)?
     {
         let logical = scope.logical && !request.options.physical;
         let after = if from_seen && !logical {
@@ -725,9 +725,6 @@ fn reading_route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Er
     {
         return Ok(Route::Rows);
     }
-    let Some(scope) = session::scope(reader, &request.target)? else {
-        return Ok(Route::Rows);
-    };
     // A bundle holds the selection's records; a context, or a reading from
     // the seen mark, is the composed session reading in a bundle too.
     if request.delivery == ReadDelivery::Bundle
@@ -736,6 +733,12 @@ fn reading_route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Er
     {
         return Ok(Route::Rows);
     }
+    if matches!(view, View::Overview | View::Live) {
+        return Ok(Route::Rows);
+    }
+    let Some(scope) = session::scope(reader, &request.target)? else {
+        return Ok(Route::Rows);
+    };
     Ok(match view {
         View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes => {
             Route::Session(scope)
