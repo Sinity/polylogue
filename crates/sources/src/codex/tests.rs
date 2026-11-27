@@ -597,52 +597,80 @@ fn spawned_agents_are_linked_from_the_call() {
     );
 }
 
-/// An agent reports many activity items; its spawn is one statement,
-/// stated by the first of them, however the bytes are split.
 #[test]
-fn a_subagents_activity_states_its_spawn_once() {
+fn only_starting_a_subagent_states_a_spawn() {
     let child = "019a0000-0000-7000-8000-0000000000cc";
-    let activity = |ordinal: u64, id: &str| {
+    let activity = |ordinal: u64, id: &str, kind: Option<&str>, other: &str| {
+        let mut item = json!({"type": "SubAgentActivity", "id": id, "agent_thread_id": other});
+        if let Some(kind) = kind {
+            item["kind"] = json!(kind);
+        }
         env(
             ordinal,
             "event_msg",
             json!({"type": "item_completed", "thread_id": THREAD, "turn_id": "t1",
-            "item": {"type": "SubAgentActivity", "id": id, "agent_thread_id": child},
-            "completed_at_ms": 1}),
+            "item": item, "completed_at_ms": 1}),
         )
     };
-    let records = vec![
-        meta(json!({})),
-        activity(2, "act_1"),
-        activity(3, "act_2"),
-        activity(4, "act_3"),
+    let records = [
+        meta(json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT}}}})),
+        activity(2, "act_parent", Some("interacted"), PARENT),
+        activity(3, "act_child", Some("interacted"), child),
+        activity(4, "act_start", Some("started"), child),
+        activity(5, "act_duplicate", Some("started"), child),
+        activity(6, "act_complete", Some("completed"), child),
+        activity(7, "act_unspecified", None, PARENT),
     ];
-    let spawns = |steps: &[Step]| -> Vec<(String, Option<String>)> {
-        steps
+    let assert_activity = |steps: &[Step]| {
+        let links = steps
             .iter()
             .flat_map(|step| &step.output.links)
-            .filter(|link| link.kind == LinkKind::Spawn)
-            .map(|link| {
-                (
-                    link.child.native().as_str().to_owned(),
-                    link.call_id.clone(),
-                )
+            .collect::<Vec<_>>();
+        let [parent, spawn] = links.as_slice() else {
+            panic!("unexpected links: {links:?}");
+        };
+        assert_eq!(parent.kind, LinkKind::Spawn);
+        assert_eq!(parent.parent.native().as_str(), PARENT);
+        assert_eq!(parent.child.native().as_str(), THREAD);
+        assert_eq!(spawn.kind, LinkKind::Spawn);
+        assert_eq!(spawn.parent.native().as_str(), THREAD);
+        assert_eq!(spawn.child.native().as_str(), child);
+        assert_eq!(spawn.call_id.as_deref(), Some("act_start"));
+        let events = steps
+            .iter()
+            .flat_map(|step| &step.output.events)
+            .filter(|event| event.kind == "subagent_activity")
+            .map(|event| {
+                event
+                    .data
+                    .pointer("/item/id")
+                    .and_then(Json::as_str)
+                    .unwrap()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            [
+                "act_parent",
+                "act_child",
+                "act_start",
+                "act_duplicate",
+                "act_complete",
+                "act_unspecified"
+            ]
+        );
     };
-    let expected = vec![(child.to_owned(), Some("act_1".to_owned()))];
     let mut parser_state = ParserState::default();
     let whole = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
-    assert_eq!(spawns(&[whole]), expected);
+    assert_activity(&[whole]);
     let bytes = jsonl(&records);
-    let split = bytes.iter().position(|b| *b == b'\n').unwrap() + 1;
-    let split = split + bytes[split..].iter().position(|b| *b == b'\n').unwrap() + 1;
+    let split = jsonl(&records[..4]).len();
     let mut parser_state = ParserState::default();
     let first = run(&rollout(), &mut parser_state, &bytes[..split], 0).unwrap();
     let parser_state_json = serde_json::to_string(&parser_state).unwrap();
     let mut parser_state: ParserState = serde_json::from_str(&parser_state_json).unwrap();
     let rest = run(&rollout(), &mut parser_state, &bytes[split..], split as u64).unwrap();
-    assert_eq!(spawns(&[first, rest]), expected);
+    assert_activity(&[first, rest]);
 }
 
 #[test]
