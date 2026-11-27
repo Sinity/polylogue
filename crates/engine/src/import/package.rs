@@ -16,39 +16,98 @@ pub(super) struct Member {
     pub refusal: Option<String>,
 }
 
+/// A staged file that may still need expanding. Container errors are deferred
+/// until its package has had a chance to identify it as an attachment.
+struct PendingMember {
+    member: Member,
+    format: std::io::Result<Option<Container>>,
+}
+
+impl PendingMember {
+    fn new(path: PathBuf, bytes: polylogue_store::staging::PreparedBytes) -> std::io::Result<Self> {
+        let mut file = bytes.reader().map_err(std::io::Error::other)?;
+        let mut magic = [0; 512];
+        let n = file.read(&mut magic)?;
+        let format = Container::of(&path, &magic[..n]);
+        Ok(Self {
+            member: Member {
+                path,
+                bytes,
+                container: false,
+                origin: None,
+                parent: None,
+                container_kind: None,
+                member_path_bytes: None,
+                refusal: None,
+            },
+            format,
+        })
+    }
+
+    fn is_container(&self) -> bool {
+        !matches!(self.format, Ok(None))
+    }
+}
+
 pub(super) fn stage(
     path: &Path,
     archive: &Archive,
     origin: Option<&str>,
 ) -> std::io::Result<Vec<Member>> {
-    let mut members = Vec::new();
-    let mut seen = Expansion::default();
-    if path.is_dir() {
-        let mut paths = Vec::new();
+    let mut paths = Vec::new();
+    let root = if path.is_dir() {
         files_under(path, &mut paths)?;
-        for child in paths {
-            expand(
-                child.clone(),
-                copy_source(&child, archive)?,
-                None,
-                archive,
-                &mut seen,
-                &mut members,
-            )?;
-        }
+        path
     } else {
-        expand(
-            path.to_path_buf(),
-            copy_source(path, archive)?,
-            None,
-            archive,
-            &mut seen,
-            &mut members,
-        )?;
+        paths.push(path.to_path_buf());
+        path.parent().unwrap_or(Path::new(""))
+    };
+    let pending = paths
+        .into_iter()
+        .map(|path| {
+            let bytes = copy_source(&path, archive)?;
+            PendingMember::new(path, bytes)
+        })
+        .collect::<std::io::Result<_>>()?;
+    let mut members = Vec::new();
+    expand_members(
+        pending,
+        root,
+        archive,
+        origin,
+        &mut Expansion::default(),
+        &mut members,
+    )?;
+    // A repeated container shares the route of its first, expanded copy.
+    let kept: std::collections::HashSet<_> = members
+        .iter()
+        .filter(|member| member.container && member.origin.is_some())
+        .map(|member| member.bytes.hash())
+        .collect();
+    for member in members.iter_mut().filter(|member| member.container) {
+        if member.origin.is_none() && kept.contains(&member.bytes.hash()) {
+            member.origin = polylogue_sources::origin::by_name(KEPT);
+        }
     }
-    classify(&mut members, origin)?;
     super::bundle::preflight(&mut members)?;
     Ok(members)
+}
+
+fn expand_members(
+    mut pending: Vec<PendingMember>,
+    root: &Path,
+    archive: &Archive,
+    origin: Option<&str>,
+    seen: &mut Expansion,
+    out: &mut Vec<Member>,
+) -> std::io::Result<()> {
+    // Files at one container level share a package. Settle those roles before
+    // expanding containers so uploaded archives are kept as attachment bytes.
+    classify(&mut pending, root, origin)?;
+    for pending in pending {
+        expand(pending, archive, origin, seen, out)?;
+    }
+    Ok(())
 }
 
 fn copy_source(
@@ -91,53 +150,32 @@ fn fits_in_staging(archive: &Archive, declared: u64) -> std::io::Result<()> {
 }
 
 fn expand(
-    path: PathBuf,
-    bytes: polylogue_store::staging::PreparedBytes,
-    parent: Option<(usize, u64)>,
+    pending: PendingMember,
     archive: &Archive,
+    origin: Option<&str>,
     seen: &mut Expansion,
     out: &mut Vec<Member>,
 ) -> std::io::Result<()> {
-    let mut file = bytes.reader().map_err(std::io::Error::other)?;
-    let mut magic = [0; 512];
-    let n = file.read(&mut magic)?;
-    file.rewind()?;
-    let container = Container::of(&path, &magic[..n])?;
-    let index = out.len();
-    let hash = bytes.hash();
-    if container.is_some() && seen.ancestors.contains(&hash) {
+    let PendingMember { mut member, format } = pending;
+    let Some(container) = format? else {
+        out.push(member);
+        return Ok(());
+    };
+    member.container = true;
+    let path = &member.path;
+    let hash = member.bytes.hash();
+    if seen.ancestors.contains(&hash) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("container {} contains its own bytes", path.display()),
         ));
     }
-    if container.is_some() && !seen.expanded.insert(hash) {
+    if !seen.expanded.insert(hash) {
         // The same container at another path: its members are already staged.
-        out.push(Member {
-            path,
-            bytes,
-            container: true,
-            origin: None,
-            parent,
-            container_kind: None,
-            member_path_bytes: None,
-            refusal: None,
-        });
+        out.push(member);
         return Ok(());
     }
-    let Some(container) = container else {
-        out.push(Member {
-            path,
-            bytes,
-            container: false,
-            origin: None,
-            parent,
-            container_kind: None,
-            member_path_bytes: None,
-            refusal: None,
-        });
-        return Ok(());
-    };
+    let mut file = member.bytes.reader().map_err(std::io::Error::other)?;
     let mut children = Vec::new();
     if let Container::Zip = container {
         let mut zip = zip::ZipArchive::new(&mut file).map_err(std::io::Error::other)?;
@@ -202,35 +240,30 @@ fn expand(
         std::io::copy(&mut tar.into_inner(), &mut std::io::sink())?;
     }
     drop(file);
-    out.push(Member {
-        path: path.clone(),
-        bytes,
-        container: true,
-        origin: Some(polylogue_sources::origin::by_name(KEPT).expect("container origin")),
-        parent,
-        container_kind: None,
-        member_path_bytes: None,
-        refusal: None,
-    });
+    let index = out.len();
+    let root = PathBuf::from(format!("{}!", path.display()));
+    member.origin = polylogue_sources::origin::by_name(KEPT);
+    out.push(member);
     let kind = container.kind();
-    seen.ancestors.push(hash);
-    for (name, i, member, display) in children {
-        let child = out.len();
+    let mut pending = Vec::new();
+    for (name, i, bytes, display) in children {
         let display = display.unwrap_or_else(|| {
             String::from_utf8(name.clone())
                 .unwrap_or_else(|_| name.iter().map(|byte| format!("%{byte:02X}")).collect())
         });
-        expand(
-            PathBuf::from(format!("{}!/{display}", path.display())),
-            member,
-            Some((index, i)),
-            archive,
-            seen,
-            out,
+        // Preserve the full member name in provenance, including any leading
+        // slash, even though it is never resolved as a filesystem path.
+        let mut child = PendingMember::new(
+            PathBuf::from(format!("{}/{display}", root.display())),
+            bytes,
         )?;
-        out[child].container_kind = Some(kind.into());
-        out[child].member_path_bytes = Some(name);
+        child.member.parent = Some((index, i));
+        child.member.container_kind = Some(kind.into());
+        child.member.member_path_bytes = Some(name);
+        pending.push(child);
     }
+    seen.ancestors.push(hash);
+    expand_members(pending, &root, archive, origin, seen, out)?;
     seen.ancestors.pop();
     Ok(())
 }
@@ -285,10 +318,18 @@ impl Container {
     }
 }
 
-fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()> {
+fn classify(
+    pending: &mut [PendingMember],
+    root: &Path,
+    origin: Option<&str>,
+) -> std::io::Result<()> {
     use polylogue_sources::origin::{Others, Package};
     let mut package_roots = Vec::new();
-    for member in members.iter_mut().filter(|member| !member.container) {
+    for member in pending
+        .iter_mut()
+        .filter(|item| !item.is_container())
+        .map(|item| &mut item.member)
+    {
         member.origin = super::recognition::declared(
             &member.path,
             &mut member.bytes.reader().map_err(std::io::Error::other)?,
@@ -302,31 +343,27 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
             ));
         }
         if Package::root_name(file_name(&member.path)) {
-            package_roots.push((
-                member.parent.map(|parent| parent.0),
-                member.path.parent().unwrap_or(Path::new("")).to_path_buf(),
-            ));
+            package_roots.push(member.path.parent().unwrap_or(Path::new("")).to_path_buf());
         }
         let mut prefix = PathBuf::new();
         for part in member.path.components() {
             prefix.push(part);
             if part.as_os_str() == Package::TAKEOUT {
-                package_roots.push((member.parent.map(|parent| parent.0), prefix));
+                package_roots.push(prefix);
                 break;
             }
         }
     }
-    let keys: Vec<_> = members
+    let keys: Vec<_> = pending
         .iter()
-        .map(|member| {
-            let parent = member.parent.map(|parent| parent.0);
-            let root = package_roots
+        .map(|item| {
+            let path = &item.member.path;
+            package_roots
                 .iter()
-                .filter(|(container, root)| *container == parent && member.path.starts_with(root))
-                .max_by_key(|(_, root)| root.components().count())
-                .map(|(_, root)| root.clone())
-                .unwrap_or_else(|| member.path.parent().unwrap_or(Path::new("")).to_path_buf());
-            (parent, root)
+                .filter(|root| path.starts_with(root))
+                .max_by_key(|root| root.components().count())
+                .cloned()
+                .unwrap_or_else(|| path.parent().unwrap_or(Path::new("")).to_path_buf())
         })
         .collect();
     // Each group of members under one root: what each is on its own, and
@@ -336,12 +373,13 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         members: Vec<(&'a str, Option<&'static OriginSpec>)>,
         recognized: bool,
     }
-    let mut groups = std::collections::BTreeMap::<&(Option<usize>, PathBuf), Group>::new();
-    for (member, key) in members
+    let mut groups = std::collections::BTreeMap::<&PathBuf, Group>::new();
+    for (item, key) in pending
         .iter()
         .zip(&keys)
-        .filter(|(member, _)| !member.container)
+        .filter(|(item, _)| !item.is_container())
     {
+        let member = &item.member;
         let group = groups.entry(key).or_default();
         group.members.push((file_name(&member.path), member.origin));
         group.recognized |= member
@@ -350,18 +388,40 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
     }
     let mut packages = std::collections::BTreeMap::new();
     for (key, group) in &groups {
-        let package = Package::of(&key.1, &group.members)
+        let package = Package::of(key, &group.members)
             .map_err(|reason| std::io::Error::new(std::io::ErrorKind::InvalidData, reason))?;
         packages.insert(*key, (package, group.recognized));
     }
     let kept = polylogue_sources::origin::by_name(KEPT);
-    let mut routes = Vec::with_capacity(members.len());
-    for (member, key) in members.iter().zip(&keys) {
-        if member.container {
-            routes.push(None);
+    for (item, key) in pending.iter_mut().zip(&keys) {
+        let container = item.is_container();
+        let member = &mut item.member;
+        let (package, recognized) = packages.get(key).copied().unwrap_or_default();
+        if container {
+            let attachment = package.is_some_and(|package| {
+                let relative = member
+                    .path
+                    .strip_prefix(root)
+                    .unwrap_or(&member.path)
+                    .to_string_lossy();
+                ORIGINS.iter().any(|origin| {
+                    origin
+                        .import
+                        .member
+                        .as_ref()
+                        .is_some_and(|rule| rule.package == package)
+                        && origin
+                            .assets
+                            .as_ref()
+                            .is_some_and(|assets| (assets.member_id)(&relative).is_some())
+                })
+            });
+            if attachment {
+                item.format = Ok(None);
+                member.origin = kept;
+            }
             continue;
         }
-        let (package, recognized) = packages[key];
         let alone = member.origin;
         let path = member.path.to_string_lossy();
         let name = file_name(&member.path);
@@ -370,7 +430,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         } else {
             alone
         };
-        let route = match package {
+        member.origin = match package {
             Some(package) => ORIGINS
                 .iter()
                 .find(|origin| {
@@ -386,32 +446,6 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
                 }),
             None => generic,
         };
-        routes.push(route);
-    }
-    for (member, route) in members.iter_mut().zip(routes) {
-        member.origin = route;
-    }
-    for index in (0..members.len())
-        .rev()
-        .filter(|index| members[*index].container)
-        .collect::<Vec<_>>()
-    {
-        if members.iter().any(|member| {
-            member.parent.is_some_and(|parent| parent.0 == index) && member.origin.is_some()
-        }) {
-            members[index].origin = polylogue_sources::origin::by_name(KEPT);
-        }
-    }
-    // A repeated container shares the route of its first, expanded copy.
-    let kept: std::collections::HashSet<_> = members
-        .iter()
-        .filter(|member| member.container && member.origin.is_some())
-        .map(|member| member.bytes.hash())
-        .collect();
-    for member in members.iter_mut().filter(|member| member.container) {
-        if member.origin.is_none() && kept.contains(&member.bytes.hash()) {
-            member.origin = polylogue_sources::origin::by_name(KEPT);
-        }
     }
     Ok(())
 }
