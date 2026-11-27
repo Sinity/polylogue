@@ -223,6 +223,25 @@ fn a_rewrite_flushed_half_way_takes_the_records_it_shares() {
     );
 }
 
+#[test]
+fn an_incomplete_append_keeps_current_wire_coverage_equal_to_rebuild() {
+    let versions = [
+        Version {
+            branch: 1,
+            length: 1,
+            cut: false,
+        },
+        Version {
+            branch: 1,
+            length: 2,
+            cut: true,
+        },
+    ];
+    let (_, differ, appended) = updated_and_rebuilt(&versions);
+    assert!(differ.is_empty(), "{differ}");
+    assert!(appended.is_empty(), "after an append: {appended}");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,

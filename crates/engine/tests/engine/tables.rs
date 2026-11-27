@@ -96,10 +96,11 @@ pub(crate) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 "(SELECT g.body FROM content_group g WHERE g.id=t.content_group) AS content_group"
                     .to_owned()
             } else if table == "wire_parse" && name == "state" {
-                // Each archive copy assigns its own observation ID to the
-                // appended bytes. The committed range and time still agree.
+                // Completion is evidence from earlier reads. A rebuild of
+                // an incomplete tail never made the earlier complete read.
+                // Wire coverage tests compare those observations separately.
                 format!(
-                    "json_remove(t.state,{},'$.completed.observation') AS state",
+                    "json_remove(t.state,{},'$.completed','$.completed_before_reset') AS state",
                     READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(",")
                 )
             } else { format!("t.\"{name}\"") }
