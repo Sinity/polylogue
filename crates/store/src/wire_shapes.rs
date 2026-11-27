@@ -404,14 +404,20 @@ fn apply_inner(
             let prefix_missing = !step.reset && old.prefix_missing;
             let coverage_changed = prefix_missing != old.prefix_missing;
             old.prefix_missing = prefix_missing;
+            let at_checkpoint = step.parsed_upto == old.parsed_to;
             let reaches_end = step.at_end && step.parsed_upto >= source.length;
+            // A partial append can move the observed end without adding
+            // a record. Keep the previous completion and update the length
+            // inspected by this reading, without letting a retry shrink it.
+            let inspected_more = at_checkpoint && step.at_end && source.length > old.length;
             if coverage_changed
-                || (step.parsed_upto == old.parsed_to && reaches_end && !old.reached_end)
+                || inspected_more
+                || (at_checkpoint && reaches_end && !old.reached_end)
             {
-                if reaches_end && !old.refused {
+                if (reaches_end || inspected_more) && !old.refused {
                     old.reached_end = true;
                 }
-                old.length = source.length;
+                old.length = old.length.max(source.length);
                 old.last = occurrence.clone();
                 if old.status() == CoverageStatus::Complete {
                     old.complete(source, &occurrence);
