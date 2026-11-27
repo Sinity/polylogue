@@ -11,9 +11,12 @@ pub(super) fn run(
     d: &Daemon,
     manifest: Option<&Path>,
 ) -> Answer<polylogue_store::verify::Verification> {
-    let _turn = match d.idle_gate.background() {
-        Ok(turn) => turn,
-        Err(e) => return store_error(&e),
+    let _turn = {
+        let _waiting = polylogue_store::activity::doing("waiting to check the archive");
+        match d.idle_gate.background() {
+            Ok(turn) => turn,
+            Err(e) => return store_error(&e),
+        }
     };
     let blobs = match d.archive.blobs() {
         Ok(blobs) => Arc::new(blobs),
