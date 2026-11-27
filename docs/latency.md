@@ -26,7 +26,7 @@ The read-class `internal advisory` operation has a stricter preparation cap of 2
 
 ## Writes and deadlines
 
-Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
+Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a line each step has its own class and shares the original read deadline. After a write step, a reader waits for the index to take in that write before opening its snapshot. If the wait runs out, the line reports the read's timeout alongside the completed write.
 
 **A listing's count** runs after its page, on the request's own reader, until the deadline less the time the reply needs (a fifth of what is left, at most a second); a count that runs out answers the page with `count deferred` and the command that counts without a deadline.
 

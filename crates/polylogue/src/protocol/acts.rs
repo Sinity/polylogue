@@ -67,6 +67,7 @@ pub enum ActOutcome {
     /// Queued behind the session's running resume.
     Queued,
     NotSent,
+    Cancelled,
 }
 
 /// One session a message went to.
@@ -81,15 +82,33 @@ pub struct Delivered {
     pub outcome: ActOutcome,
     /// Why it was not sent
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
+    pub reason: Option<NotSentReason>,
     /// When a prepared message reaches its session
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// The role whose new instance the message started
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<String>,
+}
+
+/// The cause of an unsent delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, thiserror::Error)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NotSentReason {
+    #[error("session_missing")]
+    SessionMissing,
+    #[error("session_not_live: the session is {}", state.as_str())]
+    SessionNotLive {
+        state: polylogue_model::live::LiveState,
+    },
+    #[error("unsupported: {message}")]
+    Unsupported { message: String },
+    #[error("directory_unknown")]
+    DirectoryUnknown,
+    #[error("directory_missing({})", path.display())]
+    DirectoryMissing { path: PathBuf },
+    #[error("failed({message})")]
+    Failed { message: String },
 }
 
 /// A message sent to one address: the message annotation (none when it
@@ -124,7 +143,25 @@ pub struct SendReport {
 #[serde(deny_unknown_fields)]
 pub struct Skipped {
     pub session: String,
+    pub reason: SkipReason,
     pub line: String,
+}
+
+/// Why a session in a multi-recipient send was skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkipReason {
+    SessionMissing,
+    SessionNotRunning {
+        state: polylogue_model::live::LiveState,
+    },
+}
+
+/// Why a hosted permission request was cancelled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerCancellation {
+    /// The permission option kinds the harness offered.
+    pub options: Vec<String>,
 }
 
 /// An answer to a session's pending request.
@@ -136,6 +173,8 @@ pub struct Answered {
     pub request: String,
     pub channel: Channel,
     pub outcome: ActOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<AnswerCancellation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub undo: String,

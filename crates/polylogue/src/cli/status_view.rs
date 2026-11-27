@@ -832,6 +832,18 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
     if !parts.is_empty() {
         lines.push(format!("{} awaiting a write", parts.join(" · ")));
     }
+    for (failures, scope) in [
+        (pending.delivery_write_failures, "delivery writes"),
+        (pending.mailbox_failures, "mailbox operations"),
+        (pending.host_reattachment_failures, "host reattachments"),
+    ] {
+        if failures > 0 {
+            lines.push(view.error(&format!(
+                "{} failed {scope} since daemon start",
+                count(failures)
+            )));
+        }
+    }
     if let Some(error) = &pending.last_error {
         lines.push(view.error(error));
     }

@@ -6,7 +6,7 @@ use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::daemon::service::acts;
-use crate::protocol::acts::{Acted, Reached, SendReport, Skipped};
+use crate::protocol::acts::{Acted, Reached, SendReport, SkipReason, Skipped};
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{AnswerStep, InterruptStep, SendStep};
 use command_surface::{Answer as Answered, Envelope, Outcome};
@@ -144,15 +144,20 @@ fn send(
                 // The same notion of running as `would`: a session just
                 // started and still hosted has no live events yet.
                 let session = session_id(target)?;
-                let running = acts::session_state(
+                let state = acts::session_state(
                     call.daemon,
                     &session,
                     call.daemon.config.requests.now().unix_ms(),
-                )?
-                .is_some_and(|(state, _, _)| state.running());
-                if !running {
+                )?;
+                let reason = match state {
+                    Some((state, _, _)) if state.running() => None,
+                    Some((state, _, _)) => Some(SkipReason::SessionNotRunning { state }),
+                    None => Some(SkipReason::SessionMissing),
+                };
+                if let Some(reason) = reason {
                     report.skipped.push(Skipped {
                         session: target.clone(),
+                        reason,
                         line: format!(
                             "polylogue {} send {}",
                             target,
@@ -176,6 +181,28 @@ fn send(
         report
             .reached
             .push(super::gather(reached, &mut outcome, &mut envelope)?);
+    }
+    use crate::protocol::acts::ActOutcome;
+    let not_sent = report
+        .reached
+        .iter()
+        .filter_map(|reached| match reached {
+            Reached::Session(sent) => Some(&sent.deliveries),
+            Reached::WebChat(_) => None,
+        })
+        .flatten()
+        .filter(|delivery| delivery.outcome == ActOutcome::NotSent);
+    let mut missing: Vec<_> = not_sent
+        .map(|delivery| format!("message to {}", delivery.session))
+        .collect();
+    missing.extend(
+        report
+            .skipped
+            .iter()
+            .map(|skipped| format!("message to {}", skipped.session)),
+    );
+    if !missing.is_empty() {
+        super::merge_outcome(&mut outcome, Outcome::Degraded { value: (), missing });
     }
     Ok(Answered {
         outcome: outcome.map(|()| report),

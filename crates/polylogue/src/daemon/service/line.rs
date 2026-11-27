@@ -742,8 +742,7 @@ impl Stream<'_> {
     ) -> Result<StepDone, Failure> {
         if read.follow {
             let target = verbs::read::target(selection)?;
-            let marks =
-                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            let marks = super::follow::run(&call.call, self.context, &target, None, self.output)?;
             return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
         let answer = verbs::read::stream(
@@ -775,6 +774,7 @@ fn execute_steps(
     let mut envelope = Envelope::default();
     let mut outcome = Outcome::Empty(());
     let mut failed = false;
+    let mut after_write = None;
     for (index, step) in steps.into_iter().enumerate() {
         let verb = step.verb();
         if failed {
@@ -786,7 +786,8 @@ fn execute_steps(
             continue;
         }
         let request_id = step_request(call.request_id, index);
-        let step_call = StepCall::new(call, &request_id);
+        let mut step_call = StepCall::new(call, &request_id);
+        step_call.call.after_write = after_write;
         let work = || {
             if let Some(limit) = limit {
                 limit.check()?;
@@ -810,7 +811,12 @@ fn execute_steps(
         let reported = match result {
             Ok(done) => {
                 verbs::merge_outcome(&mut outcome, done.outcome());
-                let StepDone { answer, undo } = done;
+                let StepDone {
+                    answer,
+                    undo,
+                    position,
+                } = done;
+                after_write = after_write.max(position);
                 envelope.notes.extend(answer.envelope.notes);
                 if !answer.envelope.next.is_empty() {
                     envelope.next = answer.envelope.next;
@@ -838,7 +844,10 @@ fn execute_steps(
             request_id: Some(request_id),
             outcome: reported,
         });
-        if let Some(stream) = &mut stream {
+        if !failed
+            && limit.is_none_or(|limit| limit.check().is_ok())
+            && let Some(stream) = &mut stream
+        {
             stream.reports(selection, &mut reports, &mut envelope)?;
         }
     }

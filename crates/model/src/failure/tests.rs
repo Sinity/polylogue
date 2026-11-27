@@ -181,6 +181,11 @@ fn every_reason_has_one_code_and_one_text() {
             "resume --in needs the session whose work it continues",
         ),
         (
+            Reason::ContinuationRequestUsed {},
+            Code::Conflict,
+            "this request ID already names a different operation",
+        ),
+        (
             Reason::ResumeOptionsNeedIn {},
             Code::BadRequest,
             "resume --at, --cwd and --stop-source apply only with --in HARNESS",
@@ -532,6 +537,13 @@ fn every_reason_has_one_code_and_one_text() {
             },
             Code::BadRequest,
             "the import is refused: problem-x",
+        ),
+        (
+            Reason::ImportRefused {
+                problem: "refused /home/op/export.json: no declared structure matched".into(),
+            },
+            Code::BadValue,
+            "no files were stored\nrefused /home/op/export.json: no declared structure matched",
         ),
         (
             Reason::NotAFile {

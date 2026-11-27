@@ -51,15 +51,22 @@ impl Verb for Save {
             question = value.text;
         }
         let mut undo = Vec::new();
+        let mut position = None;
         let mut done = StepDone::from(
-            handlers::save_selection(step, question, selection, &call.call)?.map(
-                |(report, committed)| {
-                    undo = committed;
-                    StepAnswer::Saved(report)
-                },
-            ),
+            handlers::save_selection(step, question, selection, &call.call)?.map(|committed| {
+                position = Some(committed.position);
+                let result = committed.outcome;
+                undo = result.written;
+                let mut report = result
+                    .save
+                    .expect("Save transaction returns its resolved outcomes");
+                report.pending = result.outcome.pending;
+                report.repeat |= result.outcome.repeat;
+                StepAnswer::Saved(report)
+            }),
         )
         .checked()?;
+        done.position = position;
         done.undo
             .extend(super::undo_line(call.call.request_id, &undo)?);
         Ok(done)

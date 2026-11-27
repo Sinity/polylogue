@@ -1,3 +1,4 @@
+mod read_after_write;
 mod saved_queries;
 
 use crate::test_daemon::{self, Call, TestDaemon};

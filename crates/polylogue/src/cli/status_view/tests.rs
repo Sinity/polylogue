@@ -48,6 +48,9 @@ fn answer() -> Answer {
         verification: None,
         session_starts_without_context: None,
         pending_writes: PendingWrites {
+            delivery_write_failures: 0,
+            mailbox_failures: 0,
+            host_reattachment_failures: 0,
             delivery_outcomes: 0,
             live_event_lines: 0,
             last_error: None,
