@@ -1075,3 +1075,91 @@ fn middle_page_start_does_not_visit_prefix() {
         polylogue_model::read::ValueState::known(2 * (MESSAGES + 10))
     );
 }
+
+#[test]
+fn until_uses_exclusive_compactions_messages_and_times() {
+    let d = test_daemon::start("placeholder");
+    let target = "session:claude-code:range";
+    let message = |id: &str, second: u32, text: &str| {
+        let mut line: serde_json::Value =
+            serde_json::from_str(&polylogue_testkit::claude_user(id, "range", text)).unwrap();
+        line["timestamp"] = serde_json::json!(format!("2026-03-01T10:00:{second:02}Z"));
+        format!("{line}\n")
+    };
+    let compaction = |id: &str, parent: &str, second: u32| {
+        let line = serde_json::json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": id, "sessionId": "range",
+            "logicalParentUuid": parent, "timestamp": format!("2026-03-01T10:00:{second:02}Z"),
+            "compactMetadata": {"trigger": "auto", "preTokens": 1000}
+        });
+        format!("{line}\n")
+    };
+    let path = d.home.join(".claude/projects/-p/range.jsonl");
+    let mut source = [
+        message("a", 0, "alpha"),
+        compaction("ab", "a", 1),
+        message("b", 2, "beta"),
+        message("c", 3, "gamma"),
+    ]
+    .concat();
+    std::fs::write(&path, &source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    let read = |until: Option<String>, budget| {
+        let mut read = polylogue_reading::ReadRequest::new(
+            target,
+            ReadOptions {
+                view: View::Dialogue,
+                until,
+                ..Default::default()
+            },
+        );
+        read.budget = budget;
+        crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon))
+    };
+    let all = read(None, polylogue_model::read::ReadBudget::Unlimited);
+    let last = all
+        .document
+        .items
+        .iter()
+        .rfind(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+        .unwrap()
+        .source
+        .reference
+        .clone();
+    for (until, expected) in [
+        ("compaction", "alpha"),
+        ("2026-03-01T10:00:02Z", "alpha"),
+        ("2s", "alpha"),
+        (last.as_str(), "alphabeta"),
+    ] {
+        let mut text = Text::default();
+        text.page(&read(
+            Some(until.into()),
+            polylogue_model::read::ReadBudget::Unlimited,
+        ));
+        assert_eq!(text.value, expected, "end before {until}");
+    }
+    let first = read(
+        Some("compaction".into()),
+        polylogue_model::read::ReadBudget::Tokens(8),
+    );
+    let mut cursor = Some(next(&first).expect("the range takes multiple pages"));
+    source.push_str(&compaction("bc", "c", 4));
+    source.push_str(&message("d", 5, "delta"));
+    std::fs::write(path, source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 5);
+    let mut text = Text::default();
+    text.page(&first);
+    while let Some(current) = cursor {
+        let continued = page(&d.daemon, target, false, View::Dialogue, 8, Some(&current));
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    assert_eq!(text.value, "alpha");
+    let mut latest = Text::default();
+    latest.page(&read(
+        Some("compaction".into()),
+        polylogue_model::read::ReadBudget::Unlimited,
+    ));
+    assert_eq!(latest.value, "alphabetagamma");
+}

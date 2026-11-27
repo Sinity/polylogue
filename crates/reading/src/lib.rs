@@ -157,6 +157,7 @@ pub fn resolve_start(
             logical,
             parts: vec![],
             window_end: None,
+            until: None,
         }));
     } else if from_seen {
         return Err(Reason::FromSeenNeedsOneSession {}.into());
@@ -700,6 +701,14 @@ enum Route {
 }
 
 fn route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
+    let route = reading_route(reader, request)?;
+    if request.options.until.is_some() && !matches!(route, Route::Session(_)) {
+        return Err(Error::invalid_query("--until needs a session reading"));
+    }
+    Ok(route)
+}
+
+fn reading_route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
     let view = request.options.view;
     if view == View::Trace {
         return Ok(Route::Trace);
