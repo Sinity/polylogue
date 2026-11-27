@@ -2,16 +2,15 @@ use super::*;
 fn parsed(words: &[&str]) -> ParsedLine {
     parse(
         &words.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         true,
     )
     .unwrap()
 }
 #[test]
 fn first_word_order_matches_design() {
-    let catalog = FirstWordCatalog {
-        saved: vec!["mine".into(), "status".into(), "read".into()],
-        shipped: vec![],
+    let saved = SavedNames {
+        authored: vec!["mine".into(), "status".into(), "read".into()],
     };
     for (words, rule) in [
         (vec![], 1),
@@ -25,7 +24,7 @@ fn first_word_order_matches_design() {
         (vec!["chrono"], 9),
     ] {
         let args = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
-        assert_eq!(parse(&args, &catalog, true).unwrap().first.rule(), rule);
+        assert_eq!(parse(&args, &saved, true).unwrap().first.rule(), rule);
     }
 }
 #[test]
@@ -104,7 +103,7 @@ fn undeclared_option_refused() {
             "x".into(),
             "--follow".into(),
         ],
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         true,
     )
     .unwrap_err();
@@ -114,7 +113,7 @@ fn undeclared_option_refused() {
 fn selection_must_be_one_argument_with_corrected_line() {
     let error = parse(
         &["repo:sinex".into(), "since:7d".into(), "read".into()],
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         true,
     )
     .unwrap_err();
@@ -128,7 +127,7 @@ fn selection_must_be_one_argument_with_corrected_line() {
 fn literal_selection_keeps_its_marker_in_the_corrected_line() {
     let error = parse(
         &["--".into(), "foo".into(), "bar".into()],
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         true,
     )
     .unwrap_err();
@@ -137,19 +136,14 @@ fn literal_selection_keeps_its_marker_in_the_corrected_line() {
 }
 #[test]
 fn row_numbers_refused_off_terminal() {
-    let error = parse(
-        &["@1".into(), "read".into()],
-        &FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap_err();
+    let error = parse(&["@1".into(), "read".into()], &SavedNames::default(), false).unwrap_err();
     assert_eq!(error.code, Code::RowNumbersOffTerminal);
 }
 #[test]
 fn stdin_is_read_once() {
     let error = parse(
         &["-".into(), "note".into(), "-".into()],
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         false,
     )
     .unwrap_err();
@@ -235,9 +229,8 @@ fn formatted(request: &command_surface::RunnableRequest) -> command_surface::Run
     let (words, bytes) = shell_arguments(&command);
     let mut line = parse(
         &words,
-        &FirstWordCatalog {
-            saved: vec!["mine".into()],
-            shipped: vec![],
+        &SavedNames {
+            authored: vec!["mine".into()],
         },
         false,
     )
@@ -293,7 +286,7 @@ fn read_budget_null_zero_and_absence_round_trip_the_real_line_boundary() {
     // `--budget N|none` on brief as on read (docs/interfaces.md, Option names).
     let brief = parse(
         &["sessions", "brief", "--budget", "none"].map(str::to_owned),
-        &FirstWordCatalog::default(),
+        &SavedNames::default(),
         false,
     )
     .unwrap();
@@ -458,16 +451,15 @@ fn every_docs_example_parses() {
                 continue;
             }
             let (words, bytes) = shell_arguments(line);
-            let mut parsed =
-                parse(&words, &FirstWordCatalog::default(), true).unwrap_or_else(|error| {
-                    panic!(
-                        "{}:{}: {}: {}",
-                        path.display(),
-                        line_number + 1,
-                        line,
-                        error.message
-                    )
-                });
+            let mut parsed = parse(&words, &SavedNames::default(), true).unwrap_or_else(|error| {
+                panic!(
+                    "{}:{}: {}: {}",
+                    path.display(),
+                    line_number + 1,
+                    line,
+                    error.message
+                )
+            });
             if parsed.first == FirstWord::Command {
                 let argv: Vec<_> = std::iter::once("polylogue")
                     .chain(words.iter().map(String::as_str))

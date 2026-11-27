@@ -187,12 +187,9 @@ fn assert_read_command(html: &str, selection: &str) {
         .map(|word| String::from_utf8(word.to_vec()).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(words[0], "polylogue");
-    let parsed = crate::cli::line::parse(
-        &words[1..],
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words[1..], &crate::cli::line::SavedNames::default(), false)
+            .unwrap();
     let request = crate::cli::run_line::request(&parsed).unwrap();
     assert_eq!(request.operation, "rows");
     let rows: crate::protocol::line::Rows = serde_json::from_value(request.arguments).unwrap();

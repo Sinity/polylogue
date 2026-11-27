@@ -564,8 +564,6 @@ generated page of the thing they belong to, or on the area page that owns them.
   in the footer.
 - **row number**: `@3`, row 3 of the last list printed on this terminal.
 - **completion**: what Tab offers at the cursor, with descriptions.
-- **catalog file**: the completion data the daemon publishes, so completion
-  works without asking it.
 - **scope index**: the daemon's in-memory map of main sessions by the working
   directories they recorded, with repository, activity, stored message count,
   live facts and task; it answers which sessions are under a directory, live

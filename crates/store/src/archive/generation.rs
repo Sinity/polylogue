@@ -59,8 +59,7 @@ fn begin(
             || crate::meta_get(&tx, "boot_id")?.as_deref() != Some(boot)
         {
             if let Some(scope) = scope {
-                let mut reset = scope.begin_reset()?;
-                reset.invalidate()?;
+                scope.begin_reset()?;
             }
             changed = true;
             rotate(&tx)?;
