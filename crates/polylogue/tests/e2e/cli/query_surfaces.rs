@@ -15,7 +15,10 @@ pub(super) struct Mcp {
 
 impl Mcp {
     pub(super) fn start(env: &crate::Fixture) -> Self {
-        let mut command = env.command();
+        Self::start_command(env.command())
+    }
+
+    fn start_command(mut command: Command) -> Self {
         command
             .arg("mcp")
             .stdin(Stdio::piped())
@@ -153,6 +156,85 @@ fn answer(
     text: &str,
 ) -> Result<Value, command_surface::Failure> {
     value(surface_answer(env, archive, mcp, surface, text))
+}
+
+#[test]
+fn running_managed_mcp_reads_each_daemon_after_an_archive_cutover() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = |name| {
+        let root = directory.path().join(name);
+        crate::Fixture::new(
+            &root.join("archive"),
+            &root.join("home"),
+            &root.join("config"),
+        )
+    };
+    let first = fixture("first");
+    let second = fixture("second");
+    let copy = fixture("copy");
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let endpoint = runtime.join("polylogue-mcp.sock");
+    let managed = |fixture: &crate::Fixture| {
+        let mut command = fixture.native_command();
+        command.env("POLYLOGUE_MCP_SOCKET", &endpoint);
+        command
+    };
+    let explicit = |fixture: &crate::Fixture| {
+        let mut command = managed(fixture);
+        command.arg("--archive").arg(copy.archive());
+        command
+    };
+    let status = |mcp: &mut Mcp| {
+        let reply = mcp.request(
+            "tools/call",
+            json!({"name":"polylogue_read", "arguments":{
+                "operation":"status", "arguments":{}, "request_id":uuid::Uuid::now_v7().to_string()
+            }}),
+        );
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        value(answer)
+    };
+
+    let first_daemon = start_daemon_with(&first, managed(&first));
+    // The explicitly selected copy cannot replace the installed endpoint.
+    let _copy_daemon = start_daemon_with(&copy, explicit(&copy));
+    let mut live_mcp = Mcp::start_command(managed(&first));
+    let mut copy_mcp = Mcp::start_command(explicit(&first));
+    assert_eq!(
+        std::fs::read_link(&endpoint).unwrap(),
+        first.archive().join("daemon.sock")
+    );
+    assert_eq!(
+        status(&mut live_mcp).unwrap()["archive"],
+        first.archive().to_str().unwrap()
+    );
+    assert_eq!(
+        status(&mut copy_mcp).unwrap()["archive"],
+        copy.archive().to_str().unwrap()
+    );
+
+    drop(first_daemon);
+    assert_eq!(
+        status(&mut live_mcp).unwrap_err().code.as_deref(),
+        Some("not_running")
+    );
+    let _second_daemon = start_daemon_with(&second, managed(&second));
+    assert_eq!(
+        std::fs::read_link(&endpoint).unwrap(),
+        second.archive().join("daemon.sock")
+    );
+    assert_eq!(
+        status(&mut live_mcp).unwrap()["archive"],
+        second.archive().to_str().unwrap()
+    );
+    assert_eq!(
+        status(&mut copy_mcp).unwrap()["archive"],
+        copy.archive().to_str().unwrap()
+    );
 }
 
 #[test]
