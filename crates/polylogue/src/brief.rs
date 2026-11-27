@@ -971,7 +971,7 @@ impl Deadline {
             }
             Err(error) => {
                 self.failed.push(LeftOut {
-                    what: what.into(),
+                    item: what.into(),
                     reason: format!("not available ({error})"),
                 });
                 None
@@ -982,7 +982,7 @@ impl Deadline {
     fn show_failures(&mut self, fit: &mut Fitter) {
         for failure in self.failed.drain(..) {
             fit.pointers
-                .push(format!("{}: {}", failure.what, failure.reason));
+                .push(format!("{}: {}", failure.item, failure.reason));
             fit.left_out.push(failure);
         }
     }
@@ -1221,7 +1221,7 @@ fn session_start(
         Some(h) => (h.recent, Some(h.live), Some(h.beads)),
         None => {
             deadline.failed.push(LeftOut {
-                what: "live sessions, open Beads, recent sessions".into(),
+                item: "live sessions, open Beads, recent sessions".into(),
                 reason: "not available (scope index has not loaded); check `polylogue status`"
                     .into(),
             });
@@ -1743,7 +1743,7 @@ fn session_brief(
         fit.pointers
             .push(format!("{what}: not available (deadline)"));
         fit.left_out.push(LeftOut {
-            what: what.into(),
+            item: what.into(),
             reason: "deadline".into(),
         });
     }

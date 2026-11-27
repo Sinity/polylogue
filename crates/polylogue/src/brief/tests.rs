@@ -1615,7 +1615,7 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
         prepared
             .left_out
             .iter()
-            .find(|item| item.what == "open items")
+            .find(|item| item.item == "open items")
             .map(|item| item.reason.as_str()),
         Some("not available (malformed JSON)")
     );
