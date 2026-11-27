@@ -12,8 +12,8 @@
 # workflow on exactly that commit. When the run is green, and master has not
 # moved since in a package the batch changes, it squash-merges the members in
 # order and compares master's tree with the staging commit's. When it is red
-# it splits the batch in half, oldest half first; a pull request red alone
-# has its failed jobs run once more, and is merged if they pass or sent back
+# it splits the unchanged ready members in half, oldest half first. A pull
+# request red alone has its failed jobs run once more, and is merged if they pass or sent back
 # with a comment if they fail again. --once runs one cycle; --dry-run prints
 # the batch and the staging commit without pushing or merging. Master's
 # protection requires `check` on each merged head, not an up-to-date branch,
@@ -431,11 +431,36 @@ Pushing a new head or updating the branch puts it back in the queue." >/dev/null
     problems=true
 }
 
+# Keep only the same heads that are still ready. The next cycle considers
+# changed heads from the current pull request list.
+refresh_members() {
+    local -n remaining=$1
+    shift
+    local rows line
+    rows=$(pr_rows "$@") || {
+        note "reading the batch members failed; the batch waits for the next cycle"
+        return 1
+    }
+    remaining=()
+    while IFS= read -r line; do
+        parse_row "$line"
+        check_state
+        if [ "$state" = OPEN ] && [ "$base_branch" = "$default_branch" ] &&
+            [ "$draft" = false ] && [[ ",$labels," != *,hold,* ]] && [ "$fork" = false ] &&
+            [ "$mergeable" != CONFLICTING ] && [ "$threads" = 0 ] && [ "$check" = passed ] &&
+            [ "$sent_back" != "$head" ] && [ "$(cut -f6 <<<"${row_of[$number]}")" = "$head" ]; then
+            remaining+=("$number")
+        else
+            note "#$number $title changed while the queue was testing; it waits for the next cycle"
+        fi
+    done < <(grep -v '^base ' <<<"$rows" || true)
+}
+
 # Lands the given ready pull requests as one tested batch: builds the staging
 # commit on master's tip, tests it, merges it when green, and when red splits
 # it in half, oldest half first, until a single pull request is red.
 land_batch() {
-    local members=("$@") base moved batch_units moved_units jobs tests rows n line
+    local members=("$@") base moved batch_units moved_units jobs tests n
     while [ ${#members[@]} -gt 0 ]; do
         base=$(tip_of "$default_branch")
         git fetch -q --no-tags origin "$base"
@@ -452,11 +477,19 @@ land_batch() {
             note "the staging run was ${conclusion/missing/not found}; the batch waits for the next cycle"
             return 0
         fi
+        refresh_members members "${included[@]}" || return 0
+        [ ${#members[@]} -eq ${#included[@]} ] || continue
         if [ "$conclusion" != success ] && [ ${#included[@]} -eq 1 ]; then
             jobs=$(failed_jobs) tests=$(failed_tests)
             note "red alone on $default_branch: $jobs; running the failed jobs once more"
             gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || true
             await_run rerun
+            if [ "$conclusion" = cancelled ]; then
+                note "the staging rerun was cancelled; the batch waits for the next cycle"
+                return 0
+            fi
+            refresh_members members "${included[@]}" || return 0
+            [ ${#members[@]} -eq ${#included[@]} ] || continue
             if [ "$conclusion" = success ]; then
                 note "failed once, passed on rerun (#${included[0]}): $(paste -sd' ' <<<"${tests:-unnamed}")"
             else
@@ -466,27 +499,14 @@ land_batch() {
         fi
         if [ "$conclusion" != success ]; then
             note "red: $(failed_jobs); splitting the batch"
-            local half=$(((${#included[@]} + 1) / 2))
-            land_batch "${included[@]:0:half}"
-            land_batch "${included[@]:half}"
+            local half=$(((${#members[@]} + 1) / 2))
+            local later=("${members[@]:half}")
+            land_batch "${members[@]:0:half}"
+            refresh_members later "${later[@]}" || return 0
+            land_batch "${later[@]}"
             return 0
         fi
         note "green"
-        # A member pushed or parked during the test leaves; the rest are
-        # tested again without it.
-        rows=$(pr_rows "${included[@]}")
-        members=()
-        while IFS= read -r line; do
-            parse_row "$line"
-            check_state
-            if [ "$state" = OPEN ] && [ "$draft" = false ] && [[ ",$labels," != *,hold,* ]] && [ "$threads" = 0 ] &&
-                [ $check = passed ] && [ "$(cut -f6 <<<"${row_of[$number]}")" = "$head" ]; then
-                members+=("$number")
-            else
-                note "#$number $title changed during the test; it waits for the next cycle"
-            fi
-        done < <(grep -v '^base ' <<<"$rows" || true)
-        [ ${#members[@]} -eq ${#included[@]} ] || continue
         moved=$(tip_of "$default_branch")
         if [ "$moved" != "$base" ]; then
             git fetch -q --no-tags origin "$moved"
