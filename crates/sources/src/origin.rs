@@ -64,6 +64,10 @@ pub struct ProviderId {
     pub read: fn(&mut dyn std::io::BufRead) -> std::io::Result<Option<String>>,
 }
 
+/// Visits the local file paths written in a source record.
+pub type VisitLocalReferences =
+    fn(&polylogue_model::Json, &mut dyn FnMut(&str) -> std::io::Result<()>) -> std::io::Result<()>;
+
 /// Local files an origin's records refer to (images attached by path),
 /// captured when the record is read.
 #[derive(Clone, Copy)]
@@ -72,10 +76,7 @@ pub struct LocalReferences {
     /// against which a relative reference resolves.
     pub directory: fn(&polylogue_model::Json) -> Option<&str>,
     /// Each local file a record refers to, as the record writes it.
-    pub each: fn(
-        &polylogue_model::Json,
-        &mut dyn FnMut(&str) -> std::io::Result<()>,
-    ) -> std::io::Result<()>,
+    pub each: VisitLocalReferences,
 }
 
 /// The origin of a tool's context files no parser reads.

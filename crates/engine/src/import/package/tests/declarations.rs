@@ -61,9 +61,13 @@ fn every_origin_s_golden_input_is_recognized_as_that_origin() {
             let file = |path: &Path| vec![(path.to_path_buf(), bytes.clone())];
             let (files, entry, named, expected) = match &origin.import.alone {
                 _ if origin.name == polylogue_sources::polylogue_bundle::ORIGIN => {
-                    // A bundle is its manifest (docs/reading.md), not one of
-                    // its record files.
-                    (file(recorded), recorded.to_path_buf(), None, None)
+                    // The bundle golden starts with the current manifest.
+                    (
+                        file(recorded),
+                        recorded.to_path_buf(),
+                        None,
+                        Some(origin.name),
+                    )
                 }
                 Alone::Structure(_) => (
                     file(recorded),
