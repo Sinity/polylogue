@@ -159,6 +159,7 @@ pub fn resolve_start(
             after,
             logical,
             parts: vec![],
+            window_end: None,
         });
     } else if from_seen {
         return Err(Reason::FromSeenNeedsOneSession {}.into());

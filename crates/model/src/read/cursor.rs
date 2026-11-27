@@ -157,6 +157,9 @@ pub struct SessionRead {
     pub logical: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<SessionSeen>,
+    /// The end of a head or tail selection when its first page was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_end: Option<(SessionId, EntryKey)>,
 }
 
 /// Accepted physical marks of a composed reading, including absent marks.
