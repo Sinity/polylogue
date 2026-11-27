@@ -36,8 +36,10 @@ pub enum RebuildStage {
     Parsing,
     /// Inputs, content groups and texts loaded, each text made one row.
     KeyingTexts,
-    /// The parse tables loaded in key order, with their indexes.
+    /// The parse tables loaded in key order.
     LoadingParses,
+    /// The deferred indexes needed to assemble sessions from the parse tables.
+    BuildingParseIndexes,
     /// Every session assembled from its parses.
     Assembling,
     /// The indexes made after assembly, full-text membership and the
@@ -51,10 +53,11 @@ pub enum RebuildStage {
 
 impl RebuildStage {
     /// Every stage, in the order a rebuild runs them.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Parsing,
         Self::KeyingTexts,
         Self::LoadingParses,
+        Self::BuildingParseIndexes,
         Self::Assembling,
         Self::Indexing,
         Self::FullText,
@@ -67,6 +70,7 @@ impl RebuildStage {
             Self::Parsing => "parsing",
             Self::KeyingTexts => "keying texts",
             Self::LoadingParses => "loading parses",
+            Self::BuildingParseIndexes => "building parse indexes",
             Self::Assembling => "assembling",
             Self::Indexing => "indexing",
             Self::FullText => "full text",
@@ -79,6 +83,7 @@ impl RebuildStage {
         match self {
             Self::Parsing => Some(CountUnit::Bytes),
             Self::KeyingTexts | Self::LoadingParses => Some(CountUnit::Records),
+            Self::BuildingParseIndexes => Some(CountUnit::Indexes),
             Self::Assembling => Some(CountUnit::Sessions),
             Self::Indexing | Self::FullText | Self::Installing => None,
         }
@@ -261,7 +266,8 @@ impl Rebuild {
             self.archive.memory_budget().search_fill_memory(),
         )?);
         let loaded = self.load(runs)?;
-        self.stage(RebuildStage::LoadingParses);
+        self.stage(RebuildStage::BuildingParseIndexes);
+        self.total(indexes.len() as u64);
         self.conn.pragma_update(None, "foreign_keys", true)?;
         self.size_cache(
             (loaded.merged.memory() + loaded.texts.memory()) as u64,
@@ -270,6 +276,7 @@ impl Rebuild {
         for sql in &indexes {
             self.archive.stop().check()?;
             self.conn.execute(sql, [])?;
+            self.count(1);
         }
         self.stage(RebuildStage::Assembling);
         self.assemble(loaded, after_stream, assemblers)?;

@@ -391,6 +391,7 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
                 "parsing",
                 "keying texts",
                 "loading parses",
+                "building parse indexes",
                 "assembling",
                 "indexing",
                 "full text",
@@ -398,6 +399,12 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
             ],
             "{point}"
         );
+        let parse_indexes = &phases[3];
+        assert_eq!(
+            parse_indexes.stage.unit(),
+            Some(crate::archive::build_progress::CountUnit::Indexes)
+        );
+        assert!(parse_indexes.items > 0, "{point}");
         assert_eq!(messages(&serving(&archive)), 1, "{point}");
     }
 }
