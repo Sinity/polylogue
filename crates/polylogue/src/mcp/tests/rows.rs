@@ -321,7 +321,7 @@ fn mcp_and_cli_print_the_same_step_text() {
                         revision: 1,
                         new_revision: true,
                     }),
-                    kept: KeptPart {
+                    saved_rows: KeptPart {
                         result: "result:kept-1".into(),
                         rows: 3,
                         at,

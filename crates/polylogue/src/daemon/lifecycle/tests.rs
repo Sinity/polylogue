@@ -457,7 +457,7 @@ fn exit_events_are_kept_and_report_panics() {
     let expected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     drop(WorkerExit::new(
         events,
-        "finite completion terminated",
+        "finite worker terminated",
         Some(expected),
     ));
     assert_eq!(*received.borrow(), None);

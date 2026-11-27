@@ -139,16 +139,14 @@ fn links_follow_references_in_unit_and_grouped_rows() {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert!(
-            messages.contains("href=\"/s/claude-code%3As1\""),
-            "{messages}"
-        );
-        assert!(
-            !messages.contains("href=\"/s/claude-code%3Au1\""),
-            "{messages}"
+        assert_eq!(messages.matches("role=\"alert\"").count(), 0, "{messages}");
+        assert_eq!(session_hrefs(&messages), ["/s/claude-code%3As1"]);
+        assert_eq!(
+            html_elements(&messages, "<td>", "</td>")[0],
+            "<td><a href=\"/m/claude-code%3Au1\">claude-code:u1</a></td>"
         );
         for (query, linked) in [
-            ("annotations", false),
+            ("annotations | fields key", false),
             ("sessions | fields text(id) as id", false),
             ("sessions | group by id", true),
             ("sessions | agg min(id)", true),
@@ -160,18 +158,18 @@ fn links_follow_references_in_unit_and_grouped_rows() {
             );
             let (status, _, page) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{page}");
+            assert_eq!(page.matches("role=\"alert\"").count(), 0, "{query}: {page}");
+            let cells = html_elements(&page, "<td>", "</td>");
             if linked {
-                assert!(
-                    page.contains("href=\"/s/claude-code%3As1\""),
-                    "{query}: {page}"
+                assert_eq!(session_hrefs(&page), ["/s/claude-code%3As1"], "{query}");
+                assert_eq!(
+                    cells[0], "<td><a href=\"/s/claude-code%3As1\">claude-code:s1</a></td>",
+                    "{query}"
                 );
             } else {
-                assert!(!page.contains("href=\"/s/"), "{query}: {page}");
+                assert_eq!(session_hrefs(&page), Vec::<&str>::new(), "{query}");
+                assert_eq!(cells, ["<td>claude-code:s1</td>"], "{query}");
             }
-            assert!(
-                !page.contains("href=\"/s/claude-code%3Au1\""),
-                "{query}: {page}"
-            );
         }
     });
 }
@@ -204,6 +202,14 @@ fn document_previous_pages_restore_unicode_body_fragments() {
                 .expect("long document continues"),
         )
         .await;
+        let next_path = polylogue_render::ready::http_url(
+            crate::commands::declarations(),
+            &first.document.footer.next.as_ref().unwrap().request,
+        )
+        .unwrap();
+        let (status, _, current_html) = send_html(&r, &next_path).await;
+        assert_eq!(status, StatusCode::OK, "{current_html}");
+        assert_reader_navigation(&current_html, &current);
         let previous = current
             .document
             .footer
@@ -219,6 +225,7 @@ fn document_previous_pages_restore_unicode_body_fragments() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(!html.contains("history.back"));
+        assert_reader_items(&html, &restored);
+        assert_reader_navigation(&html, &restored);
     });
 }

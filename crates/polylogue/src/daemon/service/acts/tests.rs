@@ -31,6 +31,7 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
             text: text.into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         }),
     )
     .unwrap();

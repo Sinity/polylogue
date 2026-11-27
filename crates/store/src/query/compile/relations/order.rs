@@ -482,7 +482,7 @@ impl Compiler<'_> {
         let spec = units::spec(source.unit);
         let (terms, included) = match source.unit {
             Unit::ToolCalls => (
-                format!("{}.session_order, {}.id, {}.idx", a.m, a.m, a.cb),
+                format!("{}.session_order, {}.id, {}.position", a.m, a.m, a.cb),
                 format!(
                     "{} AND {}",
                     fields::own_messages(&a.m, None),

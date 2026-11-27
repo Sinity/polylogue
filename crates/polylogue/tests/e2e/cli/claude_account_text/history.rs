@@ -78,7 +78,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     );
     assert!(inputs.status.success(), "{inputs:?}");
     assert_eq!(json(&inputs)[0]["n"], 3);
-    let status = cli(&env, &["--json", "status"]);
+    let status = cli(&env, &["--json", "status", "--details"]);
     assert!(status.status.success());
     assert!(
         json(&status)["store"]["unused"]

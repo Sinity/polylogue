@@ -26,7 +26,7 @@ fn options() -> Options {
 }
 fn position() -> ChangePosition {
     ChangePosition {
-        generation: "synthetic-generation".into(),
+        index_instance: "synthetic-generation".into(),
         index: 3,
         archive: 2,
     }
@@ -147,7 +147,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
     };
     let token = seal.seal(&continuation).unwrap();
     let mut newer = position();
-    newer.generation = "rebuilt-generation".into();
+    newer.index_instance = "rebuilt-generation".into();
     assert_eq!(
         open(token.as_str(), &seal, question, &newer, (1, 2), &options)
             .unwrap_err()

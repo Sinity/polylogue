@@ -601,7 +601,7 @@ impl ExportParser for Database {
                     sink.out.links.push(Link {
                         kind,
                         copies_prefix: false,
-                        how: None,
+                        reason: None,
                         parent: parent_id,
                         child: id.clone(),
                         branch_point,

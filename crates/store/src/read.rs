@@ -32,8 +32,8 @@ mod behind_index;
 mod completeness;
 pub use completeness::ReadingContract;
 mod captured;
-mod cursor_generation;
-pub use cursor_generation::open_cursor;
+mod cursor_index_instance;
+pub use cursor_index_instance::open_cursor;
 mod chain_state;
 mod hook_fields;
 mod import_counts;
@@ -131,14 +131,14 @@ fn version_commit(conn: &Connection, id: &str, hash: &[u8]) -> Result<Option<u64
 }
 
 row! {
-    /// Both write counters and the index generation.
+    /// Both write counters and the index instance.
     struct ChangePosition {
-        generation: String,
+        index_instance: String,
         index: i64,
         archive: i64,
     }
     statements {
-        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS generation,
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='index_instance') AS index_instance,
             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
     }
@@ -170,7 +170,7 @@ row! {
 row! {
     /// Where a visit from a message starts in its session's order.
     struct MessageStart {
-        session_order: String,
+        session_order: Vec<u8>,
         id: String,
     }
     statements {
@@ -264,8 +264,8 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT what AS name, sum(count) AS n FROM unused GROUP BY what
-            ORDER BY n DESC, what LIMIT 20";
+        const UNUSED = "SELECT item AS name, sum(count) AS n FROM unused GROUP BY item
+            ORDER BY n DESC, item LIMIT 20";
     }
 }
 
@@ -493,8 +493,14 @@ struct Unused {
     Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct Status {
-    /// Inputs whose bytes are still being written.
+    /// Logical sessions, as the `sessions` unit lists them with no filter:
+    /// each once, with its subagents, forks, continuations and resumes
+    /// folded in; with a transcript and not hidden.
     pub sessions: u64,
+    /// Every session, as `sessions where physical:true` lists them: subagents, forks,
+    /// continuations and resumes counted on their own; with a transcript
+    /// and not hidden.
+    pub sessions_physical: u64,
     pub messages: u64,
     pub documents: u64,
     pub tool_calls: u64,
@@ -1281,10 +1287,10 @@ impl Reader<'_> {
     ) -> std::result::Result<query_language::cursor::Continuation, crate::selection::SelectionError>
     {
         let seal = query_language::cursor::CursorSeal::new(self.cursor_key()?);
-        let generation = self.change_position()?.generation;
+        let index_instance = self.change_position()?.index_instance;
         Ok(open_cursor(
             &seal,
-            &generation,
+            &index_instance,
             cursor,
             question,
             resolve_zone,
@@ -1296,7 +1302,7 @@ impl Reader<'_> {
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         let position = self.conn()?.one(&ChangePosition::CURRENT, [])?;
         Ok(polylogue_model::ChangePosition {
-            generation: position.generation,
+            index_instance: position.index_instance,
             index: position.index,
             archive: position.archive,
         })
@@ -1463,7 +1469,7 @@ impl Reader<'_> {
         };
         let mut parameters = vec![Value::Integer(session_pk.0)];
         if let Some(start) = &start {
-            parameters.push(Value::Text(start.session_order.clone()));
+            parameters.push(Value::Blob(start.session_order.clone()));
             parameters.push(Value::Text(start.id.clone()));
         }
         let statement = match (&start, ordinal) {
@@ -1609,7 +1615,7 @@ impl Reader<'_> {
                 .map(|count| (count.name, count.n))
                 .collect(),
             fields: c.scalar::<u64>(
-                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
+                "SELECT count(*) FROM (SELECT item FROM unused GROUP BY item HAVING sum(count) > 0)",
                 [],
             )?,
         });
@@ -1624,16 +1630,36 @@ impl Reader<'_> {
         let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { c.scalar::<u64>(sql, []) };
+        // A summed total is of the visible sessions, as the `messages` and
+        // `tool_calls` units list them: all, less the hidden few.
+        let hidden = crate::query::fields::hidden_session_ids();
+        let visible = |column: &str| -> Result<u64> {
+            count(&format!(
+                "SELECT (SELECT coalesce(sum({column}), 0) FROM main.session)
+                      - (SELECT coalesce(sum({column}), 0) FROM main.session WHERE id IN ({hidden}))"
+            ))
+        };
+        let listed = |logical: bool| -> Result<u64> {
+            count(&format!(
+                "SELECT count(*) FROM main.session s WHERE {}",
+                crate::query::units::listed_sessions(
+                    &crate::query::fields::Aliases::plain(),
+                    logical
+                )
+            ))
+        };
         let unused = self.unused_at_position()?;
         let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
-            // Sessions and documents are counted; messages and tool calls
-            // are summed from the sessions' count summaries, which follow
-            // the index by the summary worker.
-            sessions: count("SELECT count(*) FROM main.session")?,
-            messages: count("SELECT coalesce(sum(message_count), 0) FROM main.session")?,
+            // Sessions (as the `sessions` unit lists them) and documents are
+            // counted; messages and tool calls
+            // are summed from the visible sessions' count summaries, which
+            // follow the index by the summary worker.
+            sessions: listed(true)?,
+            sessions_physical: listed(false)?,
+            messages: visible("message_count")?,
             documents: count("SELECT count(*) FROM main.document")?,
-            tool_calls: count("SELECT coalesce(sum(tool_call_count), 0) FROM main.session")?,
+            tool_calls: visible("tool_call_count")?,
             inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
             revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,

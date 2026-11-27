@@ -214,7 +214,7 @@ pub fn saved(report: &protocol::line::SaveReport, _style: TextStyle) -> String {
     let _ = write!(
         text,
         "kept    {} ({} rows, {})",
-        report.kept.result, report.kept.rows, report.kept.at
+        report.saved_rows.result, report.saved_rows.rows, report.saved_rows.at
     );
     if let Some(saved) = &report.saved {
         let _ = write!(text, ", now result:{}", saved.name);

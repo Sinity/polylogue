@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParseStep, ReadPool,
+    Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParsePart, ReadPool,
     Writer,
     assets::AssetRow,
     capture_read::{CaptureRead, RawRange, ReadRoute, SourceSelector},
@@ -69,7 +69,7 @@ impl Fixture {
             ..Default::default()
         };
         counts.add("message", &RecordOutcome::Used);
-        let mut step = ParseStep::new(
+        let mut step = ParsePart::new(
             Output {
                 sessions: vec![Session::new(
                     record.message.session.clone(),
@@ -422,35 +422,82 @@ fn wrong_namespace_hash_or_size_gets_no_byte_match() {
     fixture.member("member-a", "scope-a", bytes);
     let sources = fixture.refresh();
     let observed = source(&sources, "member-a");
+    fixture.capture(
+        raw(
+            "member-a",
+            Some("scope-a"),
+            "blobs/received",
+            Change::Appended {
+                from: bytes.len() as u64,
+            },
+            bytes.len() + 1,
+        ),
+        b"!",
+    );
+    let later_sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
-    assert!(
+    assert_eq!(
+        reader
+            .validate_attachment_member(observed, BlobHash::of(bytes), bytes.len() as u64)
+            .unwrap()
+            .identity()
+            .size,
+        bytes.len() as u64
+    );
+    assert_eq!(
         reader
             .validate_attachment_member(
-                observed,
-                BlobHash::of(b"different body"),
-                bytes.len() as u64
+                source(&later_sources, "member-a"),
+                BlobHash::of(b"verified body!"),
+                bytes.len() as u64 + 1
             )
-            .is_err()
+            .unwrap()
+            .identity()
+            .size,
+        bytes.len() as u64 + 1
     );
-    assert!(
-        reader
-            .validate_attachment_member(observed, BlobHash::of(bytes), bytes.len() as u64 + 1)
-            .is_err()
-    );
+    for (hash, size, expected) in [
+        (
+            BlobHash::of(b"different body"),
+            bytes.len() as u64,
+            "receiving member hash differs from its candidate",
+        ),
+        (
+            BlobHash::of(b"verified body!"),
+            bytes.len() as u64 + 1,
+            "receiving member size differs from its candidate",
+        ),
+    ] {
+        match reader
+            .validate_attachment_member(observed, hash, size)
+            .unwrap_err()
+        {
+            crate::StoreError::Internal(reason) => assert_eq!(reason, expected),
+            other => panic!("expected candidate mismatch, got {other:?}"),
+        }
+    }
     let mut forged = observed.clone();
     forged.membership.import_id = "another-scope".into();
-    assert!(
-        reader
-            .validate_attachment_member(&forged, BlobHash::of(bytes), bytes.len() as u64)
-            .is_err()
-    );
+    match reader
+        .validate_attachment_member(&forged, BlobHash::of(bytes), bytes.len() as u64)
+        .unwrap_err()
+    {
+        crate::StoreError::Internal(reason) => {
+            assert_eq!(reason, "receiving member has no source observation")
+        }
+        other => panic!("expected missing observation, got {other:?}"),
+    }
     forged = observed.clone();
     forged.observation = "not-a-received-observation".into();
-    assert!(
-        reader
-            .validate_attachment_member(&forged, BlobHash::of(bytes), bytes.len() as u64)
-            .is_err()
-    );
+    match reader
+        .validate_attachment_member(&forged, BlobHash::of(bytes), bytes.len() as u64)
+        .unwrap_err()
+    {
+        crate::StoreError::Internal(reason) => {
+            assert_eq!(reason, "receiving member has no source observation")
+        }
+        other => panic!("expected missing observation, got {other:?}"),
+    }
 }
 
 #[test]

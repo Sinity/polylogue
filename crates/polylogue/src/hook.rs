@@ -730,7 +730,7 @@ fn context(
                         "internal delivery-event",
                         json!({
                             "delivery": format!("{request_id}-1"),
-                            "what": DeliveryOutcome::NotSent,
+                            "outcome": DeliveryOutcome::NotSent,
                             "detail": "timeout",
                         }),
                         id,
@@ -797,7 +797,7 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
                 "internal delivery-event",
                 json!({
                     "delivery": delivery,
-                    "what": DeliveryOutcome::Delivered,
+                    "outcome": DeliveryOutcome::Delivered,
                     "detail": "written to the harness hook output",
                 }),
                 request_id,

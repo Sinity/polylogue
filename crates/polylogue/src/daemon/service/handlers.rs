@@ -46,7 +46,8 @@ impl Operation for Sql {
     }
 }
 
-/// Grammar completions at a UTF-8 byte offset in the full query text.
+/// Completions at a UTF-8 byte offset in the full query text, with the
+/// archive's values; or a setting's keys or values.
 pub(crate) struct Complete;
 impl Operation for Complete {
     type Arguments = protocol::complete::Arguments;
@@ -74,20 +75,22 @@ impl Operation for Complete {
                 "completion position must be a UTF-8 byte boundary within the query",
             ));
         }
-        let d = call.daemon;
-        let token = match d.archive.scope_token() {
-            Ok(token) => token,
-            Err(error) => return Ok(store_error(&error)),
+        let reader = call.reader()?;
+        let candidates = if arguments.setting {
+            let machine = call.daemon.config.requests.machine();
+            let authored = match reader.completion_setting_keys() {
+                Ok(keys) => keys,
+                Err(error) => return Ok(store_error(&error)),
+            };
+            crate::completion::settings(arguments.key.as_deref(), &text, &authored, |key| {
+                reader.setting_current(key, machine).ok()
+            })
+        } else {
+            match crate::completion::complete(&reader, &text, position) {
+                Ok(candidates) => candidates,
+                Err(error) => return Ok(store_error(&error)),
+            }
         };
-        let candidates = crate::completion_catalog::complete_file(
-            &d.completion_path,
-            &crate::runtime_dir::archive_key(&d.archive.root),
-            &text,
-            position,
-        );
-        if let Err(error) = token.check() {
-            return Ok(store_error(&error));
-        }
         Ok(if candidates.is_empty() {
             Answer::empty(candidates)
         } else {
@@ -123,8 +126,8 @@ impl Operation for Status {
                 "--wait cannot be combined with --watch or --verify",
             ));
         }
-        if arguments.after.is_some() && arguments.wait.is_none() {
-            return Err(Failure::bad_request("--after needs --wait"));
+        if arguments.after_changes.is_some() && arguments.wait.is_none() {
+            return Err(Failure::bad_request("--after-changes needs --wait"));
         }
         if arguments.watch && (arguments.line || arguments.verify) {
             return Err(Failure::bad_request(
@@ -182,11 +185,16 @@ impl Operation for Status {
         let mut status = match &arguments.wait {
             Some(wait) => {
                 let wait = super::line::listing_wait(wait, call.caller.channel())?;
-                status::wait(call, wait, arguments.after, || {
-                    status::answer(call.daemon, vectors.clone(), arguments.log)
+                status::wait(call, wait, arguments.after_changes, || {
+                    status::answer(
+                        call.daemon,
+                        vectors.clone(),
+                        arguments.log,
+                        arguments.details,
+                    )
                 })?
             }
-            None => status::answer(call.daemon, vectors, arguments.log),
+            None => status::answer(call.daemon, vectors, arguments.log, arguments.details),
         };
         if arguments.verify
             && status
@@ -491,7 +499,7 @@ pub(crate) fn save_selection(
         query,
         denominator: step.denominator,
         rows_json: String::new(),
-        read_at: String::new(),
+        read_position: String::new(),
         outcomes: None,
         watch: step.watch.then_some(polylogue_model::user::SaveWatch {
             hold: step.hold,
@@ -544,9 +552,10 @@ pub(crate) fn save_selection(
     );
     let kept = kept?;
     drop(reader);
-    let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
+    let read_position =
+        serde_json::json!({ "now": kept["now"], "position":kept["read_position"] }).to_string();
     save.rows_json = kept.to_string();
-    save.read_at = read_at;
+    save.read_position = read_position;
     Ok(super::answers::submit_result(
         d,
         invocation,
@@ -764,7 +773,7 @@ impl Operation for Advisory {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeliveryEventArguments {
     pub delivery: String,
-    pub what: polylogue_model::DeliveryOutcome,
+    pub outcome: polylogue_model::DeliveryOutcome,
     pub detail: Option<String>,
 }
 
@@ -783,7 +792,7 @@ impl Operation for DeliveryEvent {
             call.request_id.into(),
             UserWrite::DeliveryEvent {
                 delivery: arguments.delivery,
-                what: arguments.what,
+                outcome: arguments.outcome,
                 detail: arguments.detail,
             },
         ))
@@ -803,32 +812,21 @@ impl Operation for SelectionNote {
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
-        let input = crate::browser::notes::SelectionNote {
-            request_id: call.request_id.into(),
-            body: arguments.body,
-            quote: arguments.quote,
-            source: crate::browser::notes::Source {
-                provider: arguments.provider,
-                conversation_id: arguments.conversation_id,
-                message_id: arguments.message_id,
-                page_url: arguments.page_url,
-                selected_at: arguments.selected_at,
-            },
-        };
-        let (session, message_id) = input.references()?;
+        let input = arguments;
+        let (session, message_id) = input.references(call.request_id)?;
         let reader = call.reader()?;
         let message = polylogue_model::Reference::Message(message_id.clone());
         let intended = UserWrite::Assert {
             annotations: vec![input.annotation(session.clone(), message.clone())],
         };
         let selected_scope = reader.scope_token();
-        match repeated_request(&reader, &input.request_id, &intended, invocation) {
+        match repeated_request(&reader, call.request_id, &intended, invocation) {
             Ok(Some(previous)) => {
                 drop(reader);
                 return Ok(write_from_read(
                     d,
                     invocation,
-                    input.request_id,
+                    call.request_id.into(),
                     previous,
                     selected_scope,
                 ));
@@ -853,7 +851,7 @@ impl Operation for SelectionNote {
         Ok(write_from_read(
             d,
             invocation,
-            input.request_id,
+            call.request_id.into(),
             intended,
             selected_scope,
         ))

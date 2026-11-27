@@ -150,7 +150,7 @@ class ClientTests(unittest.TestCase):
         read = self.checked(lambda: self.client.read(PYTHON_SESSION))
         self.assertEqual(read["outcome"], "ok")
         self.assertTrue(read_page(read)["document"]["items"])
-        self.assertIn("read_at", read_page(read)["snapshot"])
+        self.assertIn("read_position", read_page(read)["snapshot"])
         self.assertEqual(text_items(read_page(read)["document"]["items"]), [PYTHON_TEXT])
 
     def test_generated_read_calls_continue_without_losing_their_envelope(self):
@@ -170,8 +170,8 @@ class ClientTests(unittest.TestCase):
             first = dict(snapshot)
             self.assertIsInstance(ran.pop("ran_at"), str)
             first.pop("ran_at")
-            ran["read_at"], first["read_at"] = dict(ran["read_at"]), dict(first["read_at"])
-            self.assertGreaterEqual(ran["read_at"].pop("archive"), first["read_at"].pop("archive"))
+            ran["read_position"], first["read_position"] = dict(ran["read_position"]), dict(first["read_position"])
+            self.assertGreaterEqual(ran["read_position"].pop("archive"), first["read_position"].pop("archive"))
             self.assertEqual(ran, first)
             for read_item in page["document"]["items"]:
                 item = read_item["kind"]
@@ -320,9 +320,9 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(following[0]["position"], first[-1]["position"])
         self.assertEqual(following[-1]["type"], "complete")
         self.assertFalse(following[-1]["replacement"])
-        generation = first[-1]["position"].split(":")[0]
+        index_instance = first[-1]["position"].split(":")[0]
         with self.assertRaises(Refused) as raised:
-            list(self.direct.feed(f"{generation}:9223372036854775807:9223372036854775807"))
+            list(self.direct.feed(f"{index_instance}:9223372036854775807:9223372036854775807"))
         self.assertEqual(raised.exception.kind, "bad_request")
 
 

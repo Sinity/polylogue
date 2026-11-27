@@ -45,7 +45,7 @@ fn a_hook_event_never_creates_a_session() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM session WHERE stub = 0"),
+        w.count("SELECT count(*) AS n FROM session WHERE has_transcript = 1"),
         0
     );
     assert_eq!(
@@ -66,7 +66,7 @@ fn a_hook_event_never_creates_a_session() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(w.texts("h1"), ["hello", "hi"]);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM session WHERE stub = 0"),
+        w.count("SELECT count(*) AS n FROM session WHERE has_transcript = 1"),
         1,
         "the transcript made the session"
     );

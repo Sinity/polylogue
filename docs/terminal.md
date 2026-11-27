@@ -6,7 +6,7 @@ Nothing here needs a manual. Every mechanism teaches the same grammar in the sam
 
 ## The orientation screen
 
-Bare `polylogue` on a terminal answers within the status budget, from the daemon's status snapshot and the catalog:
+Bare `polylogue` on a terminal answers within the status budget, from the daemon's status snapshot:
 
 ```console
 $ polylogue
@@ -53,7 +53,7 @@ It opens only when standard input and a display output are terminals and no mach
  Enter tag reviewed · Tab mark · ^r read · ^o browser · ^y copy · ^p print · ^e query · ^/ preview · Esc
 ```
 
-- **Filtering.** The prompt filters fuzzily over titles, first prompts and repositories, ignoring letter case, from the session index the CLI reads from the catalog. `Ctrl-e` switches it to query mode: the text is a query, the list runs again as it changes, stale replies are dropped and the count updates. Candidates stream page by page as the user scrolls.
+- **Filtering.** The prompt filters fuzzily over titles, first prompts and repositories, ignoring letter case, over the candidate pages the daemon answers. `Ctrl-e` switches it to query mode: the text is a query, the list runs again as it changes, stale replies are dropped and the count updates. Candidates stream page by page as the user scrolls.
 - **A page on its way** shows `loading` where the count goes and no rows, and Enter waits for it; a page with no rows shows its count, `0 rows`. A page that could not be read shows `failed` there and the reason on the line above the footer. The highlight starts on a new page's first row, or on its last row when the page was reached by moving up.
 - **The footer always shows the keys**, generated from one key table. Enter runs the line's next verb with its words, shown in the footer (`Enter tag reviewed`; `Enter read` for `polylogue read`). When nothing follows `pick`, Enter prints the chosen references, one per line, which is what Alt-p inserts. `Ctrl-r` reads the highlighted row in the pager and returns to the picker.
 - **The preview** shows the highlighted row as `read --view overview` would, at the pane's width; a reply for a row no longer highlighted is never drawn. Archived text is shown with control characters escaped.
@@ -170,7 +170,7 @@ With `--json` the reply has `outcome: "error"` and an `error` object on standard
 
 ## Help
 
-`polylogue help` prints the cheatsheet: one terminal screen (at most 24 lines at 100 columns), generated from the operation table, the catalog's top values and each row's examples; local, in the local class, with no daemon.
+`polylogue help` prints the cheatsheet: one terminal screen (at most 24 lines at 100 columns), generated from the operation table and each row's examples; local, in the local class, with no daemon.
 
 ```text
 polylogue 'QUERY' [VERB …]   the quotes hold which rows; the words after say what to do
@@ -190,7 +190,7 @@ try       polylogue 'repo:polylogue since:7d'  ·  polylogue @1 note 'jittered b
 more      polylogue help VERB · help query · help fields · help views · help kinds · help keys · help --all
 ```
 
-- The `queries`, `saved` and `try` lines are filled from the catalog, so they return rows on this archive; without a catalog the sheet uses the Morrow values.
+- The `queries`, `saved` and `try` lines show the Morrow values.
 - **`polylogue help VERB`** (and `VERB --help`): the sentence, its words and options with their allowed values, its forms (for `brief`: alone, of a session "take it over", of a search "recall", of other rows), its usual rows if any, and two to four examples with their first output lines on Morrow (hand-written goldens, never regenerated from output and never run at build time: [testing.md](testing.md#goldens)). `help COMMAND` is the same for a command.
 - **A word from the vocabulary's removed list** ([vocabulary.md](vocabulary.md#removed-words)) answers with the one line that does it now: `help takeover` prints `takeover is brief of a session: polylogue SESSION brief`, so a word a person remembers still finds its way.
 - **Topics:** `help query` (the grammar and the query language in one screen), `help fields [UNIT]`, `help units`, `help transforms`, `help views`, `help kinds`, `help keys`, `help saved`, `help capabilities` page the generated declarations; `help unbuilt` prints the list of what is designed and not built. Over MCP `help(topic)` pages them at about 1,000 tokens a page.

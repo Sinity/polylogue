@@ -8,13 +8,13 @@
 # conflicting with master, required check green on their own heads, not sent
 # back at their current head), oldest first, at most eight. It builds one
 # staging commit on master's tip with each as a squash commit, without a
-# working tree, pushes it to the branch `land-queue` and dispatches the check
+# working tree, pushes it to its own staging branch and dispatches the check
 # workflow on exactly that commit. When the run is green, and master has not
 # moved since in a package the batch changes, it squash-merges the members in
 # order and compares master's tree with the staging commit's. When it is red
-# it splits the batch in half, oldest half first; a pull request red alone
-# has its failed jobs run once more, and is merged if they pass or sent back
-# with a comment if they fail again. --once runs one cycle; --dry-run prints
+# it splits the unchanged ready members in half, oldest half first. A pull
+# request red alone has its failed jobs run once more, and is merged if they
+# pass or sent back with a comment if they fail again. --once runs one cycle; --dry-run prints
 # the batch and the staging commit without pushing or merging. Master's
 # protection requires `check` on each merged head, not an up-to-date branch,
 # so no pull request head is rewritten.
@@ -36,7 +36,7 @@ set -euo pipefail
 
 usage() { echo "usage: dev/land [--dry-run] [--now] <pr-number> | dev/land --queue [--once] [--dry-run]" >&2; exit 2; }
 dry_run=false queue=false once=false now=false number=
-staging_branch=land-queue
+staging_prefix=land-queue-
 for arg in "$@"; do
     case $arg in
         --dry-run) dry_run=true ;;
@@ -191,7 +191,7 @@ land_one() {
         local run="${details%/job/*} ($1, head ${head:0:10})"
         case " ${runs_waited[*]-} " in *" $run "*) ;; *) runs_waited+=("$run") ;; esac
     }
-    if ! $dry_run && ! $now && [ -n "$(git ls-remote origin "refs/heads/$staging_branch")" ]; then
+    if ! $dry_run && ! $now && [ -n "$(git ls-remote origin "refs/heads/$staging_prefix*")" ]; then
         die "the queue is testing a batch; this pull request will be landed by it, or use --now to merge anyway"
     fi
     while true; do
@@ -323,17 +323,18 @@ build_staging() {
     done
 }
 
-# Tests $staging: pushes it to the staging branch, dispatches the check on
-# exactly that commit and waits for it. Sets run (its ID) and conclusion.
+# Tests $staging on a branch owned by this dispatch. The branch stays on the
+# exact commit while GitHub creates the run and checks out its code.
 test_staging() {
-    local polls=0
-    git push -q -f origin "$staging:refs/heads/$staging_branch"
-    gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging" >/dev/null
-    run=
+    local polls=0 dispatch
+    conclusion=missing
+    git push -q origin "$staging:refs/heads/$staging_branch" || return 0
+    dispatch=$(gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging") || return 0
+    run=$(sed -nE 's|^.*/actions/runs/([0-9]+)([/?[:space:]].*)?$|\1|p' <<<"$dispatch" | head -n 1)
     while [ -z "$run" ]; do
         sleep 15
         run=$(gh run list -R "$owner/$name" --workflow "$workflow" --branch "$staging_branch" --event workflow_dispatch \
-            --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$staging\") | .databaseId][0] // empty")
+            --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$staging\") | .databaseId][0] // empty") || return 0
         polls=$((polls + 1))
         [ -n "$run" ] || [ $polls -lt 20 ] || { conclusion=missing; return; }
     done
@@ -349,7 +350,13 @@ await_run() {
         polls=$((polls + 1)); sleep 10
     done
     gh run watch "$run" -R "$owner/$name" --interval 60 >/dev/null 2>&1 || true
-    conclusion=$(gh run view "$run" -R "$owner/$name" --json conclusion --jq .conclusion)
+    conclusion=$(gh run view "$run" -R "$owner/$name" --json headBranch,headSha,status,conclusion --jq "
+        if .headBranch == \"$staging_branch\" and .headSha == \"$staging\"
+           and .status == \"completed\" and .conclusion != null and .conclusion != \"\"
+        then .conclusion else \"missing\" end") || conclusion=missing
+    if [ "$conclusion" != missing ]; then
+        finished_staging_branches[$staging_branch]=$staging
+    fi
 }
 
 failed_jobs() {
@@ -431,11 +438,36 @@ Pushing a new head or updating the branch puts it back in the queue." >/dev/null
     problems=true
 }
 
+# Keep only the same heads that are still ready. The next cycle considers
+# changed heads from the current pull request list.
+refresh_members() {
+    local -n remaining=$1
+    shift
+    local rows line
+    rows=$(pr_rows "$@") || {
+        note "reading the batch members failed; the batch waits for the next cycle"
+        return 1
+    }
+    remaining=()
+    while IFS= read -r line; do
+        parse_row "$line"
+        check_state
+        if [ "$state" = OPEN ] && [ "$base_branch" = "$default_branch" ] &&
+            [ "$draft" = false ] && [[ ",$labels," != *,hold,* ]] && [ "$fork" = false ] &&
+            [ "$mergeable" != CONFLICTING ] && [ "$threads" = 0 ] && [ "$check" = passed ] &&
+            [ "$sent_back" != "$head" ] && [ "$(cut -f6 <<<"${row_of[$number]}")" = "$head" ]; then
+            remaining+=("$number")
+        else
+            note "#$number $title changed while the queue was testing; it waits for the next cycle"
+        fi
+    done < <(grep -v '^base ' <<<"$rows" || true)
+}
+
 # Lands the given ready pull requests as one tested batch: builds the staging
 # commit on master's tip, tests it, merges it when green, and when red splits
 # it in half, oldest half first, until a single pull request is red.
 land_batch() {
-    local members=("$@") base moved batch_units moved_units jobs tests rows n line
+    local members=("$@") base moved batch_units moved_units jobs tests n
     while [ ${#members[@]} -gt 0 ]; do
         base=$(tip_of "$default_branch")
         git fetch -q --no-tags origin "$base"
@@ -445,6 +477,7 @@ land_batch() {
             note "left out #$n $title: conflicts with an earlier pull request in the batch"
         done
         [ ${#included[@]} -gt 0 ] || return 0
+        staging_branch="$staging_prefix$staging-$$-$RANDOM$RANDOM$RANDOM"
         note "batch $(printf '#%s ' "${included[@]}")as staging ${staging:0:10} on $default_branch ${base:0:10}"
         $dry_run && { note "would push $staging_branch and dispatch $workflow on ${staging:0:10}"; return 0; }
         test_staging
@@ -452,11 +485,20 @@ land_batch() {
             note "the staging run was ${conclusion/missing/not found}; the batch waits for the next cycle"
             return 0
         fi
+        refresh_members members "${included[@]}" || return 0
+        [ ${#members[@]} -eq ${#included[@]} ] || continue
         if [ "$conclusion" != success ] && [ ${#included[@]} -eq 1 ]; then
             jobs=$(failed_jobs) tests=$(failed_tests)
             note "red alone on $default_branch: $jobs; running the failed jobs once more"
-            gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || true
+            unset "finished_staging_branches[$staging_branch]"
+            gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || return 0
             await_run rerun
+            if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
+                note "the staging rerun was ${conclusion/missing/not found}; the batch waits for the next cycle"
+                return 0
+            fi
+            refresh_members members "${included[@]}" || return 0
+            [ ${#members[@]} -eq ${#included[@]} ] || continue
             if [ "$conclusion" = success ]; then
                 note "failed once, passed on rerun (#${included[0]}): $(paste -sd' ' <<<"${tests:-unnamed}")"
             else
@@ -466,27 +508,14 @@ land_batch() {
         fi
         if [ "$conclusion" != success ]; then
             note "red: $(failed_jobs); splitting the batch"
-            local half=$(((${#included[@]} + 1) / 2))
-            land_batch "${included[@]:0:half}"
-            land_batch "${included[@]:half}"
+            local half=$(((${#members[@]} + 1) / 2))
+            local later=("${members[@]:half}")
+            land_batch "${members[@]:0:half}"
+            refresh_members later "${later[@]}" || return 0
+            land_batch "${later[@]}"
             return 0
         fi
         note "green"
-        # A member pushed or parked during the test leaves; the rest are
-        # tested again without it.
-        rows=$(pr_rows "${included[@]}")
-        members=()
-        while IFS= read -r line; do
-            parse_row "$line"
-            check_state
-            if [ "$state" = OPEN ] && [ "$draft" = false ] && [[ ",$labels," != *,hold,* ]] && [ "$threads" = 0 ] &&
-                [ $check = passed ] && [ "$(cut -f6 <<<"${row_of[$number]}")" = "$head" ]; then
-                members+=("$number")
-            else
-                note "#$number $title changed during the test; it waits for the next cycle"
-            fi
-        done < <(grep -v '^base ' <<<"$rows" || true)
-        [ ${#members[@]} -eq ${#included[@]} ] || continue
         moved=$(tip_of "$default_branch")
         if [ "$moved" != "$base" ]; then
             git fetch -q --no-tags origin "$moved"
@@ -508,6 +537,7 @@ land_batch() {
 # One cycle: the batch is the oldest ready pull requests, at most eight.
 queue_cycle() {
     local numbers rows tip
+    local -A finished_staging_branches=()
     problems=false merged_this_cycle=()
     numbers=$(gh api graphql -F owner="$owner" -F name="$name" -f query='
 query($owner: String!, $name: String!) {
@@ -532,8 +562,13 @@ query($owner: String!, $name: String!) {
         land_batch "${batch[@]}"
         last_block=$SECONDS
     fi
-    if ! $dry_run && [ -n "$(git ls-remote origin "refs/heads/$staging_branch")" ]; then
-        git push -q origin --delete "$staging_branch"
+    if [ ${#finished_staging_branches[@]} -gt 0 ]; then
+        local branch leases=() branches=()
+        for branch in "${!finished_staging_branches[@]}"; do
+            leases+=("--force-with-lease=refs/heads/$branch:${finished_staging_branches[$branch]}")
+            branches+=("$branch")
+        done
+        git push -q "${leases[@]}" origin --delete "${branches[@]}"
     fi
     ! $problems
 }

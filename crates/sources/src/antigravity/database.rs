@@ -138,7 +138,7 @@ impl Parser for Summaries {
             out.links.push(Link {
                 kind: LinkKind::Spawn,
                 copies_prefix: false,
-                how: None,
+                reason: None,
                 parent,
                 child: id.clone(),
                 branch_point: None,

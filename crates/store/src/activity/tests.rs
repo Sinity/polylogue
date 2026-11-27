@@ -122,3 +122,32 @@ fn run_blocked_statement(
     ended.send(()).unwrap();
     exit.recv().unwrap();
 }
+
+#[test]
+fn slow_statements_keep_counts_and_leave_warnings_in_the_event_log() {
+    crate::log!(warning, "synthetic warning before slow SQL");
+    let _operation = doing("synthetic read");
+    for n in 0..300 {
+        finished_slow_statement("reader", "SELECT synthetic", Duration::from_secs(1 + n % 3));
+    }
+    let statements = slow_statements();
+    let statement = statements
+        .iter()
+        .find(|statement| statement.sql == "SELECT synthetic")
+        .unwrap();
+    assert_eq!(
+        (
+            statement.count,
+            statement.seconds,
+            statement.longest_seconds
+        ),
+        (300, 3.0, 3.0)
+    );
+    assert_eq!(statement.operation.as_deref(), Some("synthetic read"));
+    let warnings: Vec<_> = crate::log::recent(crate::log::KEPT)
+        .into_iter()
+        .filter(|record| record.text == "synthetic warning before slow SQL")
+        .collect();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].priority, crate::log::Priority::Warning);
+}

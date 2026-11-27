@@ -131,7 +131,7 @@ pub struct ScopeIndex {
 
 fn columns() -> String {
     format!(
-        "pk, id, kind, stub, {}, started_at, last_activity_at, cwd, cwd_json, repo, \
+        "pk, id, kind, has_transcript, {}, started_at, last_active_at, cwd, cwd_json, repo, \
          message_count, live_facts",
         crate::session_sql::display_title("session")
     )
@@ -142,9 +142,9 @@ fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
     let id: String = r.get(1)?;
     let session_id: SessionId = r.id(1)?;
     let kind: String = r.get(2)?;
-    let stub: bool = r.get(3)?;
+    let has_transcript: bool = r.get(3)?;
     let session = match kind.as_str() {
-        name if name == SessionKind::Main.as_str() && !stub => {
+        name if name == SessionKind::Main.as_str() && has_transcript => {
             let cwd: Option<String> = r.get(7)?;
             let mut directories: Vec<String> = r
                 .get::<_, Option<String>>(8)?
@@ -204,7 +204,7 @@ impl Reader<'_> {
     /// sessions removed after it.
     pub fn scope_changes(&self, after: Option<&ChangePosition>) -> Result<ScopeChanges> {
         let position = self.change_position()?;
-        let after = after.filter(|after| after.generation == position.generation);
+        let after = after.filter(|after| after.index_instance == position.index_instance);
         let conn = self.conn()?;
         let columns = columns();
         let mut rows = Vec::new();
@@ -219,7 +219,7 @@ impl Reader<'_> {
             }
             Some(since) => {
                 let after = since.index;
-                for changed in ["changed", "live_changed", "derived_changed"] {
+                for changed in ["changed", "live_changed", "summary_changed"] {
                     let mut statement = conn.prepare_cached(&format!(
                         "SELECT {columns} FROM session WHERE {changed} > ?1"
                     ))?;
@@ -281,7 +281,7 @@ impl ScopeIndex {
     /// in the same index generation.
     pub fn is_newer_than(&self, changes: &ScopeChanges) -> bool {
         self.position.as_ref().is_some_and(|stored| {
-            stored.generation == changes.position.generation
+            stored.index_instance == changes.position.index_instance
                 && stored.index > changes.position.index
         })
     }

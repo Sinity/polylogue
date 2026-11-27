@@ -128,7 +128,7 @@ impl Inner {
         crate::query_objects::validate_object(object)?;
         crate::query_objects::validate_run(run)?;
         crate::query_objects::validate_run_outcome(outcome)?;
-        if run.question != Some(object.id)
+        if run.query_id != Some(object.id)
             || outcome.run != run.id
             || outcome.binding_hash != run.binding_hash().map_err(crate::StoreError::invalid)?
             || outcome.run_hash != run.record_hash().map_err(crate::StoreError::invalid)?

@@ -151,7 +151,8 @@ CREATE TABLE delivery (
   body              BLOB NOT NULL,          -- the delivered text, zstd
   refs_json         TEXT NOT NULL,          -- references included, in order
   left_out_json     TEXT NOT NULL DEFAULT '[]',  -- references and sections left out, each with its reason
-  commit_seq        INTEGER NOT NULL
+  commit_seq        INTEGER NOT NULL,
+  prepared_position INTEGER                 -- the archive write counter its content was read at; NULL when not recorded
 ) STRICT;
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
 CREATE INDEX delivery_sender ON delivery(sender, at);   -- signal notices; the evaluator's history

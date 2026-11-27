@@ -58,34 +58,35 @@ function portPair(name) {
   return [a, b];
 }
 
-/**
- * A fake host: `routes[`${method} ${path}`]` answers `{status, json}` or
- * `{status, bytes, type}` from the request body (a Uint8Array).
- */
-function hostPort(routes, calls) {
+/** A host that answers logical requests through the real framing. */
+function hostPort(operations, calls) {
   const [extension, host] = portPair("host");
-  let request = null;
-  const body = [];
-  let answer = null;
-  host.onMessage.addListener(async (frame) => {
-    if (frame.type === "request") { request = frame; return; }
-    if (frame.type === "body") { body.push(decode(frame.data)); host.postMessage({ type: "body_ack", sequence: frame.sequence }); return; }
-    if (frame.type === "body_end") {
-      const bytes = new Uint8Array(Buffer.concat(body.map((b) => Buffer.from(b))));
-      calls.push({ method: request.method, path: request.path, body: bytes });
-      const route = routes[`${request.method} ${request.path.split("?")[0]}`];
-      if (!route) { host.postMessage({ type: "response", status: 404, headers: {} }); answer = []; return; }
-      const result = await route(bytes, request.path);
-      if (result === "drop") { host.disconnect(); return; }
-      const content = result.bytes ?? new TextEncoder().encode(JSON.stringify(result.json ?? {}));
-      answer = [];
-      for (let at = 0; at < content.length; at += 64 * 1024) answer.push(content.subarray(at, at + 64 * 1024));
-      host.postMessage({ type: "response", status: result.status ?? 200, headers: { "content-type": result.type || "application/json" } });
-      return;
+  const parts = [];
+  host.onMessage.addListener(async (message) => {
+    if (message.type === "part") {
+      parts.push(decode(message.data));
+      if (!message.last) return;
+      message = JSON.parse(Buffer.concat(parts));
     }
-    if (frame.type === "response_next") {
-      const next = answer.shift();
-      host.postMessage(next ? { type: "response_body", data: encode(next) } : { type: "response_end" });
+    calls.push(message);
+    const name = message.type === "call" ? message.operation : message.type;
+    const operation = operations[name];
+    const args = message.type === "capture" ? new TextEncoder().encode(message.capture) : message.arguments || message;
+    let result;
+    if (operation) result = await operation(args, message);
+    else if (name === "spooled") result = { json: { spooled: message.ids.map(() => false) } };
+    else if (name === "internal stored-files") result = { json: { files: [] } };
+    else result = { status: 404, json: { error: "not_found" } };
+    if (result === "drop") { host.disconnect(); return; }
+    const answer = result.answer || (result.status >= 400
+      ? { outcome: "error", error: { code: result.json.error, message: result.json.message || result.json.error, reason: result.json.reason } }
+      : { outcome: "ok", value: result.json ?? {} });
+    const value = { version: 2, type: "answer", answer };
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    if (bytes.length <= 64 * 1024) host.postMessage(value);
+    else for (let at = 0; at < bytes.length; at += 64 * 1024) {
+      host.postMessage({ version: 2, type: "part", sequence: at / (64 * 1024),
+        data: encode(bytes.subarray(at, at + 64 * 1024)), last: at + 64 * 1024 >= bytes.length });
     }
   });
   return extension;
@@ -113,7 +114,7 @@ function pagePort(answer) {
   return extension;
 }
 
-export function fakeChrome({ routes = {}, pages = {}, tabs = [], installed = true } = {}) {
+export function fakeChrome({ operations = {}, pages = {}, tabs = [], installed = true } = {}) {
   const calls = [];
   const created = [];
   const scripts = [];
@@ -135,7 +136,7 @@ export function fakeChrome({ routes = {}, pages = {}, tabs = [], installed = tru
       }),
       connectNative: () => {
         if (!installed) throw new Error("Specified native messaging host not found.");
-        return hostPort(routes, calls);
+        return hostPort(operations, calls);
       },
       // Resolves with the first response a listener sends, as Chrome does.
       sendMessage: (message) => new Promise((resolve) => {

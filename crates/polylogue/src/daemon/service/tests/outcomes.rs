@@ -11,9 +11,9 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
         logical_sessions: Vec::new(),
         value: crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
-            read_at: crate::protocol::query::Position {
+            read_position: crate::protocol::query::Position {
                 freshness: None,
-                generation: "synthetic".into(),
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
                 cursor: "synthetic:1:1".into(),
@@ -114,7 +114,10 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
         assert_eq!(answer.exit_code(), 5, "{outcome:?}");
         let (mut value, notes) = test_answers::degraded(answer);
         assert_eq!(notes, behind().notes(), "{outcome:?}");
-        assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&behind()));
+        assert_eq!(
+            value.read_position_mut().freshness.as_ref(),
+            Some(&behind())
+        );
     }
 }
 
@@ -194,7 +197,10 @@ fn answer_reports_pending_search_text_and_parse_lag() {
             "search text is pending"
         ]
     );
-    assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&freshness));
+    assert_eq!(
+        value.read_position_mut().freshness.as_ref(),
+        Some(&freshness)
+    );
     let answer = crate::protocol::read(value.clone(), &freshness);
     let (same_value, same_notes) = test_answers::degraded(answer);
     assert_eq!(

@@ -18,33 +18,69 @@ pub(super) fn execute(root: &Path, repetitions: u32, full_walk: bool) -> ExitCod
         }
         let id = run.id().ok_or("benchmark history is unavailable")?;
         let out = run.root.join(root).join("reads");
-        fs::create_dir_all(&out).map_err(|e|e.to_string())?;
+        fs::create_dir_all(&out).map_err(|e| e.to_string())?;
         let report = out.join(format!("run-{id}.json"));
         if report.exists() {
             return Err(format!("benchmark output already exists: {}", report.display()).into());
         }
-        let load = LoadMonitor::start()?;
+        let load = bench::LoadMonitor::start()?;
         run.nextest(
             "reads",
             &Nextest {
                 args: [
-                    "--locked", "--release", "-p", "polylogue", "--test", "e2e",
-                    "--run-ignored", "only", "-E", &format!("test({SCENARIO})"),
-                ].map(str::to_owned).to_vec(),
+                    "--locked",
+                    "--release",
+                    "-p",
+                    "polylogue",
+                    "--test",
+                    "e2e",
+                    "--run-ignored",
+                    "only",
+                    "-E",
+                    &format!("test({SCENARIO})"),
+                ]
+                .map(str::to_owned)
+                .to_vec(),
                 tmpfs: true,
                 env: vec![
-                    ("POLYLOGUE_READ_BENCH_REPORT".into(), report.display().to_string()),
-                    ("POLYLOGUE_READ_BENCH_REPETITIONS".into(), repetitions.to_string()),
-                    ("POLYLOGUE_READ_BENCH_FULL_WALK".into(), u8::from(full_walk).to_string()),
+                    (
+                        "POLYLOGUE_READ_BENCH_REPORT".into(),
+                        report.display().to_string(),
+                    ),
+                    (
+                        "POLYLOGUE_READ_BENCH_REPETITIONS".into(),
+                        repetitions.to_string(),
+                    ),
+                    (
+                        "POLYLOGUE_READ_BENCH_FULL_WALK".into(),
+                        u8::from(full_walk).to_string(),
+                    ),
                 ],
                 ..Nextest::default()
             },
         )?;
         let load = load.finish()?;
-        let metrics = read_result(&fs::read_to_string(&report).map_err(|e|e.to_string())?, repetitions, full_walk)?;
-        let store = Store::open().map_err(|e|e.to_string())?;
-        let bench_id = bench::record(&store, &run.root, "polylogue", "reads", POPULATION, &out, &load, &metrics).map_err(|e|e.to_string())?;
-        println!("{}", json!({"run":bench_id,"history_run":id,"result":metrics,"load":load.to_json(),"load_checks_passed":load.checks_passed()}));
+        let metrics = read_result(
+            &fs::read_to_string(&report).map_err(|e| e.to_string())?,
+            repetitions,
+            full_walk,
+        )?;
+        let store = Store::open().map_err(|e| e.to_string())?;
+        let recorded = json!({"result": metrics, "load": load.to_json()});
+        let bench_id = bench::record(
+            &store,
+            &run.root,
+            "polylogue",
+            "reads",
+            POPULATION,
+            &out,
+            &recorded,
+        )
+        .map_err(|e| e.to_string())?;
+        println!(
+            "{}",
+            json!({"run":bench_id,"history_run":id,"result":metrics,"load":load.to_json()})
+        );
         Ok(())
     });
     run.finish()

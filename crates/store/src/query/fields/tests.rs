@@ -50,7 +50,7 @@ fn active_live_state_agrees_with_the_sql_rule() {
     use polylogue_model::live::{Activity, LIVE_WINDOW_MS, LiveFacts, STALE_FOR_MS, Since, view};
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     crate::sql_functions::register(&conn).unwrap();
-    conn.execute_batch("CREATE TABLE s(live_facts TEXT, last_activity_at INTEGER)")
+    conn.execute_batch("CREATE TABLE s(live_facts TEXT, last_active_at INTEGER)")
         .unwrap();
     let now = 10 * STALE_FOR_MS;
     for activity in [Activity::Working, Activity::Idle, Activity::Waiting] {

@@ -4,9 +4,9 @@ CREATE TABLE alternate_indexed (
 ) STRICT;
 CREATE TABLE alternate_text (
   alternate TEXT NOT NULL,
-  n INTEGER NOT NULL,
+  position INTEGER NOT NULL,
   body TEXT NOT NULL,
-  UNIQUE(alternate,n)
+  UNIQUE(alternate,position)
 ) STRICT;
 CREATE VIRTUAL TABLE alternate_fts USING fts5(body,content='alternate_text',content_rowid='rowid');
 CREATE TRIGGER alternate_text_insert AFTER INSERT ON alternate_text BEGIN

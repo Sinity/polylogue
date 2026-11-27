@@ -231,7 +231,7 @@ pub(crate) struct Selection {
     /// does not resolve (a single read-only step streams as it reads).
     pub resolved: Option<Vec<Reference>>,
     /// The query text when the selection is a query.
-    pub question: Option<String>,
+    pub query: Option<String>,
     pub retained: Option<Box<polylogue_model::user::LineSelection>>,
 }
 

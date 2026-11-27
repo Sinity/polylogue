@@ -7,6 +7,14 @@
 //!
 //! `--max-rss-mb N` fails the run when its peak resident memory exceeds N.
 //!
+//! `first_build --list-inputs --home <dir>` prints, one JSON line each, the
+//! files the engine's discovery finds under `<dir>` and the tools' own root
+//! variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …): path, origin, where the
+//! file lies in a home of default layout, size, and whether it is a
+//! database. The benchmark draws its sample from this list and lays the
+//! sample out as that home, which a measured build reads with no root
+//! variables.
+//!
 //! `--from-record` stores the corpus first, unmeasured, and removes the
 //! index; the measured pass then builds the index from the stored record.
 //!
@@ -593,6 +601,15 @@ fn main() {
         println!("{}", compression_sizes(Path::new(&index)).unwrap());
         return;
     }
+    if args.iter().any(|arg| arg == "--list-inputs") {
+        let home = std::path::absolute(arg("--home").expect("--home <dir>")).unwrap();
+        let mut out = BufWriter::new(std::io::stdout().lock());
+        for input in inputs(&discovery_config(home)) {
+            writeln!(out, "{}", serde_json::to_string(&input).unwrap()).unwrap();
+        }
+        out.flush().unwrap();
+        return;
+    }
     let dir = PathBuf::from(arg("--dir").expect("--dir <scratch directory>"));
     let home = match arg("--home") {
         Some(h) => PathBuf::from(h),
@@ -900,6 +917,68 @@ fn counter_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
 #[cfg(test)]
 #[path = "first_build/tests.rs"]
 mod tests;
+
+/// One file discovery found, as `--list-inputs` prints it.
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct Input {
+    path: PathBuf,
+    origin: &'static str,
+    /// Where the file lies under a home whose tools keep their default
+    /// directories.
+    layout: PathBuf,
+    bytes: u64,
+    /// A database the engine reads by rows; a copy must be taken in one read
+    /// transaction.
+    database: bool,
+}
+
+/// Every file the engine's discovery finds, in discovery's order. A path
+/// outside every root cannot be laid out under a home and is a panic: the
+/// roots are where discovery looks.
+fn inputs(config: &Config) -> Vec<Input> {
+    let (found, _unreadable) = polylogue_engine::collect::scan(config);
+    found
+        .into_iter()
+        .map(|found| Input {
+            layout: default_layout(config, &found.path)
+                .unwrap_or_else(|| panic!("{} is under no root", found.path.display())),
+            bytes: fs::metadata(&found.path).map_or(0, |m| m.len()),
+            origin: found.origin.name,
+            database: found.origin.capture.is_row_dump(),
+            path: found.path,
+        })
+        .collect()
+}
+
+/// `path` relative to the deepest root that holds it, under that root's
+/// default directory.
+fn default_layout(config: &Config, path: &Path) -> Option<PathBuf> {
+    use polylogue_sources::origin::{Root, variable_roots};
+    variable_roots()
+        .into_iter()
+        .map(|(_, root)| root)
+        .chain([Root::HOME])
+        .map(|root| (config.root(root), root))
+        .filter(|(dir, _)| path.starts_with(dir))
+        .max_by_key(|(dir, _)| dir.components().count())
+        .map(|(dir, root)| {
+            Path::new(root.default).join(path.strip_prefix(&dir).expect("under its root"))
+        })
+}
+
+/// Discovery as the daemon's would be: `home` and the tools' own root
+/// variables from the environment.
+fn discovery_config(home: PathBuf) -> Config {
+    let mut config = measurement_config(home);
+    config.tool_dirs = polylogue_sources::origin::variable_roots()
+        .into_iter()
+        .filter_map(|(variable, _)| {
+            let value = std::env::var_os(variable)?;
+            Some((variable.to_owned(), std::path::absolute(value).ok()?))
+        })
+        .collect();
+    config
+}
 
 fn measurement_config(home: std::path::PathBuf) -> Config {
     Config::new(

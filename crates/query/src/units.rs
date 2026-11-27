@@ -590,7 +590,7 @@ pub static UNITS: &[UnitSpec] = &[
         unit: Unit::SessionLinks,
         name: "session_links",
         in_session: false,
-        identity: &["parent", "child", "kind", "how"],
+        identity: &["parent", "child", "kind", "reason"],
         main_time: None,
         columns: &[
             ColumnSpec {
@@ -606,7 +606,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
             ColumnSpec {
-                name: "how",
+                name: "reason",
                 kind: Text,
             },
             ColumnSpec {

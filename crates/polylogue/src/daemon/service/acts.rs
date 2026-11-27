@@ -121,7 +121,7 @@ pub(super) fn author(
     ) {
         Ok(writes
             .archive()
-            .accept_delivery(request, None)?
+            .accept_delivery(request)?
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)??
             .outcome
@@ -142,18 +142,18 @@ fn outcome_event(
     d: &Daemon,
     invocation: &Invocation,
     delivery: &str,
-    what: DeliveryOutcome,
+    outcome: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
     let request = invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
-            what,
+            outcome,
             detail: Some(detail),
         },
     );
-    let written = writer(d)?.archive().accept_delivery(request, None)?;
+    let written = writer(d)?.archive().accept_delivery(request)?;
     d.acts.watch_delivery(delivery, written);
     Ok(())
 }
@@ -505,6 +505,7 @@ pub(crate) fn send(
                 text: pack.clone(),
                 refs: vec![format!("annotation:{message}")],
                 left_out: Vec::new(),
+                prepared_position: None,
             }),
         )?;
         let chosen = channel(
@@ -877,6 +878,7 @@ pub(crate) fn answer(
             text: body.to_string(),
             refs: vec![reference.clone()],
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     if let Some((first, _)) = earlier {
@@ -1024,6 +1026,7 @@ pub(crate) fn interrupt(
             text: json!({"interrupt": true}).to_string(),
             refs: Vec::new(),
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     let (what, detail, answer) = match channel(
@@ -1291,6 +1294,7 @@ fn start_session(
             text: first,
             refs: new.refs,
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     outcome_event(

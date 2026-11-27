@@ -144,7 +144,7 @@ impl Reader<'_> {
         let Ok(ordinal) = i64::try_from(ordinal) else {
             return Ok(());
         };
-        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id LIMIT -1 OFFSET ?2")?;
+        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.position,e.id LIMIT -1 OFFSET ?2")?;
         let mut rows = statement.query(rusqlite::params![session.to_string(), ordinal])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;

@@ -101,9 +101,9 @@ fn consume(
         let complete = match line {
             Line::Begin {
                 position,
-                generation,
+                index_instance,
                 replacement,
-                generation_changed,
+                index_instance_changed,
             } => {
                 if begun.is_some() {
                     return Err(io::Error::new(
@@ -112,10 +112,12 @@ fn consume(
                     ));
                 }
                 let old = previous.and_then(ChangePosition::parse);
-                let changed = old.as_ref().is_some_and(|p| p.generation != generation);
+                let changed = old
+                    .as_ref()
+                    .is_some_and(|p| p.index_instance != index_instance);
                 if position.as_deref() != previous
-                    || generation.is_empty()
-                    || generation_changed != changed
+                    || index_instance.is_empty()
+                    || index_instance_changed != changed
                     || replacement != (old.is_none() || changed)
                 {
                     return Err(io::Error::new(
@@ -123,7 +125,7 @@ fn consume(
                         "the feed header does not continue the requested position",
                     ));
                 }
-                begun = Some((position, generation, replacement));
+                begun = Some((position, index_instance, replacement));
                 false
             }
             Line::Change { position, .. } => {
@@ -149,7 +151,7 @@ fn consume(
                 count,
                 replacement,
             } => {
-                let Some((previous, generation, expected_replacement)) = &begun else {
+                let Some((previous, index_instance, expected_replacement)) = &begun else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "the change feed omitted its header",
@@ -161,7 +163,7 @@ fn consume(
                         "the completed change position is invalid",
                     )
                 })?;
-                if &target.generation != generation
+                if &target.index_instance != index_instance
                     || count != seen
                     || &replacement != expected_replacement
                 {
@@ -175,7 +177,7 @@ fn consume(
                         .as_ref()
                         .and_then(|p| ChangePosition::parse(p))
                         .is_some_and(|p| {
-                            p.generation != target.generation
+                            p.index_instance != target.index_instance
                                 || p.index > target.index
                                 || p.archive > target.archive
                         })
