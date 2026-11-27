@@ -27,6 +27,7 @@ struct Snapshot {
     /// The writer's commit count loaded before its reader opened: the
     /// snapshot shows at least those commits.
     commits_read: u64,
+    missing_context: Option<crate::protocol::status::MissingContext>,
     store: Result<polylogue_store::Status, String>,
     notices: Result<crate::protocol::status::Notices, String>,
     running: Result<polylogue_store::RunningCandidates, String>,
@@ -44,6 +45,13 @@ impl Snapshot {
         Self {
             read_at: read_at.into(),
             commits_read,
+            missing_context: d
+                .resolve_operation_context(d.invocation(&polylogue_model::authorship::Authorship {
+                    author: polylogue_model::Author::Operator,
+                    via: polylogue_model::authorship::Channel::Cli,
+                }))
+                .and_then(|context| crate::hook::missing_context(reader, context))
+                .ok(),
             store: reader
                 .status(&polylogue_engine::reading_contracts())
                 .map_err(|error| error.to_string()),
@@ -254,6 +262,7 @@ pub(super) fn answer(
         vectors_error,
         verification: None,
         pending_writes: pending_writes(d),
+        session_starts_without_context: snapshot.missing_context.clone(),
         loop_status,
         signals,
         notices: Some(notices),
@@ -407,6 +416,7 @@ fn unread(
         vectors_error,
         verification: None,
         pending_writes: pending_writes(d),
+        session_starts_without_context: None,
         loop_status,
         signals,
         notices: None,

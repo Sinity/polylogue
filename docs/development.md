@@ -8,8 +8,8 @@ input. Change the compiler version in common and both products together.
 |---|---|
 | `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect |
 | `cargo xtask check [--base <ref>]` | the same with every test, or with the parts and tests the changes since the merge base with `<ref>` can affect |
-| `dev/land [--dry-run] <n>` | land pull request `n` once its required check is green against a base still current for the packages it changes ([landing](#landing)) |
-| `dev/land --queue [--once] [--dry-run]` | land every ready pull request, in passes a minute apart ([landing](#landing)) |
+| `dev/land --queue [--once] [--dry-run]` | the landing queue: test ready pull requests in batches on master's tip and merge green batches ([landing](#landing)) |
+| `dev/land [--dry-run] [--now] <n>` | land one pull request by hand ([landing](#landing)) |
 | `cargo xtask fast` | formatting, the workspace-hack verification and both Clippy configurations, without tests |
 | `cargo xtask test -p <crate> --lib -E 'test(<name>)'` | the selected tests under nextest, building only that crate's library test target and what it depends on |
 | `cargo xtask test --changed`, `--base <ref>` | the tests the changes since the merge base with `origin/master` (or `<ref>`) can affect: changed packages and their dependents |
@@ -262,55 +262,69 @@ earlier ones. A manual run may reuse that build but never replaces it.
 
 ### Landing
 
-A pull request's run checks GitHub's merge of its head with master at that
-moment, and its `check` job records that master commit as the notice
-annotation `tested base` on its check run. `dev/land` (git, gh and awk;
-nothing to build) compares the packages a pull request changes with those
-master changed since the tested base. A package is a directory with a
-`Cargo.toml`; another path counts as its top-level directory; the root
-manifest, `Cargo.lock`, `rust-toolchain.toml`, the flake, `.cargo/`,
-`.config/` and `.github/` count as every package; Markdown counts as none.
-When the two sets meet, or the run recorded no tested base and the pull
-request changes more than Markdown, the pull request is stale: master is
-merged into its branch with GitHub's update-branch and the check runs again.
-Otherwise it is squash-merged with `--match-head-commit`. Master can still
-move in the second or two between the last comparison and the merge. The
-comparison does not see a break across packages, such as a new caller in one
-crate of an API master removed from another; master's own run after the
-merge finds it.
-
 A pull request is ready when it is open, not a draft, not labelled `hold`,
-has no unresolved review threads and its required check is green on its head.
-The owner's part is to make it ready: resolving a review thread, once the
-finding is answered, is what releases it. `hold`, with the reason in a
-comment, parks a finished pull request.
+has no unresolved review threads, does not conflict with master and its
+required check is green on its own head. Only pull requests from this
+repository's own branches are batched: the staging run is a run of this
+repository with its secrets, which a pull request from a fork never gets,
+so one from a fork is listed and landed by hand. The owner's part is to make it
+ready: resolving a review thread, once the finding is answered, is what
+releases it. `hold`, with the reason in a comment, parks a finished pull
+request. With the queue running an owner does not land by hand.
 
-`dev/land --queue` runs as the declared `land_queue` operation, in passes a
-minute apart. Each pass reads every open pull request with two GraphQL calls,
-merges the ready ones that are current, oldest first, deciding each against
-master's tip after the merge before it, and then updates the stale ones
-without waiting for their checks. Of the pull requests whose package sets
-overlap, at most one is in flight at a time, since each merge makes its
-overlapping siblings stale again. In flight means updated in this pass, or
-with jobs of its check queued or running on its head, whoever pushed it; each
-pass reads this afresh, so when that check goes red or the pull request
-becomes a draft, held or conflicting, the next pass updates the next stale
-one. A head with no check job yet holds nothing back. A pass prints a block when it merged or updated something, and every
-ten minutes otherwise: merged, updated, waiting (with the reason), waiting on
-review threads, red (with the failed jobs), conflicting, held and draft pull
-requests, with numbers and titles. A red check or a conflict never stops the
-queue, and it never reruns a check; a conflict needs the owner or a new
-worker. `--once` runs one pass and exits 0 unless a pull request is red or
-conflicting. The queue keeps nothing beyond what GitHub holds, so stopping
-and restarting it is always safe.
+`dev/land --queue` (git, gh and awk; nothing to build) runs as the declared
+`land_queue` operation and lands ready pull requests in tested batches. A
+cycle takes the oldest ready ones, at most eight, and builds one staging
+commit on master's tip that adds each as a squash commit, computed with
+`git merge-tree` and `git commit-tree`; one that does not merge onto the
+staging commit is left out of this batch. It pushes the staging commit to the
+branch `land-queue` and dispatches the `check` workflow on exactly that
+commit (`rev`), which runs every test. When the run is green and master has
+not moved since, or moved only in packages the batch does not change, it
+squash-merges the members in order with `--match-head-commit` and says
+whether master's tree is then identical to the tree the staging commit
+predicts. If master moved in a package the batch changes, or a member got a
+new head or stopped being ready during the run, it builds a new staging
+commit and tests again. Master's protection requires `check` on the merged
+pull request's own head, not an up-to-date branch, so no head is rewritten.
 
-`dev/land <n>` lands one pull request by hand: it waits for the required
-check, polling once a minute, updates the branch and waits again while it is
-stale, and prints the head, tested base, master's tip, both package sets and
-the runs it waited for. It stops on a draft, `hold`, unresolved threads, a
-conflict, or a red check, naming the failed jobs. `--dry-run`, with either
-form, prints the decisions without updating or merging; for one pull request
-it exits 0 only when it would merge now.
+A package is a directory with a `Cargo.toml`; another path counts as its
+top-level directory; the root manifest, `Cargo.lock`, `rust-toolchain.toml`,
+the flake, `.cargo/`, `.config/` and `.github/` count as every package;
+Markdown counts as none. The comparison does not see a break across packages,
+such as a new caller in one crate of an API master removed from another;
+master's own run after the merge finds it.
+
+A red batch is split in half and the oldest half tested first; a green half
+merges, and the search goes on in the other half on the new master. A pull
+request red on its own has its failed jobs run once more: if they pass it
+merges and the cycle prints the tests that failed the first time as "failed
+once, passed on rerun"; if they fail again the queue comments on it with the
+run, the failed jobs and tests and the master commit (and the pull requests
+merged from the same batch), and skips it while its head is the one that
+comment names. A new head or a branch update puts it back.
+
+The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
+flight (its run finishes unused); members already merged stay merged, and the
+rest are ready pull requests on the next cycle. The staging branch is deleted
+when a cycle ends. Each cycle prints what is not in the batch (check running,
+red on its own head with the failed jobs, conflicting, waiting on review
+threads, sent back, held, draft), then the batch, the staging commit, the
+run, the result, what merged, what was left out and what was sent back. It
+waits a minute when nothing is ready and, while waiting on a run, polls once
+a minute. `--once` runs one cycle and exits 0 unless a pull request is red,
+conflicting or sent back; `--dry-run` prints the batch and its staging commit
+without pushing or merging.
+
+`dev/land <n>` lands one pull request by hand and refuses while the
+`land-queue` branch exists, so a hand merge does not move master under a
+batch; `--now` merges anyway. It waits for the required check, polling once
+a minute, and compares the packages the pull request changes with those
+master changed since the base its check tested (the `check` job records it as
+the notice annotation `tested base`); when they meet it merges master into
+the branch with update-branch and waits again. It stops on a draft, `hold`,
+unresolved threads, a conflict or a red check, naming the failed jobs.
+`--dry-run` prints the decision and exits 0 only when it would merge now.
 
 ## Published package
 

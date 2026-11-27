@@ -56,7 +56,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
         out.push('\n');
     }
-    let sections: [(&str, Vec<String>); 14] = [
+    let sections = [
         ("ARCHIVE", archive(status, view)),
         (
             "READING",
@@ -80,6 +80,26 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("NOTICES", notices(status, view)),
         ("RULES", rules(status, view)),
         ("PENDING", pending(status, view)),
+        (
+            "CONTEXT",
+            status
+                .session_starts_without_context
+                .as_ref()
+                .map(|missing| {
+                    missing
+                        .causes
+                        .iter()
+                        .map(|(cause, total)| {
+                            format!(
+                                "{total} session starts without a brief: {}; since {}",
+                                cause.replace('_', " "),
+                                missing.since.map_or("unknown".into(), |at| at.to_string())
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
         ("SOURCES", sources(status, view)),
         ("UNUSED", unused(status)),
         ("THREADS", threads(status, view)),
