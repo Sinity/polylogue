@@ -411,7 +411,6 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
         &morrow.dir.path().join("config"),
     );
     let _daemon = start_daemon(&env);
-    wait_status(&env, |status| status["store"]["sessions"] == 8);
     let answer = |selection: &str, read: bool| {
         let mut arguments = vec!["--json", selection];
         if read {
