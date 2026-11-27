@@ -137,6 +137,9 @@ CREATE TABLE message (
 -- them once at its end; meanwhile the writer finds rows by key in memory.
 CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, session_order, id);   -- reading in order; [last:N]
+-- A message's children in its session: whether it is a branch point, which
+-- the transcript lines fold asks of every message it writes.
+CREATE INDEX message_parent ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;
 
 -- Readings. Each chain's reading owns its rows: every row below carries the
 -- input and chain whose records state it and the byte range of those
