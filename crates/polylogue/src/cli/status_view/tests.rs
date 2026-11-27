@@ -1276,6 +1276,9 @@ fn every_chain_state_the_census_counts_has_its_words() {
                 .collect(),
             ..Default::default()
         },
+        true,
+        &[],
+        "host",
     ));
     let view = plain(&status, &[]);
     let reading = view
