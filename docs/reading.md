@@ -181,7 +181,7 @@ This writes a bundle; `read --to FILE` writes one document. Annotations are writ
 - the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the index was up to date, counts, the reading options as the caller wrote them (view, show and hide words and the rest), enabled alternates, and the computed author;
 - then one record per physical session (its messages, blocks, events, links and attachment descriptors inline), per document, per input event, per annotation, kept result and delivery, and per alternate, in commit order;
 - `json` writes the manifest plus one file per session at `<origin>/<percent-encoded native ID>.json` (long names hashed), for diffing; `jsonl` writes everything to one file with the manifest first; `markdown` and `html` write one file per session plus `index.md` or `index.html` linking them, rendered with the chosen view and enabled alternates;
-- `json` and `jsonl` bundles write the bytes of present attachments under `blobs/<hex>`, so they resolve after import; `markdown` and `html` link them there (`![name](blobs/<hex>)`);
+- `json` and `jsonl` bundles write the bytes of present attachments under `blobs/<hex>`, including files supplied as separate members of a provider export. Each hash is written once. A binding can state candidates whose bytes are unavailable in the exporting archive; those claims stay in the message without a blob file. `markdown` and `html` link stored blobs there (`![name](blobs/<hex>)`);
 - branches are written in full; `--hide inherited` writes no inherited prefixes and `--hide annotations` no annotations.
 
 **Rules:**
