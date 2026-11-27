@@ -107,7 +107,7 @@ impl Pending {
             return Err("both archives must use the current standalone mode".into());
         }
         let _earlier_lock = super::lock(earlier)?;
-        let source = Pinned::open(fs::absolute(source)?)?;
+        let source = Pinned::open(std::path::absolute(source)?)?;
         if parent.starts_with(source.path.canonicalize()?)
             || parent.starts_with(earlier.canonicalize()?)
         {
@@ -249,6 +249,15 @@ impl Pending {
                 segment.through,
                 end,
             )?;
+            // Keep the source's native check against a future mismatched
+            // restore of the catalog and segment.
+            let committed = format!("{name}.committed");
+            let marker = self.source.path.join(&committed);
+            if marker.try_exists()? {
+                let target = stage.join(committed);
+                copy_file(&marker, &target)?;
+                File::open(target)?.sync_all()?;
+            }
         }
         // The vector store commits independently of the record counter. Copy
         // its final database and WAL even when the record position is unchanged.

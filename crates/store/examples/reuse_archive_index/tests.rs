@@ -320,6 +320,11 @@ fn continues_one_native_source_after_preparing_the_checked_cut() {
     assert!(home.root.join("embeddings.db-wal").is_file());
     let (from, to) = pending.finish().unwrap();
     assert_eq!(to, record_position);
+    let marker = "segments/current.hb.committed";
+    assert_eq!(
+        fs::read(candidate.join(marker)).unwrap(),
+        fs::read(home.root.join(marker)).unwrap()
+    );
     assert_eq!(from, open_archive(&Archive::at(&earlier)).unwrap().1);
     assert!(to > from);
     drop(source_vectors);
