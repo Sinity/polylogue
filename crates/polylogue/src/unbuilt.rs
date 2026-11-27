@@ -40,9 +40,6 @@ const fn row(command: &'static str, word: &'static str, page: &'static str) -> U
 /// Every designed option and use the build does not have, by verb in the
 /// order of the verb table, then by command.
 pub const UNBUILT: &[Unbuilt] = &[
-    row("read", "--until", "reading.md#ranges"),
-    row("read", "--first", "reading.md#ranges"),
-    row("read", "--last", "reading.md#ranges"),
     row("read", "--from a message or a time", "reading.md#ranges"),
     row("read", "--beside", "reading.md#alternates"),
     row("read", "--blind", "reading.md#compare-and-blind"),

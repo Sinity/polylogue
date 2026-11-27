@@ -305,7 +305,9 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
         } else {
             // The writer accepts these; the reader refuses the mismatch.
             result.unwrap();
-            engine.refresh_import_assets(&mut Pass::default()).unwrap();
+            engine
+                .refresh_import_assets(&mut Pass::default(), None)
+                .unwrap();
             let reader = engine.reads.reader().unwrap();
             let member = observed(&reader, MEMBER);
             assert!(

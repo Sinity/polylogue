@@ -35,18 +35,15 @@ pub enum ReadStart {
     #[default]
     Beginning,
     Seen,
-    Bound(SessionRead),
+    Bound(Box<SessionRead>),
 }
 impl ReadStart {
     pub fn uses_seen(&self) -> bool {
-        matches!(
-            self,
-            Self::Seen
-                | Self::Bound(SessionRead {
-                    from_seen: true,
-                    ..
-                })
-        )
+        match self {
+            Self::Beginning => false,
+            Self::Seen => true,
+            Self::Bound(bound) => bound.from_seen,
+        }
     }
 }
 
@@ -112,7 +109,7 @@ pub fn resolve_start(
                     "the cursor belongs to another read start",
                 ));
             }
-            request.start = ReadStart::Bound(bound);
+            request.start = ReadStart::Bound(Box::new(bound));
             return Ok(());
         }
         if from_seen {
@@ -153,13 +150,15 @@ pub fn resolve_start(
         } else {
             None
         };
-        request.start = ReadStart::Bound(SessionRead {
+        request.start = ReadStart::Bound(Box::new(SessionRead {
             session: scope.session,
             from_seen,
             after,
             logical,
             parts: vec![],
-        });
+            window_end: None,
+            until: None,
+        }));
     } else if from_seen {
         return Err(Reason::FromSeenNeedsOneSession {}.into());
     }
@@ -702,6 +701,14 @@ enum Route {
 }
 
 fn route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
+    let route = reading_route(reader, request)?;
+    if request.options.until.is_some() && !matches!(route, Route::Session(_)) {
+        return Err(Error::invalid_query("--until needs a session reading"));
+    }
+    Ok(route)
+}
+
+fn reading_route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
     let view = request.options.view;
     if view == View::Trace {
         return Ok(Route::Trace);

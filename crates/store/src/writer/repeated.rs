@@ -166,7 +166,7 @@ fn give_up(
 /// or before `through`, and what belongs to them: the texts their bodies
 /// hold, their injection fields and their content, released when nothing
 /// else names it. What they stated is recorded in `touched`.
-pub(super) fn trim(
+pub(crate) fn trim(
     tx: &Connection,
     input_pk: i64,
     chain: i64,

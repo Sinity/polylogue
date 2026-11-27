@@ -42,6 +42,7 @@ const DECLARED_POINTS: &[&str] = &[
     "search.read_queue",
     "segment.after_append",
     "segment.after_sync",
+    "source.walk",
     "tool_database.comparison_commit",
     "vectors.read",
     "write.archive_commit",

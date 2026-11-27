@@ -8,9 +8,39 @@ fn stage(items: &mut ExportItems, row: &AssetRow) -> polylogue_store::Result<()>
     items.push(0..0, Vec::new(), None, &serde_json::to_vec(row)?)
 }
 
+fn install(
+    engine: &Engine,
+    rebuild: &mut Option<&mut polylogue_store::index::rebuild::Rebuild>,
+    staged: ExportItems,
+) -> Result<(), EngineError> {
+    match rebuild.as_deref_mut() {
+        Some(rebuild) => rebuild.import_assets(staged)?,
+        None => engine.writer.import_assets(staged)?,
+    }
+    Ok(())
+}
+
 impl Engine {
-    pub(crate) fn refresh_import_assets(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
-        let (members, through) = self.reads.reader()?.unindexed_import_members()?;
+    /// Installs the export associations not yet indexed: into `rebuild`
+    /// when one is given, otherwise into the installed index. With neither
+    /// there is nothing to install into; the rebuild installs them before it
+    /// assembles.
+    pub(crate) fn refresh_import_assets(
+        &mut self,
+        pass: &mut Pass,
+        mut rebuild: Option<&mut polylogue_store::index::rebuild::Rebuild>,
+    ) -> Result<(), EngineError> {
+        if rebuild.is_none() && !self.archive.index_files()?.serves() {
+            return Ok(());
+        }
+        let cut = rebuild.as_ref().map(|rebuild| rebuild.position());
+        let (members, through) = {
+            let reader = self.reads.reader()?;
+            match cut {
+                Some(cut) => reader.import_members_through(cut)?,
+                None => reader.unindexed_import_members()?,
+            }
+        };
         let mut staged = ExportItems::new()?;
         for source in members {
             let member = &source.membership.member;
@@ -31,20 +61,16 @@ impl Engine {
         }
         if let Some(through) = through {
             stage(&mut staged, &AssetRow::Scan { through })?;
-            self.writer.import_assets(staged)?;
+            install(self, &mut rebuild, staged)?;
         }
 
-        let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
-        for (input, member) in sidecars {
+        let sidecars = match rebuild.as_deref() {
+            Some(rebuild) => rebuild.pending_asset_sidecars()?,
+            None => self.reads.reader()?.pending_asset_sidecars()?,
+        };
+        for (input, member, source) in sidecars {
             let reader = self.reads.reader()?;
-            let Some(progress) = reader.latest_chain(&input)? else {
-                continue;
-            };
-            let source = reader.asset_source(&input)?.ok_or_else(|| {
-                crate::EngineError::internal("a stored sidecar has no current revision")
-            })?;
-            // Bytes still being written are read in a later pass.
-            let chain = reader.stored_chain(&input, progress.chain, progress.stored)?;
+            let chain = reader.stored_chain(&input, source.chain, source.length)?;
             let mut staged = ExportItems::new()?;
             stage(
                 &mut staged,
@@ -108,7 +134,7 @@ impl Engine {
                     error,
                 },
             )?;
-            self.writer.import_assets(staged)?;
+            install(self, &mut rebuild, staged)?;
         }
         Ok(())
     }

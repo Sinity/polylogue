@@ -220,9 +220,6 @@ fn unbuilt_marks_match_refusals() {
 fn help_unbuilt_prints_the_list() {
     let expected = "\
 Designed and not built yet, with the page that designs each:
-  read --until: docs/reading.md#ranges
-  read --first: docs/reading.md#ranges
-  read --last: docs/reading.md#ranges
   read --from a message or a time: docs/reading.md#ranges
   read --beside: docs/reading.md#alternates
   read --blind: docs/reading.md#compare-and-blind

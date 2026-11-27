@@ -311,8 +311,11 @@ pub fn verify(
     pace: &mut Pace<'_>,
 ) -> Result<Verification> {
     let mut found = Verification::default();
-    pace(&|| ())?;
-    rows(pool, &mut found)?;
+    {
+        let _checking = crate::activity::doing("checking archive rows");
+        pace(&|| ())?;
+        rows(pool, &mut found)?;
+    }
     pace(&|| ())?;
     databases(pool, &mut found)?;
     blob_bytes(pool, blobs.root(), &mut found, pace)?;
@@ -418,6 +421,7 @@ fn databases(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         {
             continue;
         }
+        let _checking = crate::activity::doing_on("checking database pages", schema.clone());
         let attached;
         let statement = if schema == "main" {
             &QuickCheck::MAIN
@@ -451,6 +455,7 @@ fn blob_bytes(
     found: &mut Verification,
     pace: &mut Pace<'_>,
 ) -> Result<()> {
+    let _checking = crate::activity::doing("checking archive blobs");
     let segments = hashed_blobs::Reader::new(root);
     let mut after: Vec<u8> = Vec::new();
     loop {
@@ -519,6 +524,7 @@ fn blob_bytes(
                 found.problem(ProblemKind::BlobBytes, name, mismatch.error.clone());
             }
         }
+        crate::activity::progressed();
     }
 }
 
@@ -530,6 +536,7 @@ fn write_manifest(
     found: &mut Verification,
     pace: &mut Pace<'_>,
 ) -> Result<ManifestSummary> {
+    let _hashing = crate::activity::doing("hashing archive revisions");
     let mut summary = ManifestSummary::default();
     let mut after = String::new();
     loop {
@@ -552,6 +559,7 @@ fn write_manifest(
                 writeln!(out, "{input}\t{number}\t{length}\t{hash}")?;
                 summary.revisions += 1;
             }
+            crate::activity::progressed();
         }
     }
 }

@@ -339,10 +339,13 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             fault::release();
             let until = Instant::now() + Duration::from_secs(5);
             let mut imported = false;
+            let import_count = if kept {
+                "SELECT count(*) AS n FROM a.input WHERE origin='claude-ai'"
+            } else {
+                "SELECT count(*) AS n FROM session WHERE native_id='queued-import'"
+            };
             while Instant::now() < until {
-                if home.count("SELECT count(*) AS n FROM session WHERE native_id='queued-import'")
-                    == 1
-                {
+                if home.count(import_count) == 1 {
                     imported = true;
                     break;
                 }
@@ -379,7 +382,6 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             );
             if kept {
                 assert_eq!(captured, complete.len() as u64);
-                assert_eq!(source_rows(&engine, &input), captured_before);
             } else {
                 assert!(
                     captured > first.len() as u64,
@@ -390,6 +392,10 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             let report = response.unwrap().unwrap();
             assert!(report.refused.is_empty(), "{report:?}");
             assert!(report.pass.errors.is_empty(), "{report:?}");
+            assert_eq!(
+                matches!(report.readable, crate::Readable::AfterBuild { .. }),
+                kept
+            );
             let summary = result.unwrap();
             assert!(summary.work.errors.is_empty(), "{summary:?}");
             assert_eq!(summary.imports, 1);
@@ -401,6 +407,9 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
                 let resumed = engine.run_pass().unwrap();
                 assert!(resumed.errors.is_empty(), "{resumed:?}");
             }
+            if kept {
+                assert_eq!(source_rows(&engine, &input), captured_before);
+            }
             assert_eq!(
                 home.texts("request-turn"),
                 std::iter::once("first stored record".to_owned())
@@ -410,6 +419,10 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             if undiscovered {
                 assert_eq!(home.texts("unseen-source"), ["preexisting new file"]);
             }
+            assert_eq!(
+                home.count("SELECT count(*) AS n FROM session WHERE native_id='queued-import'"),
+                1
+            );
             let reader = engine.reads.reader().unwrap();
             let progress = reader.latest_chain(&input).unwrap().unwrap();
             assert_eq!(progress.state.parsed_to(), complete.len() as u64);

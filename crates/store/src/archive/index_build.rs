@@ -1,14 +1,12 @@
 //! Rebuilding `index.db` in a private file, and which index file each reader
 //! opens. Every standalone rebuild, a first one or one replacing an index
 //! this build cannot use, writes `index-rebuild/build.db` with no
-//! transaction syncs: the engine prepares each chain's reading into a sorted
-//! file under `index-rebuild/sorted/`, and the writer loads them, composes
-//! every session and creates the indexes and search entries
-//! ([`crate::writer::build`]). Only the rebuild pipeline opens the build
-//! file: the writer, the engine's planning reads and tool-database catalog
-//! reads. When the rebuild ends the file is synced, closed, switched to WAL,
-//! renamed `ready.db` and renamed over `index.db`; serving readers then open
-//! the new file. Path selection and both renames share the state lock, so
+//! transaction syncs, through its own connection ([`crate::index::rebuild`]).
+//! Besides the rebuild, only the rebuild pipeline's reads open the build
+//! file: the engine's planning reads and tool-database catalog reads. When
+//! the rebuild ends the file is synced, closed, switched to WAL and renamed
+//! `ready.db` ([`ready`]), and the index writer, stopped for it, renames it
+//! over `index.db` ([`install`]); serving readers then open the new file. Path selection and both renames share the state lock, so
 //! each selected path still names its file. A new archive's index is
 //! rebuilt the same way: its first pass stores the files its sources find
 //! and the rebuild reads them; with nothing to read, the empty rebuild
@@ -71,6 +69,9 @@ pub struct IndexStatus {
     /// next start installs it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_failure: Option<polylogue_model::Failure>,
+    /// The stages the rebuild in progress has ended, with their records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<crate::index::rebuild::StageRecord>,
 }
 
 /// The index file a pool reads.
@@ -115,6 +116,8 @@ struct Inner {
     bytes_read: u64,
     /// The rebuild's steps, counts and samples.
     measured: super::build_progress::Record,
+    /// The records of the rebuild's stages that have ended.
+    stages: Vec<crate::index::rebuild::StageRecord>,
 }
 
 pub(crate) fn state(root: &Path) -> Arc<State> {
@@ -331,6 +334,11 @@ impl Archive {
         let held = self.index_build.held()?;
         Ok(IndexStatus {
             install_failure: held.inner.install_failure.clone(),
+            stages: if matches!(held.files.rebuilding, Rebuilding::No) {
+                Vec::new()
+            } else {
+                held.inner.stages.clone()
+            },
             files: held.files,
         })
     }
@@ -389,6 +397,15 @@ impl Archive {
                 crate::timing::writer_seconds,
             )
         });
+    }
+
+    /// Keeps the record of a rebuild stage that ended, for `status`.
+    pub(crate) fn record_stage(&self, record: crate::index::rebuild::StageRecord) {
+        if let Ok(mut held) = self.index_build.held()
+            && !matches!(held.files.rebuilding, Rebuilding::No)
+        {
+            held.inner.stages.push(record);
+        }
     }
 
     /// Records each parse worker's CPU seconds over the last minute.
@@ -497,7 +514,7 @@ fn open_setup(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// The writer's connection to the build file. Its commits do not sync: a
+/// The rebuild's connection to the build file. Its commits do not sync: a
 /// lost process or boot discards the file at the next open, and the rebuild
 /// starts again from the stored bytes. A failed transaction still rolls
 /// back in process.
@@ -519,32 +536,36 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
 }
 
 /// Ends a rebuild whose rows, search and indexes have committed: syncs the
-/// build file, switches it to WAL while nothing has it open, renames it
-/// `ready.db`, and renames that over `index.db`. The writer has closed its
-/// connection; pipeline pools release theirs here. An idle connection holds
-/// no lock in a rollback journal mode, and a pool drops one opened through
-/// the build path at its next checkout. A rebuild already `Ready` (an
-/// earlier install failed) is only installed.
-pub(crate) fn finish(archive: &Archive) -> Result<()> {
+/// build file and its full-text files, switches them to WAL while nothing
+/// has them open, and renames the build file `ready.db`. The rebuild has
+/// closed its connection; pipeline pools release theirs here. An idle
+/// connection holds no lock in a rollback journal mode, and a pool drops one
+/// opened through the build path at its next checkout.
+pub(crate) fn ready(archive: &Archive) -> Result<()> {
     let paths = Paths::of(&archive.root);
     archive.index_build.release();
-    if archive.index_build.building() {
-        let search = {
-            let conn = open_setup(&paths.build)?;
-            crate::search::files::paths(&conn)?.unwrap_or_default()
-        };
-        for file in search.iter().chain([&paths.build]) {
-            to_wal(file)?;
-        }
-        if let Some(dir) = search.first().and_then(|file| file.parent()) {
-            file::sync_directory(dir)?;
-        }
-        crate::fault::check(
-            "index.build.after_finish_sync",
-            &archive.root.to_string_lossy(),
-        )?;
-        archive.index_build.step(Transition::Ready)?;
+    let search = {
+        let conn = open_setup(&paths.build)?;
+        crate::search::files::paths(&conn)?.unwrap_or_default()
+    };
+    for file in search.iter().chain([&paths.build]) {
+        to_wal(file)?;
     }
+    if let Some(dir) = search.first().and_then(|file| file.parent()) {
+        file::sync_directory(dir)?;
+    }
+    crate::fault::check(
+        "index.build.after_finish_sync",
+        &archive.root.to_string_lossy(),
+    )?;
+    archive.index_build.step(Transition::Ready)
+}
+
+/// Renames a ready rebuild over `index.db`. The index writer has closed its
+/// connection to the index it replaces; readers of that index keep their
+/// open files.
+pub(crate) fn install(archive: &Archive) -> Result<()> {
+    archive.index_build.release();
     crate::fault::check("index.build.before_rename", &archive.root.to_string_lossy())?;
     archive.index_build.step(Transition::Install)
 }
@@ -585,7 +606,7 @@ fn to_wal(path: &Path) -> Result<()> {
 /// Discards a rebuild that failed in this process with `error` and starts
 /// it again for the same reason, its file created again, empty, as
 /// [`prepare`] does after a crash; `status` shows the failure until the
-/// rebuild ends. The writer has closed its connection; pipeline pools
+/// rebuild ends. The rebuild has closed its connection; pipeline pools
 /// release their idle ones, and a pool drops any other at its next use, the
 /// file being a new one.
 pub(crate) fn restart(archive: &Archive, error: &str) -> Result<()> {

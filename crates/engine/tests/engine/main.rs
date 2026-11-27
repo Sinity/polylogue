@@ -2,4 +2,5 @@
 mod faults;
 mod passes;
 mod properties;
+mod recorded_agreement;
 mod tables;

@@ -77,10 +77,11 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     // An installed index, which is then removed by hand.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let before_replacement = archive.scope_token().unwrap();
     let conn = super::super::open_write(&archive.index_db(), cache::SETUP).unwrap();
     let before = value(&conn, "index_instance");
@@ -98,10 +99,11 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     ));
     // The replacement is built and installed; its generation is the one
     // its build established.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     let rebuilt = value(&conn, "index_instance");
     assert_ne!(rebuilt, before);

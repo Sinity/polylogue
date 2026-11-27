@@ -12,7 +12,7 @@ use polylogue_model::chain::ChainState;
 mod state;
 
 /// How a step's rows are written.
-pub(super) struct StepWrite<'a> {
+pub(crate) struct StepWrite<'a> {
     /// The chain the step's bytes were stored in.
     pub chain: i64,
     /// The record commit that holds the step's bytes.
@@ -27,7 +27,7 @@ pub(super) struct StepWrite<'a> {
 
 /// Writes a parse step's rows into its chain's reading, recording what they
 /// state in `touched`.
-pub(super) fn write_step(
+pub(crate) fn write_step(
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParsePart,
@@ -163,7 +163,7 @@ pub(crate) fn finish(
 
 /// Marks the sessions a transaction's shown rows changed due for their
 /// summaries. Nothing of a summary is computed here.
-pub(super) fn finish_summaries(
+pub(crate) fn finish_summaries(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     counter: i64,

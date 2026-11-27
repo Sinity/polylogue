@@ -174,23 +174,25 @@ pub fn recorded(conn: &rusqlite::Connection, input: &str) -> Result<Chains> {
 pub fn recorded_by_input(
     conn: &rusqlite::Connection,
     selected: Option<&[String]>,
+    cut: Option<super::Position>,
 ) -> Result<std::collections::HashMap<String, Chains>> {
     let source = crate::source::Source::reading(conn)?;
     let (sql, json) = match selected {
         Some(inputs) => (
             format!(
-                "{RECORDED} WHERE begins_like IS NOT NULL AND input IN (SELECT value FROM json_each(?1))"
+                "{RECORDED} WHERE begins_like IS NOT NULL AND input IN (SELECT value FROM json_each(?1))
+                 AND (?2 IS NULL OR commit_seq<=?2)"
             ),
             Some(serde_json::to_string(inputs)?),
         ),
         None => (
-            format!("{RECORDED} WHERE begins_like IS NOT NULL AND ?1 IS NULL"),
+            format!("{RECORDED} WHERE begins_like IS NOT NULL AND ?1 IS NULL AND (?2 IS NULL OR commit_seq<=?2)"),
             None,
         ),
     };
     let statement = crate::row::Statement::<ChainRow>::built(source.sql(&sql));
     let mut by_input = std::collections::HashMap::<String, Chains>::new();
-    for row in conn.all(&statement, [json])? {
+    for row in conn.all(&statement, rusqlite::params![json, cut.map(|cut| cut.0)])? {
         let chains = by_input.entry(row.input.clone()).or_default();
         insert(chains, row)?;
     }

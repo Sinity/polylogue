@@ -45,13 +45,7 @@ impl Snapshot {
         Self {
             read_at: read_at.into(),
             commits_read,
-            missing_context: d
-                .resolve_operation_context(d.invocation(&polylogue_model::authorship::Authorship {
-                    author: polylogue_model::Author::Operator,
-                    via: polylogue_model::authorship::Channel::Cli,
-                }))
-                .and_then(|context| crate::hook::missing_context(reader, context))
-                .ok(),
+            missing_context: crate::hook::missing_context(reader).ok(),
             store: reader
                 .status(&polylogue_engine::reading_contracts())
                 .map_err(|error| error.to_string()),

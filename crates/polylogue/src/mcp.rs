@@ -9,9 +9,11 @@
 
 mod completion;
 
+use crate::client::Target;
 use crate::commands::{COMMANDS, Command, Tool, ToolAccess};
 use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
 use command_surface::Answer;
+#[cfg(test)]
 use polylogue_store::Archive;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ClientRequest, CompleteRequestParams,
@@ -295,7 +297,7 @@ fn refusal_with_call(
 /// A `tools/call`: the tool's operation named by the call, run with its
 /// arguments.
 async fn answer_call(
-    archive: &Archive,
+    target: &Target,
     name: &str,
     arguments: Map<String, Value>,
     deadline_ms: Option<i64>,
@@ -378,12 +380,12 @@ async fn answer_call(
         next["operation"] = json!(command.name);
         return Ok(refusal_with_call(failure, next_tool, &next, request));
     }
-    run(archive, request, deadline_ms, cancelled, tool_call_id).await
+    run(target, request, deadline_ms, cancelled, tool_call_id).await
 }
 
 /// Runs one operation as the typed request the call names.
 async fn run(
-    archive: &Archive,
+    target: &Target,
     request: command_surface::RunnableRequest,
     deadline_ms: Option<i64>,
     cancelled: &CancellationToken,
@@ -430,8 +432,7 @@ async fn run(
         caller.tool_call_id = tool_call_id;
     }
     let mut answer =
-        crate::client::call_ready_as_bounded(archive, &request, cancelled, caller, deadline_ms)
-            .await;
+        crate::client::call_as_bounded(target, &request, cancelled, caller, deadline_ms).await;
     // The daemon's refusal carries the same line with `all` set; MCP offers
     // it as the next call.
     let all = answer
@@ -526,7 +527,7 @@ fn deadline_ms(context: &RequestContext<RoleServer>) -> Option<i64> {
 }
 
 struct Server {
-    archive: Archive,
+    target: Target,
 }
 
 impl ServerHandler for Server {
@@ -567,7 +568,7 @@ impl ServerHandler for Server {
             .and_then(Value::as_str)
             .map(str::to_owned);
         let answer = answer_call(
-            &self.archive,
+            &self.target,
             &request.name,
             request.arguments.unwrap_or_default(),
             deadline_ms(&context),
@@ -584,7 +585,7 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<CompleteResult, McpError> {
         let arguments = completion::arguments(request, &context)?;
-        completion::answer(&self.archive, arguments, deadline_ms(&context), &context.ct).await
+        completion::answer(&self.target, arguments, deadline_ms(&context), &context.ct).await
     }
 
     /// rmcp reads a request whose params do not fit its method as a custom
@@ -662,7 +663,7 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for EndsWithInput<T> {
 }
 
 /// Serves MCP on `input` and `output` until the client closes its input.
-async fn serve<R, W>(input: R, output: W, archive: Archive) -> io::Result<()>
+async fn serve<R, W>(input: R, output: W, target: Target) -> io::Result<()>
 where
     R: tokio::io::AsyncRead + Send + Unpin + 'static,
     W: tokio::io::AsyncWrite + Send + Unpin + 'static,
@@ -673,7 +674,7 @@ where
         ended: ended.clone(),
         started: false,
     };
-    let running = match (Server { archive }).serve_with_ct(transport, ended).await {
+    let running = match (Server { target }).serve_with_ct(transport, ended).await {
         Ok(running) => running,
         // A client that leaves before initializing ends the session normally.
         Err(ServerInitializeError::ConnectionClosed(_) | ServerInitializeError::Cancelled) => {
@@ -694,9 +695,9 @@ fn runtime() -> io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-pub fn serve_stdio(archive: &Archive) -> io::Result<()> {
+pub(crate) fn serve_stdio(target: Target) -> io::Result<()> {
     let (input, output) = rmcp::transport::stdio();
-    runtime()?.block_on(serve(input, output, archive.clone()))
+    runtime()?.block_on(serve(input, output, target))
 }
 
 #[cfg(test)]

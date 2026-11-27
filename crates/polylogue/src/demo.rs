@@ -163,7 +163,11 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     };
     invoke(
         "import",
-        json!({"paths": ["home/exports/chatgpt/conversations.json", "home/exports/claude-ai/conversations.json"]}),
+        json!({"paths": [
+            "home/exports/chatgpt/conversations.json",
+            "home/exports/claude-ai/conversations.json",
+            "home/exports/polylogue/delivery.jsonl",
+        ]}),
     )?;
     let preparation_seconds = preparing.elapsed().as_secs_f64();
     let mut steps = Vec::new();

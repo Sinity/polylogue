@@ -113,7 +113,7 @@ pub(crate) fn call_with_limit(
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
     super::runtime().unwrap().block_on(answer_call(
-        archive,
+        &Target::Archive(archive.clone()),
         name,
         arguments,
         deadline_ms,
@@ -130,7 +130,7 @@ pub(crate) fn serve_socket(
     super::runtime()?.block_on(async {
         socket.set_nonblocking(true)?;
         let (input, output) = tokio::net::UnixStream::from_std(socket)?.into_split();
-        serve(input, output, archive.clone()).await
+        serve(input, output, Target::Archive(archive.clone())).await
     })
 }
 

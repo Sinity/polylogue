@@ -157,7 +157,11 @@ pub fn mcp(
     client: &crate::config::Client,
     _: bool,
 ) -> ExitCode {
-    match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&client.archive)) {
+    let target = match &client.mcp_socket {
+        Some(socket) => crate::client::Target::Socket(socket.clone()),
+        None => crate::client::Target::Archive(polylogue_store::Archive::at(&client.archive)),
+    };
+    match crate::mcp::serve_stdio(target) {
         Ok(()) => ExitCode::SUCCESS,
         // Standard output carries the MCP protocol, so the failure goes to
         // standard error as text.

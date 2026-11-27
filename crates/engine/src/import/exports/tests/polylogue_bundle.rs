@@ -96,6 +96,7 @@ fn authored_crash_child() {
         reads_sources: true,
     };
     let mut engine = Engine::new(config, archive).unwrap();
+    engine.run_pass().unwrap();
     polylogue_store::fault::arm(
         &point,
         "",

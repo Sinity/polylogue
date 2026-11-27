@@ -90,6 +90,7 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
     ("CallOutcome", polylogue_model::CallOutcome::NAMES),
     ("LinkKind", polylogue_model::LinkKind::NAMES),
     ("ReferenceReason", polylogue_model::ReferenceReason::NAMES),
+    ("ParseState", crate::parse_state::StateWord::NAMES),
     ("ChainFailureKind", polylogue_model::ChainFailureKind::NAMES),
 ];
 

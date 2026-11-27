@@ -38,6 +38,20 @@ fn open_refuses_mode_mismatch_before_creating_files() {
 }
 
 #[test]
+fn a_new_archive_records_the_same_standalone_mode_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert_eq!(
+        fs::read(archive.root.join("meta.json")).unwrap(),
+        b"{\"mode\":\"standalone\"}\n"
+    );
+    assert_eq!(
+        Archive::recorded_mode(&archive.root).unwrap(),
+        Some(Mode::Standalone)
+    );
+}
+
+#[test]
 fn a_second_open_is_refused_while_the_lock_is_held() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
@@ -188,7 +202,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
         // Committed positions survive a lost process once the index is
         // installed; a build lost with its process starts over
         // (docs/architecture.md, Durability).
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         let output = polylogue_model::Output {
             sessions: vec![polylogue_model::Session::new(
                 crate::fixture::writer::sid("resume"),
@@ -251,10 +265,11 @@ fn opening_adds_a_missing_read_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     // An installed index: a build in progress defers this index to its end.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index.execute_batch("DROP INDEX message_time;").unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
@@ -322,10 +337,11 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     // An installed index: a build in progress defers these to its end.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index
         .execute_batch(
@@ -648,10 +664,11 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             );
         }
     }
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     assert!(archive.index_build().is_none());
     assert!(
         archive

@@ -25,6 +25,8 @@ mod compose;
 mod cut;
 mod entries;
 mod lay_out;
+mod range;
+mod window;
 use compose::Composed;
 use entries::ShownEntries;
 
@@ -148,6 +150,13 @@ pub(super) struct Reading {
     header: ReadHeader,
     /// The lines that open the reading, before its first entry.
     lead: Vec<ReadItem>,
+    omission: Option<PositionedOmission>,
+}
+
+struct PositionedOmission {
+    place: (usize, usize),
+    after: bool,
+    item: ReadItem,
 }
 
 impl Reading {
@@ -182,7 +191,8 @@ impl Reading {
                 },
             };
         let mut composed = compose::compose(reader, &scope, options)?;
-        let accepted = bind::bind_seen(reader, request, operation, &composed)?;
+        let mut accepted = bind::bind_seen(reader, request, operation, &composed)?;
+        range::trim_end(reader, &mut accepted, operation, &scope, &mut composed)?;
         let bound = if options.view == View::Context && options.annotation_at().is_some() {
             bind::bind_context(reader, &accepted, &mut composed)?
         } else {
@@ -190,7 +200,8 @@ impl Reading {
         };
         bind::trim_start(reader, &accepted, &mut composed)?;
         still_wanted()?;
-        let runs = compose::runs(reader, &composed, options)?;
+        let mut runs = compose::runs(reader, &composed, options)?;
+        let omission = window::apply(reader, &composed, &mut runs, &mut accepted, &scope.session)?;
         still_wanted()?;
         let read_session = reader
             .session(&scope.session)?
@@ -211,7 +222,7 @@ impl Reading {
         } else {
             0
         };
-        let lead = lay_out::lead_items(
+        let mut lead = lay_out::lead_items(
             &composed,
             &runs,
             options,
@@ -233,6 +244,38 @@ impl Reading {
         if scope.logical {
             header.kind = compose::logical_header(reader, &scope.session, &composed)?;
         }
+        let omission = if let Some(omission) = omission {
+            let item = ReadItem {
+                source: Source::record(&request.target),
+                kind: ItemKind::Omission {
+                    count: ValueState::known(omission.count),
+                    unit: "message".into(),
+                    why: "outside the requested message window".into(),
+                    continue_call: None,
+                },
+            };
+            if options.first.unwrap_or(0) == 0 {
+                lead.push(item);
+                None
+            } else if let Some(place) = omission.next {
+                Some(PositionedOmission {
+                    place,
+                    after: false,
+                    item,
+                })
+            } else {
+                let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
+                shown
+                    .last_before((usize::MAX, usize::MAX))?
+                    .map(|entry| PositionedOmission {
+                        place: entry.place(),
+                        after: true,
+                        item,
+                    })
+            }
+        } else {
+            None
+        };
         Ok(Self {
             continuation: bound.unwrap_or_else(|| accepted.clone()),
             request: accepted,
@@ -241,6 +284,7 @@ impl Reading {
             runs,
             header,
             lead,
+            omission,
         })
     }
 
@@ -291,6 +335,18 @@ impl Reading {
             &mut laid.items,
             options,
         )?;
+        if let Some(omission) = &self.omission
+            && let Some(slot) = entries
+                .iter()
+                .position(|entry| entry.place() == omission.place)
+        {
+            let items = &mut laid.items[slot];
+            if omission.after {
+                items.push(omission.item.clone());
+            } else {
+                items.insert(0, omission.item.clone());
+            }
+        }
         still_wanted()?;
         Ok(laid)
     }

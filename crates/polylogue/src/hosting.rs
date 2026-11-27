@@ -837,11 +837,27 @@ impl StdioState {
         }
     }
 
+    /// Reports every local delivery still waiting when the host closes.
+    /// A prompt already written keeps its outcome.
+    fn close(&mut self) {
+        self.closed = true;
+        for (_, delivery) in std::mem::take(&mut self.queued) {
+            self.report(
+                delivery.as_deref(),
+                Err("the host connection closed before the queued prompt was sent".into()),
+            );
+        }
+        self.turns = 0;
+        self.queue_changed();
+    }
+
     /// Takes in one line from the host.
     fn absorb(&mut self, message: Value) {
         if let Some(host) = message.get("polylogue_host") {
-            self.ended = host["ended"].as_str().map(str::to_owned);
-            self.closed = self.ended.is_some();
+            if let Some(ended) = host["ended"].as_str() {
+                self.ended = Some(ended.to_owned());
+                self.close();
+            }
             return;
         }
         if self.first_prompt && self.first_reply.is_none() {
@@ -997,17 +1013,7 @@ impl HostedStdio {
                 shared.1.notify_all();
             }
             let mut state = shared.0.locked();
-            state.closed = true;
-            // These prompts never left this connection's local queue.
-            // Already-written prompts keep their reported outcome.
-            for (_, delivery) in std::mem::take(&mut state.queued) {
-                state.report(
-                    delivery.as_deref(),
-                    Err("the host connection closed before the queued prompt was sent".into()),
-                );
-            }
-            state.turns = 0;
-            state.queue_changed();
+            state.close();
             shared.1.notify_all();
         })?;
         Ok(Self { state })

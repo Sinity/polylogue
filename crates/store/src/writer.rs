@@ -38,9 +38,8 @@ use std::thread::JoinHandle;
 mod assets;
 mod attachments;
 mod batch;
-pub mod build;
 mod capture;
-mod chain;
+pub(crate) mod chain;
 mod compose;
 mod derive_thread;
 mod hook_fields;
@@ -48,10 +47,10 @@ pub(crate) mod identity;
 mod index_connection;
 pub(crate) use readings::{read_message, shown_message};
 pub(crate) mod readings;
-mod repeated;
-mod rows;
+pub(crate) mod repeated;
+pub(crate) mod rows;
 mod search;
-mod shown;
+pub(crate) mod shown;
 pub use chain::Replacement;
 
 use crate::archive::writer::captured::stored_reading_chain;
@@ -74,14 +73,9 @@ enum Msg {
     /// Sessions whose live state changed with the clock alone: each gets a
     /// new change counter, so the change feed carries the transition.
     LiveClock(Vec<String>, SyncSender<Result<()>>),
-    /// Load a build's runs, compose (on this many threads), index and
-    /// install the build file.
-    Build(
-        Vec<std::path::PathBuf>,
-        usize,
-        Option<crossbeam_channel::Sender<&'static str>>,
-        SyncSender<Result<Vec<build::BuildPhase>>>,
-    ),
+    /// Close the index connection, install the rebuild that is ready and
+    /// open the installed index ([`crate::index::rebuild`]).
+    Install(SyncSender<Result<()>>),
     ReplaceChain(
         InputKey,
         i64,
@@ -223,21 +217,21 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 /// The writer thread's name; its busy time is read from its activity.
 pub(crate) const WRITER_THREAD: &str = "polylogue-writer";
 
-/// The writer's index connection: the private build file while a build runs,
-/// otherwise `index.db`, with the archive attached read-only.
-fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
-    let index = if building {
-        crate::archive::index_build::open_writer(archive)?
-    } else {
-        open_runtime_writer(
-            &archive.index_db(),
-            archive.memory_budget().writer_cache_mib(),
-        )?
-    };
+/// The writer's index connection: `index.db` with the archive attached
+/// read-only, or none while no index this build reads is installed. A
+/// rebuild writes its own file ([`crate::index::rebuild`]).
+fn open_index_writer(archive: &Archive) -> Result<index_connection::IndexConnection> {
+    if !archive.index_files()?.serves() {
+        return Ok(index_connection::IndexConnection::Absent(archive.clone()));
+    }
+    let index = open_runtime_writer(
+        &crate::index::file::Paths::of(&archive.root).index,
+        archive.memory_budget().writer_cache_mib(),
+    )?;
     let uri = format!("file:{}?mode=ro", archive.archive_db().display());
     index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
     crate::source::views(&index)?;
-    Ok(index)
+    Ok(index_connection::IndexConnection::Open(index))
 }
 
 impl Writer {
@@ -248,14 +242,13 @@ impl Writer {
     }
 
     /// Starts the archive writer and the index writer of `archive` with
-    /// `bytes` as its byte home. A build writes the private index file and
-    /// defers search and secondary indexes; a stop keeps its committed rows
-    /// and positions for the next start, and a crash discards it
-    /// ([`crate::archive::index_build`]).
+    /// `bytes` as its byte home. While no index this build reads is
+    /// installed, the index writer has none and refuses index writes with
+    /// `index_building`; a rebuild writes its own file
+    /// ([`crate::index::rebuild`]).
     pub fn start_with(archive: &Archive, bytes: Arc<dyn crate::bytes::Bytes>) -> Result<Self> {
-        // A build writes its private file ([`crate::archive::index_build`]).
-        let building = archive.index_build.building();
-        let index = open_index_writer(archive, building)?;
+        let index = open_index_writer(archive)?;
+        let serves = matches!(index, index_connection::IndexConnection::Open(_));
         let installed = archive.root.join("index.db");
         let commits = crate::completion::CommitEvents::default();
         let archive_writer =
@@ -289,8 +282,9 @@ impl Writer {
                 },
             )
         };
-        if let Some(kept) =
-            crate::meta_get(&index, ARCHIVE_POSITION)?.and_then(|kept| kept.parse().ok())
+        if let Ok(conn) = index.get()
+            && let Some(kept) =
+                crate::meta_get(conn, ARCHIVE_POSITION)?.and_then(|kept| kept.parse().ok())
         {
             queue
                 .published
@@ -303,13 +297,13 @@ impl Writer {
             commits: commits.clone(),
             followed: archive_writer.sender(),
             archive: archive_reads,
-            index: index_connection::IndexConnection::Open(index),
+            index,
             report: WriteReport::default(),
-            // Both read the installed index, once a build has ended.
+            // Both read the installed index, once there is one.
             search: Search::start(
                 installed.clone(),
                 queue.clone(),
-                !building,
+                serves,
                 archive.memory_budget().search_cache_mib(),
             )?,
             derive: derive_thread::DeriveThread::start(
@@ -319,7 +313,6 @@ impl Writer {
                 archive.memory_budget().search_cache_mib(),
             )?,
             location: archive.clone(),
-            build_job: None,
         };
 
         let handle = polylogue_model::spawn_named(WRITER_THREAD, move || inner.run(&rx))?;
@@ -473,29 +466,12 @@ impl WriterSender {
             .map_err(|_| StoreError::WriterGone)?
     }
 
-    /// Ends a standalone build: loads `runs` ([`build::BuildRun`]) into the
-    /// build file, composes every session, writes the indexes and search
-    /// entries and installs the file. Returns the phases it took.
-    pub fn build(&self, runs: Vec<std::path::PathBuf>) -> Result<Vec<build::BuildPhase>> {
-        // Two composers, so that batches meet the writer out of order.
-        self.0.ask(|reply| Msg::Build(runs, 2, None, reply))
-    }
-
-    /// [`Self::build`] without waiting, its sessions composed by
-    /// `composers` threads: each phase's name is sent to `announce` as it
-    /// starts, and the phases come on the returned receiver once the file
-    /// is installed.
-    pub fn start_build(
-        &self,
-        runs: Vec<std::path::PathBuf>,
-        composers: usize,
-        announce: crossbeam_channel::Sender<&'static str>,
-    ) -> Result<Receiver<Result<Vec<build::BuildPhase>>>> {
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::Build(runs, composers, Some(announce), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        Ok(wait)
+    /// Stops the index writer's use of its index for the install of a
+    /// ready rebuild, installs it and starts it again on the new
+    /// `index.db`. A failed install leaves the rebuild ready; the next
+    /// commit event and the next start install it.
+    pub fn install(&self) -> Result<()> {
+        self.0.ask(Msg::Install)
     }
 
     /// Queue a chain without waiting for its transaction to commit.
@@ -614,16 +590,12 @@ struct Inner {
     /// Runs derive passes, sending their values here to be applied.
     derive: derive_thread::DeriveThread,
     location: Archive,
-    /// A build being loaded, composed and installed, advanced one step at a
-    /// time between the messages the writer serves ([`build::BuildJob`]).
-    build_job: Option<build::BuildJob>,
 }
 
 impl Inner {
-    /// A build is in progress: the build file holds no rows until the batch
-    /// build loads them ([`build`]).
-    fn building(&self) -> bool {
-        self.location.index_build.building()
+    /// Whether the writer has an installed index to write.
+    fn serves(&self) -> bool {
+        matches!(self.index, index_connection::IndexConnection::Open(_))
     }
 
     fn run(&mut self, rx: &Receiver<Msg>) {
@@ -637,25 +609,12 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
         let mut replacements = Vec::new();
-        let mut builds = Vec::new();
+        let mut installs = Vec::new();
         // An archive commit woke the writer and what it handed over may not
         // be applied yet.
         let mut following = false;
         loop {
-            // While a build runs, the writer takes a waiting message or else
-            // goes on with the build's next step.
-            let first = if self.build_job.is_some() {
-                match rx.try_recv() {
-                    Ok(first) => first,
-                    Err(TryRecvError::Empty) => {
-                        let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
-                        let _doing = crate::activity::doing("building the index");
-                        self.advance_build();
-                        continue;
-                    }
-                    Err(TryRecvError::Disconnected) => break,
-                }
-            } else if following {
+            let first = if following {
                 // What archive commits hand over goes into the next batch's
                 // transaction when one follows at once, as it does after a
                 // capture; otherwise it is applied in a transaction of its own.
@@ -706,8 +665,8 @@ impl Inner {
                     replacements.push((input, chain, length, *reading, reply));
                     false
                 }
-                Msg::Build(runs, composers, announce, reply) => {
-                    builds.push((runs, composers, announce, reply));
+                Msg::Install(reply) => {
+                    installs.push(reply);
                     false
                 }
                 Msg::Stop => {
@@ -765,9 +724,9 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
             for (write, reply) in derive_writes.drain(..) {
-                // Computed from the installed index: while a build is being
-                // written, nothing of it is applied and its sessions stay due.
-                if self.building() {
+                // Computed from the installed index: with none, nothing of
+                // it is applied and its sessions stay due.
+                if !self.serves() {
                     let _ = reply.send(Ok(vec![false; write.len()]));
                     continue;
                 }
@@ -799,20 +758,13 @@ impl Inner {
                     self.replace_chain(input, chain, length, reading)
                 }));
             }
-            for (runs, composers, announce, reply) in builds.drain(..) {
-                if self.build_job.is_some() {
-                    let _ = reply.send(Err(StoreError::Invalid(
-                        "a build is already being loaded".into(),
-                    )));
-                } else {
-                    self.build_job = Some(build::BuildJob::new(runs, composers, announce, reply));
-                }
+            for reply in installs.drain(..) {
+                let _ = reply.send(self.install_build());
             }
 
             for reply in derives.drain(..) {
-                // A build in progress holds no rows to derive from until it
-                // is installed.
-                if self.building() {
+                // With no installed index there are no rows to derive from.
+                if !self.serves() {
                     let _ = reply.send(Ok(0));
                 } else {
                     self.request_derive(derive_thread::Waiting::Derive(reply));
@@ -839,7 +791,7 @@ impl Inner {
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
                 let _ = reply.send(pending);
-                if requested && !self.building() {
+                if requested && self.serves() {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 }
             }
@@ -849,7 +801,7 @@ impl Inner {
             for (sessions, reply) in live_clock.drain(..) {
                 let _ = reply.send(self.write_live_clock(&sessions));
             }
-            if !flushes.is_empty() || self.build_job.is_some() {
+            if !flushes.is_empty() {
                 following = false;
                 if let Err(error) = self.follow_archive() {
                     self.report.errors.push(polylogue_model::Failure::new(
@@ -861,17 +813,15 @@ impl Inner {
             for (reply, derive) in flushes.drain(..) {
                 let mut report = std::mem::take(&mut self.report);
                 merge_report(&mut report, self.followed.take_report());
-                // Whatever a flush reports written is also derived, once the
-                // index is out of a build.
-                if derive && !self.building() {
+                // Whatever a flush reports written is also derived, when
+                // there is an installed index.
+                if derive && self.serves() {
                     self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
                 } else {
                     let _ = reply.send(Ok(report));
                 }
             }
             self.restart_full_logs();
-            // A steady stream of messages still lets the build go on.
-            self.advance_build();
 
             if stopping {
                 break;
@@ -897,6 +847,11 @@ impl Inner {
         // Drained before reading the position, so a commit after this point
         // wakes the writer again.
         while self.follow.try_recv().is_ok() {}
+        // With no installed index, a rebuild takes in the archive up to its
+        // position, and the installed rebuild follows it from there.
+        if matches!(self.index, index_connection::IndexConnection::Absent(_)) {
+            return Ok(());
+        }
         let followed = self.followed.committed_position();
         let position = followed.0.to_string();
         let kept = crate::meta_get(self.index.get()?, ARCHIVE_POSITION)?;
@@ -966,7 +921,7 @@ impl Inner {
         let mut results = vec![crate::archive::restart_full_log(
             index,
             "main",
-            &self.location.index_db(),
+            &crate::index::file::Paths::of(&self.location.root).index,
             limit,
             wait,
         )];
@@ -1110,79 +1065,18 @@ impl Inner {
         }
     }
 
-    /// Runs the build's next step and answers its caller once it ends.
-    fn advance_build(&mut self) {
-        let Some(mut job) = self.build_job.take() else {
-            return;
-        };
-        job.show_step();
-        let stepped = self.until_stopped(|inner| inner.build_step(&mut job));
-        job.hide_step();
-        match stepped {
-            Ok(Some(false)) => self.build_job = Some(job),
-            Ok(Some(true)) => job.finish(Ok(())),
-            Ok(None) => job.finish(Err(StoreError::Stopped)),
-            // A job that ran with no build in progress, or failed while
-            // installing, leaves the files as they are.
-            Err(error) if job.installing || !self.location.index_build.building() => {
-                job.finish(Err(error))
-            }
-            Err(error) => {
-                // The full-text fill's threads write the files the restart
-                // removes: they end first.
-                job.search = None;
-                let error = match self.restart_build(&error.to_string()) {
-                    Ok(()) => error,
-                    Err(restart) => StoreError::Invalid(format!(
-                        "{error}; the failed build could not be discarded: {restart}"
-                    )),
-                };
-                job.finish(Err(error));
-            }
-        }
-    }
-
-    /// Discards a rebuild that failed and starts it again for the same
-    /// reason, its file made again, empty, as opening the archive after a
-    /// crash does. The next rebuild reads every chain again and composes from
-    /// its own sorted files; the failed rebuild's readings and partly composed
-    /// sessions would otherwise read as upkeep's, which composition takes
-    /// from the index session by session. A restart that fails leaves the
-    /// writer without an index connection until it succeeds.
-    fn restart_build(&mut self, error: &str) -> Result<()> {
-        let retry = index_connection::Retry::Restart {
-            error: error.to_owned(),
-        };
-        let restarted = self
-            .index
-            .close(retry)
-            .and_then(|()| crate::archive::index_build::restart(&self.location, error))
-            .and_then(|()| self.open_index());
-        if let Err(failed) = &restarted {
-            self.lose_index(
-                "starting the index rebuild again",
-                failed,
-                index_connection::Retry::Restart {
-                    error: error.to_owned(),
-                },
-            );
-        }
-        restarted
-    }
-
-    /// Closes the writer's connection to the finished build file, installs
-    /// it and opens the installed `index.db`. Connection-level state (the
-    /// attached register, its views and the chain-progress triggers) is set
+    /// Closes the writer's connection to the index being replaced, if any,
+    /// installs the ready rebuild and opens the installed `index.db`.
+    /// Connection-level state (the attached register and its views) is set
     /// up again on the new connection. An install that fails leaves the
-    /// writer without an index connection and the rebuild `Ready` (or its
-    /// file whole, if it failed before the rename to `ready.db`); the next
+    /// writer without an index connection and the rebuild `Ready`; the next
     /// commit event and the next start install it.
     fn install_build(&mut self) -> Result<()> {
         let synced = std::time::Instant::now();
         let installed = self
             .index
             .close(index_connection::Retry::Install)
-            .and_then(|()| crate::archive::index_build::finish(&self.location))
+            .and_then(|()| crate::archive::index_build::install(&self.location))
             .and_then(|()| self.open_index());
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
         match &installed {
@@ -1200,12 +1094,10 @@ impl Inner {
         installed
     }
 
-    /// Opens the index file the archive's state names: the build file while
-    /// a rebuild is written, otherwise `index.db`.
+    /// Opens the installed `index.db`, or none while no index this build
+    /// reads is installed.
     fn open_index(&mut self) -> Result<()> {
-        let building = self.location.index_build.building();
-        let index = open_index_writer(&self.location, building)?;
-        self.index = index_connection::IndexConnection::Open(index);
+        self.index = open_index_writer(&self.location)?;
         Ok(())
     }
 
@@ -1235,10 +1127,6 @@ impl Inner {
             None => {}
             Some(index_connection::Retry::Install) => {
                 let _ = self.install_build();
-            }
-            Some(index_connection::Retry::Restart { error }) => {
-                let error = error.clone();
-                let _ = self.restart_build(&error);
             }
         }
     }
@@ -1380,47 +1268,36 @@ impl Inner {
             return Ok(());
         }
         let indexed = batches.collect::<Vec<_>>();
-        // While a build's load and composition run, the build file has no
-        // indexes to write rows by: the bytes are stored, and upkeep reads
-        // them once the build is installed.
-        let reads = self.build_job.is_none();
         let itx = self
             .index
             .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
-        let batches = indexed.len() as u64;
-        let messages = if reads {
-            let changes = crate::change_summary::ChangeSummary::start(&itx)?;
-            let mut touched = readings::Touched::default();
-            for (b, chain) in indexed.iter().zip(chains) {
-                for p in &b.parse {
-                    let source_commit = crate::source::Source::reading_commit(
-                        &itx,
-                        &b.input.id,
+        let changes = crate::change_summary::ChangeSummary::start(&itx)?;
+        let mut touched = readings::Touched::default();
+        let mut batches = 0u64;
+        for (b, chain) in indexed.iter().zip(chains) {
+            for p in &b.parse {
+                let source_commit =
+                    crate::source::Source::reading_commit(&itx, &b.input.id, chain, p.parsed_upto)?;
+                rows::write_step(
+                    &itx,
+                    b,
+                    p,
+                    rows::StepWrite {
                         chain,
-                        p.parsed_upto,
-                    )?;
-                    rows::write_step(
-                        &itx,
-                        b,
-                        p,
-                        rows::StepWrite {
-                            chain,
-                            source_commit: &source_commit,
-                            replacement: false,
-                            rebuilding: false,
-                            changes: &changes,
-                        },
-                        &mut touched,
-                    )?;
-                }
+                        source_commit: &source_commit,
+                        replacement: false,
+                        rebuilding: false,
+                        changes: &changes,
+                    },
+                    &mut touched,
+                )?;
             }
-            rows::finish(&itx, touched, &changes, counter)?
-        } else {
-            0
-        };
+            batches += 1;
+        }
+        let messages = rows::finish(&itx, touched, &changes, counter)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits

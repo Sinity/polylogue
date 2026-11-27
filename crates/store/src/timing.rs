@@ -8,70 +8,41 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stage {
-    /// Reading input bytes from files or stored blobs (pool threads).
-    Read,
-    /// Reading and comparing tool-database rows.
-    Database,
-    /// Hashing and compressing bytes and packing rows for the writer (pool).
-    Store,
-    /// Running the parser (pool).
-    Parse,
-    /// Writing a group of batches' rows (writer thread).
-    Rows,
-    /// All writer work between receiving a message and returning to its queue.
-    Writer,
-    /// Committing a replacement transaction, including its SQLite sync wait.
-    Commit,
-    /// A first build's full-text entries, read, folded and written on
-    /// threads of their own while it composes (thread-seconds).
-    SearchIndex,
-    /// A first build's trigram index rebuild.
-    TrigramIndex,
-    /// A first build's secondary indexes, created at its end.
-    SecondaryIndexes,
-    /// Syncing installed blob directories or a finished first-build index.
-    Sync,
-    /// Deriving session facts from written rows.
-    Derive,
+polylogue_model::stored_names! {
+    name, from_name;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Stage {
+        /// Reading input bytes from files or stored blobs (pool threads).
+        Read => "read",
+        /// Reading and comparing tool-database rows.
+        Database => "database",
+        /// Hashing and compressing bytes and packing rows for the writer (pool).
+        Store => "store",
+        /// Running the parser (pool).
+        Parse => "parse",
+        /// Writing a group of batches' rows (writer thread).
+        Rows => "rows",
+        /// All writer work between receiving a message and returning to its queue.
+        Writer => "writer",
+        /// Committing a replacement transaction, including its SQLite sync wait.
+        Commit => "commit",
+        /// A first build's full-text entries, read, folded and written on
+        /// threads of their own while it composes (thread-seconds).
+        SearchIndex => "search_index",
+        /// A first build's trigram index rebuild.
+        TrigramIndex => "trigram_index",
+        /// A first build's secondary indexes, created at its end.
+        SecondaryIndexes => "secondary_indexes",
+        /// Syncing installed blob directories or a finished first-build index.
+        Sync => "sync",
+        /// Deriving session facts from written rows.
+        Derive => "derive",
+    }
 }
 
-const STAGES: [Stage; 12] = [
-    Stage::Read,
-    Stage::Database,
-    Stage::Store,
-    Stage::Parse,
-    Stage::Rows,
-    Stage::Writer,
-    Stage::Commit,
-    Stage::SearchIndex,
-    Stage::TrigramIndex,
-    Stage::SecondaryIndexes,
-    Stage::Sync,
-    Stage::Derive,
-];
-
-static NANOS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static NANOS: [AtomicU64; Stage::ALL.len()] = [const { AtomicU64::new(0) }; Stage::ALL.len()];
 
 impl Stage {
-    pub fn name(self) -> &'static str {
-        match self {
-            Stage::Read => "read",
-            Stage::Database => "database",
-            Stage::Store => "store",
-            Stage::Parse => "parse",
-            Stage::Rows => "rows",
-            Stage::Writer => "writer",
-            Stage::Commit => "commit",
-            Stage::SearchIndex => "search_index",
-            Stage::TrigramIndex => "trigram_index",
-            Stage::SecondaryIndexes => "secondary_indexes",
-            Stage::Sync => "sync",
-            Stage::Derive => "derive",
-        }
-    }
-
     /// Runs on a pool thread, so its sum is thread-seconds.
     pub fn parallel(self) -> bool {
         matches!(
@@ -99,7 +70,7 @@ pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
 
 /// Seconds per stage since the process started.
 pub fn stage_seconds() -> Vec<(Stage, f64)> {
-    STAGES
+    Stage::ALL
         .iter()
         .map(|s| (*s, NANOS[s.index()].load(Ordering::Relaxed) as f64 / 1e9))
         .collect()

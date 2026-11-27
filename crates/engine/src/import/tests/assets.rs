@@ -2,12 +2,16 @@ use super::*;
 use polylogue_testkit::ClaudeHome;
 
 fn conversation() -> Vec<u8> {
+    conversation_with("asset-session", "asset-message", "file-Native")
+}
+
+fn conversation_with(session: &str, message: &str, file: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!([{
-        "id":"asset-session", "title":"Attachment example", "mapping": {
+        "id":session, "title":"Attachment example", "mapping": {
             "node": {"id":"node","parent":null,"children":[],"message":{
-                "id":"asset-message","author":{"role":"user"},"create_time":1700000000,
+                "id":message,"author":{"role":"user"},"create_time":1700000000,
                 "content":{"content_type":"multimodal_text","parts":[{
-                    "content_type":"image_asset_pointer","asset_pointer":"file-service://file-Native"
+                    "content_type":"image_asset_pointer","asset_pointer":format!("file-service://{file}")
                 }]},"metadata":{}
             }}
         },"current_node":"node"
@@ -167,6 +171,83 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn sharded_export_keeps_an_archive_attachment_without_importing_its_contents() {
+    use std::io::Write;
+
+    let w = ClaudeHome::new();
+    let export = w.dir.path().join("export.zip");
+    let attachment = "file_Native-example.tar.zst";
+    let first = conversation_with("asset-session", "asset-message", "file_Native");
+    let second = conversation_with("other-session", "other-message", "file_Other");
+    let inside = conversation_with("nested-session", "nested-message", "file_Inside");
+    let mut tar = tar::Builder::new(Vec::new());
+    for (name, bytes) in [
+        ("generated/table.csv", b"x,y\n1,2\n".as_slice()),
+        ("other/conversations.json", inside.as_slice()),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        tar.append_data(&mut header, name, bytes).unwrap();
+    }
+    let bytes = zstd::stream::encode_all(tar.into_inner().unwrap().as_slice(), 1).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&export).unwrap());
+    for (name, body) in [
+        (attachment, bytes.as_slice()),
+        ("conversations-000.json", first.as_slice()),
+        ("conversations-001.json", second.as_slice()),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let (mut engine, _lock) = engine(&w, 1024);
+    let report = engine.import(std::slice::from_ref(&export)).unwrap();
+    assert!(report.refused.is_empty(), "{:?}", report.refused);
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert_eq!(report.members.len(), 4);
+    assert_eq!(w.count("SELECT count(*) AS n FROM message"), 2);
+    let retry = engine.import(&[export]).unwrap();
+    assert!(retry.refused.is_empty(), "{:?}", retry.refused);
+    assert!(retry.imported.is_empty());
+    assert_eq!(retry.already_stored.len(), 4);
+    assert_eq!(w.count("SELECT count(*) AS n FROM message"), 2);
+
+    let reader = engine.reads.reader().unwrap();
+    let resolution = reader.attachment(&message_id(), 0, 0).unwrap();
+    assert_eq!(
+        resolution.state,
+        polylogue_store::assets::AttachmentState::Available
+    );
+    assert_eq!(resolution.matches.len(), 1);
+    let hash = resolution.matches[0].blob.unwrap();
+    let input = hash.to_string();
+    let progress = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(
+        reader
+            .stored_range(&input, progress.chain, 0, progress.stored, &engine.blobs)
+            .unwrap(),
+        bytes
+    );
+    drop(reader);
+
+    let path = w.dir.path().join(attachment);
+    std::fs::write(&path, bytes).unwrap();
+    let explicit = engine.import(&[path]).unwrap();
+    assert_eq!(explicit.refused.len(), 1);
+    assert!(explicit.refused[0].path.ends_with("generated/table.csv"));
+    assert!(
+        explicit.pass.errors.is_empty(),
+        "{:?}",
+        explicit.pass.errors
+    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM message"), 3);
 }
 
 #[test]

@@ -388,6 +388,10 @@ pub fn serve(
         .steps(super::lifecycle::Phase::Opening);
     steps.next("binding the socket");
     let server = Server::start(Arc::clone(&runtime.daemon)).map_err(Failed::Start)?;
+    if let Some(path) = &startup.client.mcp_socket {
+        crate::socket::publish_mcp_link(path, &runtime.daemon.archive.socket())
+            .map_err(Failed::Start)?;
+    }
     polylogue_store::log!(
         info,
         "serving {} on {}{}",
