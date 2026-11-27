@@ -3,14 +3,15 @@
 //! contain an index completed and verified against that exact source cut.
 //! Convert both cuts independently when needed and use a fresh later copy
 //! without an index. This operation checks the stored prefix and installs a
-//! copy of the index at its old position. Open the later copy with collection
-//! off so the engine reads the remaining stored chains, then verify the
-//! finished candidate before using it.
+//! copy of the index at its old position. The engine's one-time
+//! `catch_up_archive_suffix` example reads the remaining stored chains.
+//! For a release that changes reading contracts, instead open the copy
+//! with `daemon --no-sources --until-idle`. Verify the finished candidate.
 //!
 //! cargo run -p polylogue-store --example reuse_archive_index -- <earlier> <later>
 
 use polylogue_store::archive::{open_read, writer::Position};
-use polylogue_store::index::file::{ArchiveId, IndexFiles, Installed, Rebuilding};
+use polylogue_store::index::file::{ArchiveId, IndexFiles, Installed, REUSED_FROM, Rebuilding};
 use polylogue_store::{Archive, meta_get, meta_set, schema};
 use rusqlite::Connection;
 use std::ffi::OsString;
@@ -334,6 +335,7 @@ fn install_index(
     index.pragma_update(None, "synchronous", "FULL")?;
     let tx = index.transaction()?;
     meta_set(&tx, "archive_id", &identity.0)?;
+    meta_set(&tx, REUSED_FROM, from.to_string())?;
     meta_set(&tx, "search_files", &search_name)?;
     // The daemon establishes a fresh cursor scope on its next open.
     tx.execute(

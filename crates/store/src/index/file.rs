@@ -49,6 +49,9 @@ pub(crate) const ARCHIVE_ID: &str = "archive_id";
 /// The index's meta key holding the record position it has taken in.
 pub(crate) const ARCHIVE_POSITION: &str = "archive_position";
 
+/// The checked archive cut carried by an index reused offline.
+pub const REUSED_FROM: &str = "reused_from";
+
 /// The index's meta key holding why it replaced the index before it.
 const REBUILD: &str = "index_rebuild";
 

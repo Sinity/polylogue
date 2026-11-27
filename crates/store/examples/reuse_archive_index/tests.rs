@@ -20,6 +20,17 @@ fn read_sources(home: &ClaudeHome, sources: bool) {
     assert!(engine.archive.index_build().is_none());
 }
 
+fn catch_up(home: &ClaudeHome, from: u64, to: u64) -> u64 {
+    let (mut engine, _lock) = home.engine(1 << 20);
+    engine.config.reads_sources = false;
+    let pass = engine
+        .catch_up_archive_suffix(Position(from), Position(to))
+        .unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    engine.writer().flush().unwrap();
+    pass.messages_written
+}
+
 fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
@@ -177,7 +188,7 @@ fn reuses_a_checked_index_and_reads_the_append_from_retained_bytes() {
     for name in ["kept.jsonl", "new.jsonl"] {
         fs::rename(home.file(name), home.dir.path().join(name)).unwrap();
     }
-    read_sources(&home, false);
+    catch_up(&home, from, to);
     assert_eq!(home.texts("kept"), ["prior horizon", "later marsh"]);
     assert_eq!(home.texts("new"), ["new input"]);
     assert_eq!(search_hits(&home.root, "horizon"), 1);
@@ -219,7 +230,8 @@ fn reuses_a_checked_index_and_reads_the_append_from_retained_bytes() {
     assert_eq!(from, to);
     assert!(final_position > from);
     fs::remove_file(home.file("suffix.jsonl")).unwrap();
-    read_sources(&home, false);
+    catch_up(&home, from, final_position);
+    assert_eq!(catch_up(&home, from, final_position), 0);
     assert_eq!(home.texts("suffix"), ["final suffix"]);
 }
 
