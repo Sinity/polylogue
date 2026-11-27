@@ -32,7 +32,7 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
         )
         .unwrap();
     }
-    r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
+    r.w.wait_for(|s| s["store"]["sessions_physical"] == 121 && s["store"]["search_pending"] == 0);
     let text = "sessions where (parser OR missing) origin:claude-code";
     let counts = data(&r, &format!("{text} | group by origin | count"), None);
     assert_eq!(counts["rows"][0]["count"], 121, "{counts}");
@@ -84,7 +84,7 @@ fn search_writes_are_available_through_the_command_table() {
     let crate::protocol::line::StepAnswer::Saved(kept) = crate::test_answers::step(kept) else {
         panic!("expected saved selection")
     };
-    assert_eq!(kept.kept.result.as_str(), "result:mcp-kept-1");
+    assert_eq!(kept.saved_rows.result.as_str(), "result:mcp-kept-1");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &format!(
                 "result:{}",
                 serde_json::to_string(
-                    outcome["kept"]["result"]
+                    outcome["saved_rows"]["result"]
                         .as_str()
                         .unwrap()
                         .strip_prefix("result:")
@@ -175,20 +175,34 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
             "socket-query".into(),
         );
         let socket = crate::client::call(&r.web.daemon.archive.socket(), &request).unwrap();
-        let (status, _, raw) = http.block_on(send(
-            &r,
-            authed(get(&format!(
-                "/api/v1/rows?selection={}&page_size=50&why=true",
-                enc(text)
-            )))
-            .body(Body::empty())
-            .unwrap(),
-        ));
-        let api: Value = serde_json::from_str(&raw).unwrap();
+        let response = http
+            .block_on(
+                router(Arc::clone(&r.web)).oneshot(
+                    authed(get(&format!(
+                        "/api/v1/rows?selection={}&page_size=50&why=true",
+                        enc(text)
+                    )))
+                    .body(Body::empty())
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+        let status = response.status();
+        let raw = String::from_utf8(
+            http.block_on(to_bytes(response.into_body(), usize::MAX))
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let api: command_surface::Answer<Value> = serde_json::from_str(&raw).unwrap();
         match crate::protocol::into_value(socket) {
             Ok(answer) => {
                 assert_eq!(status, StatusCode::OK, "{raw}");
-                assert_eq!(api["rows"], answer["reply"]["rows"], "{text}");
+                assert_eq!(
+                    api.value().unwrap()["reply"]["rows"],
+                    answer["reply"]["rows"],
+                    "{text}"
+                );
                 let args = json!({"selection":text,"page_size":50,"why":true})
                     .as_object()
                     .unwrap()
@@ -199,11 +213,17 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
                     args,
                     "web-search-parity",
                 );
-                assert_eq!(api["rows"], mcp.value().unwrap()["reply"]["rows"]);
+                assert_eq!(
+                    api.value().unwrap()["reply"]["rows"],
+                    mcp.value().unwrap()["reply"]["rows"]
+                );
             }
             Err(failure) => {
                 assert_ne!(status, StatusCode::OK, "{raw}");
-                assert_eq!(api["error"]["code"], failure.code.unwrap());
+                let command_surface::Outcome::Error(error) = api.outcome else {
+                    panic!("{text}: {raw}")
+                };
+                assert_eq!(error.code, failure.code);
             }
         }
     }

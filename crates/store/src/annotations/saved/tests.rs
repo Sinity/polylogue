@@ -250,7 +250,7 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
             name: Some("focus".into()),
             query: "sessions".into(),
             ran_at: Timestamp::from_unix_ms(7).unwrap(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
         },
     )
@@ -269,10 +269,10 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
     );
     assert!(record.revisions[0].saved_at.is_none());
     assert_eq!(record.revisions[0].author, "unattributed");
-    assert_eq!(record.kept.len(), 1);
-    assert_eq!(record.kept[0].result, "result:kept-original");
-    assert_eq!(record.kept[0].rows, 0);
-    assert_eq!(record.kept[0].at, Timestamp::from_unix_ms(7).unwrap());
+    assert_eq!(record.saved_rows.len(), 1);
+    assert_eq!(record.saved_rows[0].result, "result:kept-original");
+    assert_eq!(record.saved_rows[0].rows, 0);
+    assert_eq!(record.saved_rows[0].at, Timestamp::from_unix_ms(7).unwrap());
     assert_eq!(record.watch.as_deref(), Some("annotation:watch@watch"));
     assert_eq!(record.dependents, vec![format!("query:{}", dependent.id)]);
     assert!(reader.saved_query_record("absent").unwrap().is_none());

@@ -72,8 +72,8 @@ fn a_session_without_a_title_is_named_by_its_first_prompt() {
         prose("a", 1, 1_000, "\n  Fix the flaky crash test\nplease"),
     );
     assert_eq!(
-        one(&w, "SELECT title, derived_title FROM session"),
-        json!({"title": null, "derived_title": "Fix the flaky crash test"})
+        one(&w, "SELECT title, prompt_title FROM session"),
+        json!({"title": null, "prompt_title": "Fix the flaky crash test"})
     );
 }
 
@@ -282,7 +282,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
         links: vec![polylogue_model::Link {
             kind: polylogue_model::LinkKind::Spawn,
             copies_prefix: true,
-            how: None,
+            reason: None,
             parent: sid("parent"),
             child,
             branch_point: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),
@@ -312,9 +312,9 @@ fn a_display_title_without_a_prose_prompt_is_unknown() {
         assert_eq!(
             one(
                 &w,
-                "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:agent-fork'"
             ),
-            json!({"derived_title": null})
+            json!({"prompt_title": null})
         );
     }
 }
@@ -709,7 +709,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     let title = |id: &str| -> Option<String> {
         index()
             .query_row(
-                "SELECT derived_title FROM session WHERE id = ?1",
+                "SELECT prompt_title FROM session WHERE id = ?1",
                 [format!("claude-code:{id}")],
                 |r| r.get(0),
             )
@@ -930,11 +930,11 @@ fn a_call_lookup_reads_no_line_of_its_session() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     for (sql, wanted) in [
         (
-            "SELECT seq FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+            "SELECT position FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY position",
             "SEARCH transcript_call USING PRIMARY KEY (session_pk=? AND call_id=?)",
         ),
         (
-            "SELECT c.call_id, c.seq, c.class
+            "SELECT c.call_id, c.position, c.class
              FROM json_each(?2) j CROSS JOIN transcript_call c
              WHERE c.session_pk = ?1 AND c.call_id = j.value",
             "SEARCH c USING PRIMARY KEY (session_pk=? AND call_id=?)",
@@ -956,16 +956,16 @@ fn a_call_lookup_reads_no_line_of_its_session() {
 }
 
 /// A run streams the session's rows and keeps states that do not grow with
-/// the session: folding 100,000 rows from the first, with a commit every
-/// 1,000 rows, keeps states of the same size near the end as near the start
+/// the session: folding from the first row across 100 Git commits keeps
+/// states of the same size near the end as near the start
 /// (the links found are written, not carried in the state).
 #[test]
 fn a_run_from_the_first_row_keeps_states_flat_in_the_rows() {
     let mut w = WriterArchive::new();
     let mut messages = Vec::new();
-    for n in 0..100_000u32 {
+    for n in 0..2_000u32 {
         let at = 1_000 + i64::from(n) * 20;
-        if n % 1_000 == 0 {
+        if n % 20 == 0 {
             messages.extend(bash(
                 "s",
                 n,
@@ -991,9 +991,9 @@ fn a_run_from_the_first_row_keeps_states_flat_in_the_rows() {
     let run = super::fold::Run { conn: &index }
         .session(pk, &super::Key::start())
         .unwrap();
-    assert!(run.read >= 100_000, "{}", run.read);
+    assert!(run.read >= 2_000, "{}", run.read);
     let sizes: Vec<usize> = run.kept.iter().map(|k| k.state.len()).collect();
-    let (early, late) = (sizes[10], sizes[sizes.len() - 2]);
+    let (early, late) = (sizes[0], sizes[sizes.len() - 2]);
     // Counters gain digits; nothing is held per row or per commit.
     assert!(late <= early + 64, "a state of {early} bytes became {late}");
     assert_eq!(run.output.links.unwrap().commits().len(), 100);

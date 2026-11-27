@@ -37,8 +37,7 @@ pub struct Ask<'a> {
 }
 
 /// Texts' similarity to a text, for `similar:`.
-pub type NearFn<'a> =
-    dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
+pub use polylogue_store::selection::NearFn;
 
 /// Uses the configured provider and warm vectors for every query client.
 pub(crate) fn with_ranking<T>(
@@ -56,12 +55,30 @@ pub(crate) fn with_ranking<T>(
         });
     let identity =
         crate::embeddings::ranking_key(reader, provider.as_ref().ok().and_then(Option::as_ref));
-    let near = |text: &str| match &provider {
-        Ok(Some(provider)) => warm.similarity(reader, provider, text),
-        Ok(None) => Err("embeddings are off".into()),
-        Err(error) => Err(error.clone()),
+    let near = |text: &str| ranking_similarity(reader, warm, &provider, text);
+    run(true, identity, &near)
+}
+
+/// Classify unavailable semantic rankings without losing read control failures.
+pub(crate) fn ranking_similarity(
+    reader: &Reader<'_>,
+    warm: &super::warm::Warm,
+    provider: &Result<Option<crate::embeddings::Provider>, String>,
+    text: &str,
+) -> polylogue_store::Result<std::sync::Arc<polylogue_store::vectors::Similarity>> {
+    use polylogue_model::Reason;
+    reader.check()?;
+    let provider = match provider {
+        Ok(Some(provider)) => provider,
+        Ok(None) => return Err(Reason::EmbeddingsOff {}.into()),
+        Err(problem) => {
+            return Err(Reason::EmbeddingConfiguration {
+                problem: problem.clone(),
+            }
+            .into());
+        }
     };
-    run(identity.is_some(), identity, &near)
+    warm.similarity(reader, provider, text)
 }
 
 /// Asks the provider for the query vector the validated `query` ranks by,
@@ -84,7 +101,7 @@ pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
         )
         .ok()
         .flatten()?;
-        let ranking_identity = crate::embeddings::ranking_key(&reader, Some(&provider));
+        let ranking_identity = Some(crate::embeddings::ranking_key(&reader, Some(&provider))?);
         let ask = Ask {
             text: query,
             cursor: None,
@@ -218,7 +235,7 @@ fn save_with_rows(
 ) -> Result<Value, Failure> {
     // A line accepted under a read scope (primary mode's grant) is from a
     // scope this archive does not have.
-    if retained.binding.replay.scope_fingerprint.is_some() {
+    if retained.binding.replay.access_fingerprint.is_some() {
         return Err(Failure::new(
             polylogue_model::Code::ScopeChanged,
             "the accepted line's read scope changed",
@@ -288,7 +305,7 @@ fn save_with_rows(
         "rows": rows,
         "query": ask.text,
         "now": program.clock.now,
-        "read_at": read_at(reader)?,
+        "read_position": read_position(reader)?,
         "definitions": program.definitions,
         "ranked":program.ranked,"notes":program.notes,"incomplete":program.incomplete,
     });
@@ -434,7 +451,8 @@ pub(crate) fn accepted_population(
     let incomplete: Vec<String> =
         serde_json::from_value(value["incomplete"].clone()).map_err(Failure::internal)?;
     let answer = crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
-        read_at: serde_json::from_value(value["read_at"].clone()).map_err(Failure::internal)?,
+        read_position: serde_json::from_value(value["read_position"].clone())
+            .map_err(Failure::internal)?,
         unit: value["unit"]
             .as_str()
             .ok_or_else(|| Failure::internal("the accepted population has no unit"))?
@@ -577,7 +595,7 @@ fn save_measure(
     Ok(
         json!({"unit":program.unit.name(),"shape":Shape::Summary,"columns":columns,
         "rows":[{"measure":what,"data":data.expect("a measure returns at least one page")}],
-        "query":ask.text,"now":program.clock.now,"read_at":read_at(reader)?,"definitions":program.definitions,
+        "query":ask.text,"now":program.clock.now,"read_position":read_position(reader)?,"definitions":program.definitions,
         "output_metadata":output_metadata}),
     )
 }
@@ -748,7 +766,7 @@ pub fn prepare<'read, 'pool>(
         );
     }
     if let Some(cursor) = &cursor {
-        for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
+        for key in ["operation_context", "catalog", "access", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
                 return Err(cursor_failure(
                     Failure::stale_cursor("the settings or data used by this query changed"),
@@ -768,26 +786,11 @@ pub fn prepare<'read, 'pool>(
     let mut program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    // A `similar:` ranking whose query vector cannot be had (the provider is
-    // down, model calls are off and no vector is stored) keeps every row,
-    // unranked, and says so, instead of failing the query.
-    let similarity = match (&program.near, ask.near) {
-        (Some(request), Some(near)) => Some(near(&request.text).unwrap_or_else(|message| {
-            program
-                .incomplete
-                .push(if message == crate::embeddings::CALLS_OFF {
-                    message
-                } else {
-                    format!("semantic ranking failed ({message}); rows are unranked")
-                });
-            std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())
-        })),
-        _ => None,
-    };
+    let similarity = program.ranking(reader, ask.near)?;
     let ready = |_: &str| {
-        similarity
-            .clone()
-            .ok_or_else(|| "semantic search unavailable".to_owned())
+        similarity.clone().ok_or_else(|| {
+            polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+        })
     };
     let after = cursor
         .as_ref()
@@ -853,7 +856,7 @@ fn answer(
 ) -> Result<QueryAnswer, Failure> {
     use crate::protocol::query::{Answer, Measure, PagedMeasure, Rows};
     let params = values(&program.params);
-    let read_at = read_at(reader)?;
+    let read_position = read_position(reader)?;
     if let Some(measure) = &program.measure {
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
         let (definition, _) = super::measure::find_checked(&measure.what)?;
@@ -960,7 +963,7 @@ fn answer(
             return Ok(QueryAnswer::measure(Answer::PagedMeasure(PagedMeasure {
                 measure: measure.what.clone(),
                 data,
-                read_at,
+                read_position,
                 resolved,
                 count: None,
                 next,
@@ -994,7 +997,7 @@ fn answer(
         return Ok(QueryAnswer::measure(Answer::Measure(Measure {
             measure: measure.what.clone(),
             data,
-            read_at,
+            read_position,
             resolved,
         })));
     }
@@ -1056,16 +1059,11 @@ fn answer(
         Outcome::Rows
     };
     let mut answer_notes = notes.clone();
-    answer_notes.extend(
-        program
-            .incomplete
-            .iter()
-            .map(|part| format!("incomplete: {part}")),
-    );
+    answer_notes.extend(program.incomplete.iter().cloned());
     Ok(QueryAnswer {
         logical_sessions,
         value: Answer::Rows(Box::new(Rows {
-            read_at,
+            read_position,
             unit: if program.shape == Shape::Matches {
                 "matches".to_owned()
             } else {
@@ -1121,7 +1119,7 @@ fn read_page(
 
 /// What one read transaction read: the index generation and the
 /// counters, scoped to the current index.
-fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Failure> {
+fn read_position(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Failure> {
     let position = reader.change_position()?;
     let counter = |value: i64| {
         u64::try_from(value)
@@ -1132,7 +1130,7 @@ fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Fail
         cursor: position.to_string(),
         index: counter(position.index)?,
         archive: counter(position.archive)?,
-        generation: position.generation,
+        index_instance: position.index_instance,
     })
 }
 

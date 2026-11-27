@@ -243,7 +243,7 @@ fn page_terms(request: &ReadRequest) -> Result<(Format, PageBudget, String), Err
 fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Error> {
     Ok(CursorSeal {
         key: reader.cursor_key()?,
-        generation: reader.change_position()?.generation,
+        index_instance: reader.change_position()?.index_instance,
     })
 }
 
@@ -333,17 +333,23 @@ fn prepared<T>(
 ) -> Result<T, Error> {
     services.compiled(reader, operation, &reading.target, |compile| {
         polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-        let selection = match &reading.references {
+        let mut selection = match &reading.references {
             Some(references) => {
                 reader.prepare_fixed_selection(&reading.target, references, &compile.options)?
             }
             None => reader.prepare_selection(&reading.target, &compile.options)?,
         };
+        let similarity = selection.ranking(reader, Some(compile.near))?;
+        let near = |_: &str| {
+            similarity.clone().ok_or_else(|| {
+                polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+            })
+        };
         let snapshot = ReadSnapshot {
             query: format!("query:{}", selection.question_id()),
             query_text: reading.target.clone(),
             ran_at: operation.ran_at,
-            read_at: reader.change_position()?,
+            read_position: reader.change_position()?,
             freshness: services.freshness(reader)?,
             enabled_alternates: reading.alternates.clone(),
             author: operation.authorship.author.clone(),
@@ -396,6 +402,8 @@ fn prepared<T>(
             kind,
             figures: Vec::new(),
             zone: Some(operation.clock.day.zone_name().to_owned()),
+            snapshot: None,
+            options: None,
         };
         polylogue_store::read::limit::ReadLimit::set_stage("read records");
         run(
@@ -407,7 +415,7 @@ fn prepared<T>(
             },
             snapshot,
             header,
-            Some(compile.near),
+            Some(&near),
         )
     })
 }
@@ -556,9 +564,9 @@ fn record_compiled(
         .extend(operation.cursor_versions());
     let run = QueryRun {
         id: crate::operation::new_run_id(),
-        question: Some(selection.question_id()),
+        query_id: Some(selection.question_id()),
         at: operation.ran_at,
-        read_at: reader.change_position()?,
+        read_position: reader.change_position()?,
         machine: operation.machine.clone(),
         authorship: operation.authorship.clone(),
         binding: RunBinding::Original {
@@ -666,7 +674,7 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     }
     if let Some(position) = request.options.annotation_position() {
         let current = reader.change_position()?;
-        if position.generation != current.generation {
+        if position.index_instance != current.index_instance {
             return Err(Reason::PositionFromAnotherGeneration {}.into());
         }
         if position.index > current.index || position.archive > current.archive {
@@ -682,6 +690,53 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     Ok(())
 }
 
+/// What a read reads, decided once from its target, view and delivery: a
+/// trace, a stored request or run, a session reading, the links tree of a
+/// session, or the rows of a selection.
+enum Route {
+    Trace,
+    Object(polylogue_model::Reference),
+    Session(session::Scope),
+    Links(session::Scope),
+    Rows,
+}
+
+fn route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
+    let view = request.options.view;
+    if view == View::Trace {
+        return Ok(Route::Trace);
+    }
+    if let Some(reference) = object::target(request) {
+        return Ok(Route::Object(reference?));
+    }
+    // A line's fixed population of several rows is read as those rows.
+    if request
+        .references
+        .as_ref()
+        .is_some_and(|references| references.len() != 1)
+    {
+        return Ok(Route::Rows);
+    }
+    let Some(scope) = session::scope(reader, &request.target)? else {
+        return Ok(Route::Rows);
+    };
+    // A bundle holds the selection's records; a context, or a reading from
+    // the seen mark, is the composed session reading in a bundle too.
+    if request.delivery == ReadDelivery::Bundle
+        && view != View::Context
+        && !request.start.uses_seen()
+    {
+        return Ok(Route::Rows);
+    }
+    Ok(match view {
+        View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes => {
+            Route::Session(scope)
+        }
+        View::Tree => Route::Links(scope),
+        View::Overview | View::Live | View::Trace => Route::Rows,
+    })
+}
+
 /// One page and its completed physical-session progress, from the same
 /// pinned reader. The consumer decides whether this delivery acknowledges it.
 pub fn page(
@@ -694,29 +749,26 @@ pub fn page(
     let resolved = resolve_at(request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
-    if request.options.view == View::Trace {
-        return trace::page(reader, services, request, operation, history)
-            .map(|page| (page, vec![]));
-    }
-    if let Some(response) = object::page(reader, services, request, operation) {
-        return response.map(|page| (page, vec![]));
-    }
+    let route = match route(reader, request)? {
+        Route::Trace => {
+            return trace::page(reader, services, request, operation, history)
+                .map(|page| (page, vec![]));
+        }
+        Route::Object(reference) => {
+            return object::page(reader, services, request, operation, reference)
+                .map(|page| (page, vec![]));
+        }
+        route => route,
+    };
     let (reading, cursor) = reading(request)?;
     require_page_delivery(&reading)?;
-    let session_page = match session::scope(reader, &reading.target)? {
-        Some(scope)
-            if matches!(
-                reading.options.view,
-                View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
-            ) =>
-        {
-            session::page(reader, services, request, operation, scope)?
-        }
-        Some(scope) if reading.options.view == View::Tree => (
+    let page = match route {
+        Route::Session(scope) => session::page(reader, services, request, operation, scope)?,
+        Route::Links(scope) => (
             links::page(reader, services, request, operation, scope)?,
             vec![],
         ),
-        _ => {
+        Route::Trace | Route::Object(_) | Route::Rows => {
             return prepared(
                 reader,
                 services,
@@ -736,7 +788,7 @@ pub fn page(
                         snapshot,
                         header,
                         ReadFraming::Query {
-                            question: compiled.selection.question_id(),
+                            query_id: compiled.selection.question_id(),
                         },
                         compiled.history.map_or_else(
                             || Ok(PageCursor::version(&[])),
@@ -759,11 +811,8 @@ pub fn page(
     if cursor.is_none() {
         let _ = record_run(reader, services, operation, request, &reading, history);
     }
-    Ok(session_page)
+    Ok(page)
 }
-
-/// Rows before a backward page's start count down from here.
-const BACKWARD_START_ROW: u64 = 1 << 32;
 
 #[allow(clippy::too_many_arguments)]
 fn rows_page(
@@ -858,9 +907,11 @@ fn rows_page(
     let backwards = opened
         .as_ref()
         .is_some_and(|(_, _, direction, _)| *direction == ReadDirection::Before);
+    // A forward page numbers its rows from its start; a backward page from
+    // its end, the row its cursor names, counting back.
     let page_start = opened.as_ref().map(|(_, place, _, _)| {
         let mut place = *place;
-        place.selection.row = if backwards { BACKWARD_START_ROW } else { 0 };
+        place.selection.row = 0;
         place
     });
     let mut pager = if backwards {
@@ -910,6 +961,7 @@ fn rows_page(
     scope.check()?;
     polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
     let upper = pager.upper_position().copied();
+    // The rows of a backward page, renumbered from its first row once built.
     let first_row = backwards
         .then(|| pager.first_position().map(|place| place.selection.row))
         .flatten();
@@ -956,7 +1008,7 @@ fn rows_page(
     if let Some(first_row) = first_row {
         for item in &mut document.items {
             if let ItemKind::Fragment { position, .. } = &mut item.kind {
-                position.selection.row -= first_row;
+                position.selection.row = first_row - position.selection.row;
             }
         }
     }
@@ -964,7 +1016,6 @@ fn rows_page(
     Ok(ReadPage {
         format: reading.format,
         snapshot: ReadPageSnapshot::from(&snapshot),
-        records: vec![],
         document,
     })
 }
@@ -975,34 +1026,34 @@ pub fn stream(
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
-) -> Result<ReadComplete, Error> {
+) -> Result<ReadFooter, Error> {
     let resolved = resolve_at(request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
     if !request.delivery.streams() {
         return Err(Reason::StreamNeedsStreamDelivery {}.into());
     }
-    if request.options.view == View::Trace {
-        return trace::stream(reader, services, request, operation, output);
-    }
-    if let Some(result) = object::stream(reader, services, request, operation, output) {
-        return result;
-    }
+    let route = match route(reader, request)? {
+        Route::Trace => return trace::stream(reader, services, request, operation, output),
+        Route::Object(reference) => {
+            return object::stream(reader, services, request, operation, reference, output);
+        }
+        route => route,
+    };
     let (reading, _) = reading(request)?;
     prepared(
         reader,
         services,
         operation,
         &reading,
-        |compiled, snapshot, header, near| {
-            if (reading.options.view == View::Context || request.start.uses_seen())
-                && let Some(scope) = session::scope(reader, &reading.target)?
-            {
-                return session::stream(
-                    reader, services, request, operation, scope, snapshot, output,
-                );
-            }
-            rows_stream(
+        |compiled, snapshot, header, near| match route {
+            Route::Session(scope) => session::stream(
+                reader, services, request, operation, scope, snapshot, output,
+            ),
+            Route::Links(scope) => links::stream(
+                reader, services, request, operation, scope, snapshot, output,
+            ),
+            Route::Trace | Route::Object(_) | Route::Rows => rows_stream(
                 reader,
                 services,
                 request,
@@ -1017,7 +1068,7 @@ pub fn stream(
                 None,
                 ReadFooter::default(),
                 output,
-            )
+            ),
         },
     )
 }
@@ -1035,7 +1086,7 @@ fn rows_stream(
     object_facts: Option<&LayoutFacts>,
     mut footer: ReadFooter,
     output: &mut dyn Write,
-) -> Result<ReadComplete, Error> {
+) -> Result<ReadFooter, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(services, message, block, index, input)
     };
@@ -1055,13 +1106,12 @@ fn rows_stream(
         reader.check()?;
         Ok(())
     };
-    let begin = ReadBegin {
-        format: reading.format,
-        snapshot,
-        header,
-        options: reading.options.clone(),
+    let header = ReadHeader {
+        snapshot: Some(Box::new(snapshot)),
+        options: Some(Box::new(reading.options.clone())),
+        ..header
     };
-    let mut stream = output::Stream::begin(output, &check, &begin)?;
+    let mut stream = output::Stream::begin(output, &check, &header)?;
     if let Some(text) = layout_facts::annotation_notice(&reading.options) {
         stream.record(&ReadRecord::Presentation {
             parts: vec![ReadPart::Item(ReadItem {

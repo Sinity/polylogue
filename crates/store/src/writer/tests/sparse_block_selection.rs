@@ -125,11 +125,14 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
     assert_eq!(streamed, vec![expected]);
     assert_eq!(
         reader
-            .query("SELECT idx,ordinal FROM block ORDER BY idx", &[])
+            .query(
+                "SELECT position,source_position FROM block ORDER BY position",
+                &[]
+            )
             .unwrap(),
         [
-            serde_json::json!({"idx":0,"ordinal":"1"}),
-            serde_json::json!({"idx":1,"ordinal":"3"}),
+            serde_json::json!({"position":0,"source_position":"1"}),
+            serde_json::json!({"position":1,"source_position":"3"}),
         ]
     );
 }

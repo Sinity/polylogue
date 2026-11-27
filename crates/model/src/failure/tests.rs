@@ -13,6 +13,52 @@ fn codes_round_trip_the_wire_names() {
 fn every_reason_has_one_code_and_one_text() {
     let table = [
         (
+            Reason::UnknownMeasure {
+                value: "nope".into(),
+                known: ["time"].into_iter().collect(),
+            },
+            Code::BadValue,
+            "unknown measurement `nope`; choose one of time",
+        ),
+        (
+            Reason::EmbeddingsOff {},
+            Code::EmbeddingsOff,
+            "semantic search is off; enable it with `polylogue set embed.provider local`",
+        ),
+        (
+            Reason::EmbeddingStore {
+                problem: "unreadable".into(),
+            },
+            Code::Embed,
+            "the embeddings store cannot be read: unreadable",
+        ),
+        (
+            Reason::EmbeddingConfiguration {
+                problem: "bad endpoint".into(),
+            },
+            Code::BadValue,
+            "semantic search configuration is invalid: bad endpoint",
+        ),
+        (
+            Reason::NoVectors {
+                model: "synthetic".into(),
+            },
+            Code::Embed,
+            "no vectors are stored for model `synthetic`; preview their cost with `polylogue embed`",
+        ),
+        (
+            Reason::EmbeddingProvider {
+                problem: "unavailable".into(),
+            },
+            Code::Embed,
+            "the embedding provider failed: unavailable",
+        ),
+        (
+            Reason::EmbeddingCallsOff {},
+            Code::ModelCallsOff,
+            "semantic search for new text is off (model calls are off); enable it with `polylogue set embed.calls on`",
+        ),
+        (
             Reason::SingleValuedBulk {
                 kind: "kind-x".into(),
                 rows: 2,
@@ -179,6 +225,11 @@ fn every_reason_has_one_code_and_one_text() {
             Reason::ResumeInNeedsSession {},
             Code::BadRequest,
             "resume --in needs the session whose work it continues",
+        ),
+        (
+            Reason::ContinuationRequestUsed {},
+            Code::Conflict,
+            "this request ID already names a different operation",
         ),
         (
             Reason::ResumeOptionsNeedIn {},
@@ -534,6 +585,13 @@ fn every_reason_has_one_code_and_one_text() {
             "the import is refused: problem-x",
         ),
         (
+            Reason::ImportRefused {
+                problem: "refused /home/op/export.json: no declared structure matched".into(),
+            },
+            Code::BadValue,
+            "no files were stored\nrefused /home/op/export.json: no declared structure matched",
+        ),
+        (
             Reason::NotAFile {
                 path: "path-x".into(),
             },
@@ -633,6 +691,23 @@ fn every_reason_has_one_code_and_one_text() {
             Reason::SaveOutcomeUnknown {},
             Code::DaemonRequired,
             "the note may or may not be saved; retry it with the same ID",
+        ),
+        (
+            Reason::ReaderNotRunning {},
+            Code::ReaderUnavailable,
+            "the reader is not running; start it with `polylogue web`",
+        ),
+        (
+            Reason::NativeVersionMismatch { version: Some(1) },
+            Code::Refused,
+            "the browser host needs version 2; reload the extension",
+        ),
+        (
+            Reason::NativeMessageInvalid {
+                problem: "problem-x".into(),
+            },
+            Code::BadRequest,
+            "the browser message is invalid: problem-x",
         ),
         (
             Reason::CaptureNotJson {},

@@ -3,7 +3,7 @@
 use super::*;
 use polylogue_model::batch::{ExportCursor, ExportDelivery, ExportDeliverySource};
 
-impl ParseStep {
+impl ParsePart {
     pub fn seal_export(
         &mut self,
         ordinal: u64,

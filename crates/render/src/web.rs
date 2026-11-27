@@ -44,9 +44,9 @@ pub fn read(
         (crate::html::document(&page.document, Some(table))?)
         (navigation(page, table)?)
         details class="read-position" { summary { "Recorded read position" } dl {
-            dt { "Generation" } dd { (&page.snapshot.read_at.generation) }
-            dt { "Index" } dd { (page.snapshot.read_at.index) }
-            dt { "Archive" } dd { (page.snapshot.read_at.archive) }
+            dt { "Generation" } dd { (&page.snapshot.read_position.index_instance) }
+            dt { "Index" } dd { (page.snapshot.read_position.index) }
+            dt { "Archive" } dd { (page.snapshot.read_position.archive) }
             dt { "Ran at" } dd { (page.snapshot.ran_at) }
             dt { "Up to date" } dd { (page.snapshot.freshness.up_to_date()) }
         } }
@@ -192,7 +192,7 @@ fn freshness_notice(
             Some((state, text)) if text == note => state.as_str(),
             _ => "behind",
         };
-        (web_shell::values::view_state(state, note, command))
+        (web_shell::values::view_state(state, &note, command))
     } }
 }
 

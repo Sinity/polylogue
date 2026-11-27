@@ -1,9 +1,11 @@
 //! Derived import associations. The engine parses the sources; reads check
 //! the archive's current state before returning any bytes.
 use crate::ConnExt as _;
+use crate::row::{Rows as _, row};
 use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::ops::ControlFlow;
 
 pub mod bindings;
 pub(crate) mod empty;
@@ -25,20 +27,141 @@ pub struct AssetSource {
     pub blob: Option<polylogue_model::BlobHash>,
 }
 
+row! {
+    struct AssetRevision {
+        chain: i64,
+        length: i64,
+    }
+    statements {
+        const ARCHIVE = "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1";
+        const INDEX = "SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1";
+    }
+}
+
+macro_rules! asset_extents {
+    ($prefix:literal) => {
+        concat!(
+            "SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
+            FROM ",
+            $prefix,
+            "extent e LEFT JOIN ",
+            $prefix,
+            "blob b ON b.hash=e.blob
+            WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"
+        )
+    };
+}
+
+row! {
+    struct AssetExtent {
+        offset: i64,
+        length: i64,
+        blob: Vec<u8>,
+        blob_offset: i64,
+        size: Option<i64>,
+    }
+    statements {
+        const ARCHIVE = asset_extents!("");
+        const INDEX = asset_extents!("source_");
+    }
+}
+
+row! {
+    struct AssetSidecar {
+        input: String,
+        sidecar: String,
+        version: Option<u32>,
+        source_version: Option<String>,
+    }
+    statements {
+        const WITH_REVISION = "SELECT DISTINCT m.input,m.sidecar,s.version,s.source_version FROM import_member m
+            LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
+            WHERE m.sidecar IS NOT NULL
+              AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
+            ORDER BY m.input,m.sidecar";
+    }
+}
+
+row! {
+    struct ImportMembersExist {
+        present: bool,
+    }
+    statements {
+        const CHECK = "SELECT EXISTS(SELECT 1 FROM import_member) AS present";
+    }
+}
+
+row! {
+    struct ImportChange {
+        import_id: String,
+        changed: i64,
+    }
+    statements {
+        const OF_SESSION = "SELECT DISTINCT im.import_id, coalesce(c.changed,0) AS changed
+             FROM session s JOIN message m ON m.session_pk=s.pk
+             JOIN input_ref i ON i.pk=m.input_pk
+             JOIN import_member im ON im.input=i.id
+             LEFT JOIN import_change c ON c.import_id=im.import_id
+             WHERE s.id=?1 ORDER BY im.import_id";
+    }
+}
+
+macro_rules! import_containers {
+    ($prefix:literal) => {
+        concat!("SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id') AS import_id
+        FROM ", $prefix, "observation o JOIN ", $prefix, "observation_container c ON c.observation_id=o.id
+        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR c.container_input=?3)
+          AND json_type(o.details_json,'$.import.import_id')='text'")
+    };
+}
+
+row! {
+    struct ImportContainer {
+        container_input: String,
+        import_id: String,
+    }
+    statements {
+        const INDEX = import_containers!("source_");
+        const ARCHIVE = import_containers!("");
+    }
+}
+
+macro_rules! import_observations {
+    ($prefix:literal) => {
+        concat!(
+            "SELECT o.id,o.input,o.details_json FROM ",
+            $prefix,
+            "observation o
+        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR o.input=?3)
+          AND o.details_json IS NOT NULL ORDER BY o.commit_seq, o.id"
+        )
+    };
+}
+
+row! {
+    struct ImportObservation {
+        id: String,
+        input: String,
+        details_json: String,
+    }
+    statements {
+        const INDEX = import_observations!("source_");
+        const ARCHIVE = import_observations!("");
+    }
+}
+
 fn asset_source(
     index: &Connection,
     conn: &Connection,
     prefix: &str,
     input: &str,
 ) -> Result<Option<AssetSource>> {
-    let revision: Option<(i64, i64)> = conn
-        .query_row(
-            &format!("SELECT chain,length FROM {prefix}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
-            [input],
-            |r| <(_, _)>::try_from(r),
-        )
-        .optional()?;
-    let Some((chain, length)) = revision else {
+    let (revision, extents) = if prefix.is_empty() {
+        (AssetRevision::ARCHIVE, AssetExtent::ARCHIVE)
+    } else {
+        (AssetRevision::INDEX, AssetExtent::INDEX)
+    };
+    let Some(AssetRevision { chain, length }) = conn.maybe(&revision, [input])? else {
         return Ok(None);
     };
     let length =
@@ -49,17 +172,17 @@ fn asset_source(
     let mut hash = blake3::Hasher::new();
     hash.update(&chain.to_le_bytes());
     hash.update(&length.to_le_bytes());
-    let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
-        FROM {prefix}extent e LEFT JOIN {prefix}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"))?;
-    let mut rows = stmt.query(params![input, chain])?;
     let mut end = 0u64;
     let mut count = 0;
     let mut blob = None;
-    while let Some(row) = rows.next()? {
-        let offset = row.get::<_, i64>(0)?;
-        let size = row.get::<_, i64>(1)?;
-        let blob_size = row.get::<_, Option<i64>>(4)?;
-        let blob_offset = row.get::<_, i64>(3)?;
+    let _ = conn.each(&extents, params![input, chain], |row| {
+        let AssetExtent {
+            offset,
+            length: size,
+            blob: bytes,
+            blob_offset,
+            size: blob_size,
+        } = row;
         if offset < 0
             || size < 0
             || blob_offset < 0
@@ -75,7 +198,6 @@ fn asset_source(
                 "the asset's stored extents are incomplete",
             ));
         }
-        let bytes: Vec<u8> = row.get(2)?;
         let current = polylogue_model::BlobHash(
             bytes
                 .try_into()
@@ -99,7 +221,8 @@ fn asset_source(
         } else {
             None
         };
-    }
+        Ok(ControlFlow::Continue(()))
+    })?;
     if end != length || count == 0 {
         return Err(StoreError::stored_data(
             "the asset's stored extents are incomplete",
@@ -179,23 +302,20 @@ impl Reader<'_> {
 
     pub fn pending_asset_sidecars(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT m.input,m.sidecar,s.version,s.source_version FROM import_member m
-            LEFT JOIN import_asset_sidecar s ON s.input=m.input AND s.sidecar=m.sidecar
-            WHERE m.sidecar IS NOT NULL
-              AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
-            ORDER BY m.input,m.sidecar",
-        )?;
         let mut pending = Vec::new();
-        for row in stmt.query_map([], |row| {
-            <(String, String, Option<u32>, Option<String>)>::try_from(row)
-        })? {
-            let (input, sidecar, version, recorded) = row?;
+        let _ = conn.each(&AssetSidecar::WITH_REVISION, [], |row| {
+            let AssetSidecar {
+                input,
+                sidecar,
+                version,
+                source_version: recorded,
+            } = row;
             let current = asset_source(conn, conn, "source_", &input)?.map(|source| source.version);
             if version != Some(RULES) || recorded != current {
                 pending.push((input, sidecar));
             }
-        }
+            Ok(ControlFlow::Continue(()))
+        })?;
         Ok(pending)
     }
 }
@@ -210,32 +330,19 @@ impl Reader<'_> {
         let conn = self.conn()?;
         // The join below reads every message row of the session; an archive
         // that holds no import has nothing for it to find.
-        let imports: bool = conn
-            .prepare_cached("SELECT EXISTS(SELECT 1 FROM import_member)")?
-            .query_row([], |row| row.get(0))?;
-        if !imports {
+        if !conn.one(&ImportMembersExist::CHECK, [])?.present {
             self.check()?;
             return Ok(None);
         }
-        let mut statement = conn.prepare_cached(
-            "SELECT DISTINCT im.import_id, coalesce(c.changed,0)
-             FROM session s JOIN message m ON m.session_pk=s.pk
-             JOIN input_ref i ON i.pk=m.input_pk
-             JOIN import_member im ON im.input=i.id
-             LEFT JOIN import_change c ON c.import_id=im.import_id
-             WHERE s.id=?1 ORDER BY im.import_id",
-        )?;
-        let mut rows = statement.query([session.to_string()])?;
         let mut digest = blake3::Hasher::new();
         let mut any = false;
-        while let Some(row) = rows.next()? {
+        let _ = conn.each(&ImportChange::OF_SESSION, [session.to_string()], |row| {
             any = true;
-            let import: String = row.get(0)?;
-            let changed: i64 = row.get(1)?;
-            digest.update(&(import.len() as u64).to_le_bytes());
-            digest.update(import.as_bytes());
-            digest.update(&changed.to_le_bytes());
-        }
+            digest.update(&(row.import_id.len() as u64).to_le_bytes());
+            digest.update(row.import_id.as_bytes());
+            digest.update(&row.changed.to_le_bytes());
+            Ok(ControlFlow::Continue(()))
+        })?;
         self.check()?;
         Ok(any.then(|| polylogue_model::BlobHash(*digest.finalize().as_bytes())))
     }
@@ -258,27 +365,24 @@ pub(crate) fn visit_import_members(
     // A ZIP is the source of its members, not one of the attachments among them.
     let mut originals =
         std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
-    let mut roots = conn.prepare(&format!(
-        "SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id')
-        FROM {prefix}observation o JOIN {prefix}observation_container c ON c.observation_id=o.id
-        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR c.container_input=?3)
-          AND json_type(o.details_json,'$.import.import_id')='text'"
-    ))?;
-    for row in roots.query_map(params![after, through, input], |row| {
-        <(String, String)>::try_from(row)
-    })? {
-        let (input, import_id) = row?;
-        originals.entry(input).or_default().insert(import_id);
-    }
-    let mut observations = conn.prepare(&format!(
-        "SELECT o.id,o.input,o.details_json FROM {prefix}observation o
-        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR o.input=?3)
-          AND o.details_json IS NOT NULL ORDER BY o.commit_seq, o.id"
-    ))?;
-    for row in observations.query_map(params![after, through, input], |row| {
-        <(String, String, String)>::try_from(row)
-    })? {
-        let (observation, input, details) = row?;
+    let (containers, observations) = if prefix.is_empty() {
+        (ImportContainer::ARCHIVE, ImportObservation::ARCHIVE)
+    } else {
+        (ImportContainer::INDEX, ImportObservation::INDEX)
+    };
+    let _ = conn.each(&containers, params![after, through, input], |row| {
+        originals
+            .entry(row.container_input)
+            .or_default()
+            .insert(row.import_id);
+        Ok(ControlFlow::Continue(()))
+    })?;
+    let _ = conn.each(&observations, params![after, through, input], |row| {
+        let ImportObservation {
+            id: observation,
+            input,
+            details_json: details,
+        } = row;
         let details: serde_json::Value = serde_json::from_str(&details)?;
         if let Some(member) = details.get("import") {
             let membership: ImportMember = serde_json::from_value(member.clone())?;
@@ -286,7 +390,7 @@ pub(crate) fn visit_import_members(
                 .get(&input)
                 .is_some_and(|imports| imports.contains(&membership.import_id))
             {
-                continue;
+                return Ok(ControlFlow::Continue(()));
             }
             if !membership.is_valid() {
                 return Err(StoreError::internal(
@@ -299,16 +403,22 @@ pub(crate) fn visit_import_members(
                 membership,
             })?;
         }
-    }
+        Ok(ControlFlow::Continue(()))
+    })?;
     Ok((through != after).then_some(through))
 }
 
-struct StoredMember {
-    namespace: String,
-    input: String,
-    member: String,
-    source_id: Option<String>,
-    sidecar: Option<String>,
+row! {
+    struct StoredMember {
+        import_id: String,
+        input: String,
+        member: String,
+        source_id: Option<String>,
+        sidecar: Option<String>,
+    }
+    statements {
+        const OF_OBSERVATION = "SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE observation=?1";
+    }
 }
 
 /// The same member indexing is used by import refresh and confirmed replay.
@@ -318,18 +428,16 @@ pub(crate) fn project_member(
     source_id: Option<&str>,
     sidecar: Option<&str>,
 ) -> Result<()> {
-    let previous: Option<StoredMember> = conn.query_row(
-        "SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE observation=?1",
-        [&source.observation], |row| Ok(StoredMember { namespace: row.get(0)?, input: row.get(1)?, member: row.get(2)?, source_id: row.get(3)?, sidecar: row.get(4)? })).optional()?;
+    let previous = conn.maybe(&StoredMember::OF_OBSERVATION, [&source.observation])?;
     if let Some(StoredMember {
-        namespace,
+        import_id,
         input,
         member,
         source_id: known_id,
         sidecar: known_sidecar,
     }) = previous
     {
-        if namespace != source.membership.import_id
+        if import_id != source.membership.import_id
             || input != source.input
             || member != source.membership.member
             || known_id
@@ -411,7 +519,7 @@ struct MetadataRow<'a> {
 fn put_metadata(conn: &Connection, row: &MetadataRow<'_>) -> Result<bool> {
     let changed = conn.execute(
         "INSERT INTO import_asset_metadata VALUES (?1,?2,?3,?4,?5,?6,?7)
-         ON CONFLICT(input,sidecar,ordinal) DO UPDATE SET
+         ON CONFLICT(input,sidecar,position) DO UPDATE SET
            source_id=excluded.source_id,name=excluded.name,
            media_type=excluded.media_type,size=excluded.size
          WHERE (source_id,name,media_type,size)
@@ -535,6 +643,19 @@ pub(crate) fn install(
     }
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<AssetRevision>();
+    check.row::<AssetExtent>();
+    check.row::<AssetSidecar>();
+    check.row::<ImportMembersExist>();
+    check.row::<ImportChange>();
+    check.row::<ImportContainer>();
+    check.row::<ImportObservation>();
+    check.row::<StoredMember>();
+    bindings::declared_rows(check);
 }
 
 #[cfg(test)]

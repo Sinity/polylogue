@@ -74,9 +74,17 @@ fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
     let mut build =
         crate::client::request("embed", serde_json::json!({"yes":true}), "build".into());
     build.deadline = command_surface::Deadline::Milliseconds(120_000);
+    // A waiting listing is bounded by its own wait, so the client waits for
+    // its answer.
+    let waiting = crate::client::request(
+        "rows",
+        serde_json::json!({"selection":"sessions where tag:later", "wait":"5m"}),
+        "waiting".into(),
+    );
     for (request, expected) in [
         (status(), Some(Duration::from_millis(80 + 50))),
         (stream(), None),
+        (waiting, None),
         (limited, Some(Duration::from_millis(120_000 + 50))),
         (build, None),
     ] {

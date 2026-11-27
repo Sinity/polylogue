@@ -54,8 +54,8 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
         query: format!("query:{}", "a".repeat(64)),
         query_text: "sessions".into(),
         ran_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
-        read_at: polylogue_model::ChangePosition {
-            generation: "synthetic".into(),
+        read_position: polylogue_model::ChangePosition {
+            index_instance: "synthetic".into(),
             index: 1,
             archive: 1,
         },
@@ -213,6 +213,8 @@ fn sid(name: &str) -> polylogue_model::SessionId {
 
 #[test]
 fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
+    // Exercise a read with more than 65 ancestors.
+    const CHAIN_SESSIONS: usize = 67;
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -221,7 +223,7 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     let mut sessions = Vec::new();
-    for i in 0usize..1030 {
+    for i in 0..CHAIN_SESSIONS {
         let parent = format!("s{}", i.saturating_sub(1));
         let branch_point = format!("{parent}-message");
         sessions.push(exported(
@@ -267,7 +269,6 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     ));
     let path = dir.path().join("synthetic-bundle.jsonl");
     let original = write_bundle(&path, sessions);
-    // This root imports the complete deep-lineage reconstruction corpus.
     let imported = cli(
         &env,
         &[
@@ -279,21 +280,25 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         ],
     );
     assert!(imported.status.success(), "{imported:?}");
-    wait_status(&env, |status| status["store"]["messages"] == 1037);
+    assert_eq!(
+        wait_caught_up(&env)["store"]["messages"],
+        CHAIN_SESSIONS + 7
+    );
     use polylogue_model::read::{ParentIssue, ValueState};
-    let deep = read(&env, "claude-code:s1029", true, "json", "10000");
+    let leaf = format!("claude-code:s{}", CHAIN_SESSIONS - 1);
+    let deep = read(&env, &leaf, true, "json", "10000");
     assert_eq!(deep.exit_code, Some(0));
     assert_eq!(lineage(&deep), &ValueState::known(true));
     assert!(issues(&deep).is_empty());
     assert_eq!(
         messages(&deep),
-        (0..1030)
+        (0..CHAIN_SESSIONS)
             .map(|i| format!("claude-code:s{i}-message"))
             .collect::<Vec<_>>()
     );
     assert_eq!(
         texts(&deep),
-        (0..1030)
+        (0..CHAIN_SESSIONS)
             .map(|i| format!("message {i} λ🙂"))
             .collect::<Vec<_>>()
     );
@@ -460,10 +465,10 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| row["what"] == "inherited session content")
+        .filter(|row| row["item"] == "inherited session content")
         .collect();
     assert_eq!(
         inherited,
-        [&json!({"what": "inherited session content", "reason": issue})]
+        [&json!({"item": "inherited session content", "reason": issue})]
     );
 }

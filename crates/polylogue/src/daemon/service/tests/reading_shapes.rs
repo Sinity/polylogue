@@ -87,11 +87,15 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
     .unwrap();
     std::fs::write(
         dir.join("fork.jsonl"),
-        line(json!({
-            "type": "user", "uuid": "f1", "sessionId": "fork", "timestamp": "2026-03-01T12:00:00Z",
-            "message": {"role": "user", "content": "forked question"},
-            "forkedFrom": {"sessionId": "root", "messageUuid": "r1"}
-        })),
+        [
+            line(json!({
+                "type": "user", "uuid": "fork-copy", "sessionId": "fork", "timestamp": "2026-03-01T10:00:00Z",
+                "message": {"role": "user", "content": "root question"},
+                "forkedFrom": {"sessionId": "root", "messageUuid": "r1"}
+            })),
+            user("f1", "fork", "2026-03-01T12:00:00Z", "forked question"),
+        ]
+        .concat(),
     )
     .unwrap();
     let compacted = [
@@ -146,7 +150,9 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
     ]
     .concat();
     std::fs::write(dir.join("micro.jsonl"), micro).unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 8 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 8 && status["store"]["search_pending"] == 0
+    });
 }
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
@@ -332,46 +338,59 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
 
 #[test]
 fn the_last_page_follows_what_the_session_appends() {
+    use crate::protocol::status::{Answer as Status, Arguments as StatusArguments};
+    use crate::test_daemon::Call;
+    use std::io::Write;
+
     let d = test_daemon::start("placeholder");
     family(&d);
     // One page holds the whole session, so it is the last.
     let last = read(&d, "session:claude-code:cont", ReadOptions::default());
-    let follow = last.document.footer.follow.clone().expect("a follow call");
-    let before = crate::test_daemon::Call::new("status", serde_json::json!({}))
-        .answer(&d.daemon)
-        .value()
-        .unwrap()["store"]["messages"]
-        .as_u64()
-        .unwrap();
+    assert!(
+        texts(&last)
+            .iter()
+            .any(|text| text == "continuation question")
+    );
+    let follow = last.document.footer.follow.expect("a follow call");
+    let status = |arguments: StatusArguments| -> Status {
+        let mut call = Call::new("status", serde_json::to_value(arguments).unwrap());
+        call.deadline = command_surface::Deadline::None;
+        let value = crate::protocol::into_value(call.answer(&d.daemon)).unwrap();
+        serde_json::from_value(value).unwrap()
+    };
+    let mut changes = status(StatusArguments::default()).changes;
     let path = d.home.join(".claude/projects/-p/cont.jsonl");
-    let mut source = std::fs::read_to_string(&path).unwrap();
-    source.push_str(&user(
-        "c2",
-        "cont",
-        "2026-03-01T11:00:05Z",
-        "appended question",
-    ));
-    std::fs::write(&path, source).unwrap();
-    d.wait_for(|status| {
-        status["store"]["messages"]
-            .as_u64()
-            .is_some_and(|n| n > before)
-            && status["store"]["search_pending"] == 0
-    });
-    let envelope: command_surface::RunnableRequest = follow.request;
-    let call = crate::test_daemon::Call::from_request(&envelope);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(user("c2", "cont", "2026-03-01T11:00:05Z", "appended question").as_bytes())
+        .unwrap();
+
+    // Another input's commit can advance status before this message is indexed.
+    let session = polylogue_model::SessionId::parse("claude-code:cont").unwrap();
+    let message = polylogue_model::MessageId::parse("claude-code:c2").unwrap();
+    loop {
+        let current = status(StatusArguments {
+            wait: Some("1m".into()),
+            after_changes: Some(changes),
+            ..StatusArguments::default()
+        });
+        assert!(
+            current.caught_up && current.changes > changes,
+            "{current:?}"
+        );
+        changes = current.changes;
+
+        let reader = d.daemon.reads.reader().unwrap();
+        if reader.message_session(&message).unwrap().as_ref() == Some(&session) {
+            break;
+        }
+    }
+    let call = Call::from_request(&follow.request);
     let response = call.answer(&d.daemon);
     let page = crate::test_answers::read(response);
-    let texts = texts(&page);
-    assert_eq!(
-        texts
-            .iter()
-            .filter(|text| text.as_str() == "appended question")
-            .count(),
-        1,
-        "{texts:?}"
-    );
-    assert!(!texts.iter().any(|text| text == "continuation question"));
+    assert_eq!(texts(&page), ["appended question"]);
 }
 
 #[test]
@@ -562,7 +581,7 @@ fn a_spawn_cut_keeps_its_header() {
         ..ReadOptions::default()
     };
     d.wait_for(|status| {
-        status["busy"] == false
+        status["caught_up"] == true
             && d.daemon
                 .reads
                 .reader()
@@ -672,7 +691,9 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
     ]
     .concat();
     std::fs::write(d.home.join(".claude/projects/-p/meter.jsonl"), session).unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 2 && status["store"]["search_pending"] == 0
+    });
     let page = read(
         &d,
         "session:claude-code:meter",

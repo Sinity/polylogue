@@ -3,7 +3,7 @@
 //!
 //! - `cli`: the binary as a daemon, driven through the CLI;
 //! - `browser_host`: the binary as Chrome's native messaging host;
-//! - `completion`: shell callbacks over an offline synthetic catalog;
+//! - `completion`: shell callbacks, with the daemon up and down;
 //! - `sandbox`: daemons in the testkit's sandbox, and `cargo xtask run`.
 
 mod browser_host;

@@ -68,14 +68,14 @@ impl Fold for Values {
 /// when it moved.
 pub(super) fn apply(conn: &Connection, session_pk: i64, value: &Value, counter: i64) -> Result<()> {
     let stored: Vec<((String, String), i64)> = conn
-        .prepare_cached("SELECT field, value, n FROM session_value WHERE session_pk = ?1")?
+        .prepare_cached("SELECT field, value, count FROM session_value WHERE session_pk = ?1")?
         .query_map([session_pk], |row| {
             Ok(((row.get(0)?, row.get(1)?), row.get(2)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut set = conn.prepare_cached(
-        "INSERT INTO session_value(session_pk, field, value, n, changed) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(session_pk, field, value) DO UPDATE SET n = excluded.n, changed = excluded.changed",
+        "INSERT INTO session_value(session_pk, field, value, count, changed) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(session_pk, field, value) DO UPDATE SET count = excluded.count, changed = excluded.changed",
     )?;
     let mut wanted: BTreeMap<(String, String), i64> = value
         .counts

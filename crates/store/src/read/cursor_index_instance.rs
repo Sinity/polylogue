@@ -1,10 +1,10 @@
-//! Opening a sealed read cursor, and the index generation a cursor names,
+//! Opening a sealed read cursor, and the index instance a cursor names,
 //! read without its key.
 //!
 //! The wire form is the shared cursor library's: hex of one version byte, the
-//! JSON continuation, and a 32-byte keyed signature. A generation read here is
+//! JSON continuation, and a 32-byte keyed signature. An index instance read here is
 //! unauthenticated and only distinguishes a cursor sealed by an earlier index
-//! generation from one that was never a cursor.
+//! instance from one that was never a cursor.
 use query_language::cursor::{Continuation, CursorContext, CursorSeal, SealedCursor};
 use query_language::identity::QuestionId;
 use query_language::time::ClockWire;
@@ -13,11 +13,11 @@ use query_language::{Error, ErrorKind};
 const VERSION: u8 = 1;
 const SIGNATURE_BYTES: usize = 32;
 
-/// Opens `cursor` with the seal of the index generation `current`. A cursor
+/// Opens `cursor` with the seal of the index instance `current`. A cursor
 /// that does not authenticate is `stale_cursor` when its payload names
-/// another index generation (that generation's key went with it), and
+/// another index instance (that instance's key went with it), and
 /// `invalid_query` otherwise (docs/query.md, Paging, Refusals). The
-/// unauthenticated generation only chooses between the two refusals.
+/// unauthenticated index instance only chooses between the two refusals.
 pub fn open_cursor(
     seal: &CursorSeal,
     current: &str,
@@ -27,8 +27,8 @@ pub fn open_cursor(
     available: impl FnOnce(&CursorContext) -> bool,
 ) -> Result<Continuation, Error> {
     match seal.open(cursor, question, resolve_zone, available) {
-        Err(error) if error.kind == ErrorKind::InvalidQuery => match sealed_generation(cursor) {
-            Some(generation) if generation != current => Err(Error::new(
+        Err(error) if error.kind == ErrorKind::InvalidQuery => match sealed_index_instance(cursor) {
+            Some(instance) if instance != current => Err(Error::new(
                 ErrorKind::StaleCursor,
                 "the index was rebuilt since this cursor was issued; run the query again without its cursor",
                 0,
@@ -40,7 +40,7 @@ pub fn open_cursor(
     }
 }
 
-fn sealed_generation(cursor: &SealedCursor) -> Option<String> {
+fn sealed_index_instance(cursor: &SealedCursor) -> Option<String> {
     let bytes = unhex(cursor.as_str())?;
     let payload = bytes.get(..bytes.len().checked_sub(SIGNATURE_BYTES)?)?;
     let (&version, body) = payload.split_first()?;
@@ -51,7 +51,7 @@ fn sealed_generation(cursor: &SealedCursor) -> Option<String> {
     continuation
         .context
         .read_positions
-        .get("generation")
+        .get("index_instance")
         .cloned()
 }
 

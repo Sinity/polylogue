@@ -1,0 +1,7 @@
+{
+  "name": "com.polylogue.browser_capture",
+  "description": "Polylogue browser capture host",
+  "path": null,
+  "type": "stdio",
+  "allowed_origins": []
+}

@@ -1,4 +1,4 @@
-use crate::{Block, BlockKind, DeliverySender, LINK_HOW_NAMES, LINK_KIND_NAMES, ToolAction};
+use crate::{Block, BlockKind, DeliverySender, LINK_KIND_NAMES, LINK_REASON_NAMES, ToolAction};
 
 #[test]
 fn block_kind_names_are_the_serde_tags() {
@@ -51,7 +51,7 @@ fn link_names_cover_every_kind_once() {
         LINK_KIND_NAMES,
         ["spawn", "fork", "continuation", "resume", "reference"]
     );
-    assert_eq!(LINK_HOW_NAMES, ["briefing", "send", "mention"]);
+    assert_eq!(LINK_REASON_NAMES, ["briefing", "send", "mention"]);
 }
 
 /// The declared name is the serialized form, and a name outside the set is

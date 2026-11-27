@@ -39,7 +39,7 @@ export class ImportJob {
     if (!this.running && Date.now() >= this.resumeAt) {
       this.running = (async () => {
         try {
-          const { job } = await this.host.claimImportJob(await this.instance());
+          const { job } = await this.host.call("internal import claim", { by: await this.instance() });
           if (job) await this.run(job);
         } finally {
           this.running = null;
@@ -56,7 +56,7 @@ export class ImportJob {
     const since = job.since ? Date.parse(job.since) : null;
     const report = async (kind, detail = null) => {
       try {
-        await this.host.reportImportJob(job.id, by, { kind, position, counts: { ...counts }, detail });
+        await this.host.call("internal import report", { id: job.id, by, report: { kind, position, counts: { ...counts }, detail } });
         return true;
       } catch (error) {
         // The operator cancelled the job, or another instance holds it.
@@ -89,7 +89,7 @@ export class ImportJob {
         }
         const listed = page.info.conversations.filter((c) => !since || !c.updated_at || Date.parse(c.updated_at) >= since);
         const answer = listed.length
-          ? await this.host.conversations(job.provider, listed.map((c) => c.id))
+          ? await captureState.conversations(this.host, job.provider, listed.map((c) => c.id))
           : { conversations: [] };
         const held = captureState.ofArchiveAnswer(job.provider, answer);
         // Reports name the position of the page's start, so the page's

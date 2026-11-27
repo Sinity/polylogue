@@ -8,9 +8,9 @@ row! {
         outcome: polylogue_model::CallOutcome,
     }
     statements {
-        const OF_MESSAGE = "SELECT coalesce(b.ordinal,CAST(b.idx AS TEXT)) AS block, t.outcome
+        const OF_MESSAGE = "SELECT coalesce(b.source_position,CAST(b.position AS TEXT)) AS block, t.outcome
             FROM message m JOIN block b ON b.message_pk=m.pk JOIN tool_call t ON t.call_block_pk=b.pk
-            WHERE m.id=?1 ORDER BY b.idx";
+            WHERE m.id=?1 ORDER BY b.position";
     }
 }
 

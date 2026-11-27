@@ -14,6 +14,7 @@ use crate::protocol;
 use command_surface::{Answer, JsonSchema, TextStyle};
 use polylogue_model::authorship::Channel;
 use polylogue_model::user::UserWrite;
+use polylogue_store::{archive::writer::Committed, user_writes::WriteResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
@@ -45,7 +46,8 @@ impl Operation for Sql {
     }
 }
 
-/// Grammar completions at a UTF-8 byte offset in the full query text.
+/// Completions at a UTF-8 byte offset in the full query text, with the
+/// archive's values; or a setting's keys or values.
 pub(crate) struct Complete;
 impl Operation for Complete {
     type Arguments = protocol::complete::Arguments;
@@ -73,20 +75,22 @@ impl Operation for Complete {
                 "completion position must be a UTF-8 byte boundary within the query",
             ));
         }
-        let d = call.daemon;
-        let token = match d.archive.scope_token() {
-            Ok(token) => token,
-            Err(error) => return Ok(store_error(&error)),
+        let reader = call.reader()?;
+        let candidates = if arguments.setting {
+            let machine = call.daemon.config.requests.machine();
+            let authored = match reader.completion_setting_keys() {
+                Ok(keys) => keys,
+                Err(error) => return Ok(store_error(&error)),
+            };
+            crate::completion::settings(arguments.key.as_deref(), &text, &authored, |key| {
+                reader.setting_current(key, machine).ok()
+            })
+        } else {
+            match crate::completion::complete(&reader, &text, position) {
+                Ok(candidates) => candidates,
+                Err(error) => return Ok(store_error(&error)),
+            }
         };
-        let candidates = crate::completion_catalog::complete_file(
-            &d.completion_path,
-            &crate::runtime_dir::archive_key(&d.archive.root),
-            &text,
-            position,
-        );
-        if let Err(error) = token.check() {
-            return Ok(store_error(&error));
-        }
         Ok(if candidates.is_empty() {
             Answer::empty(candidates)
         } else {
@@ -122,8 +126,8 @@ impl Operation for Status {
                 "--wait cannot be combined with --watch or --verify",
             ));
         }
-        if arguments.after.is_some() && arguments.wait.is_none() {
-            return Err(Failure::bad_request("--after needs --wait"));
+        if arguments.after_changes.is_some() && arguments.wait.is_none() {
+            return Err(Failure::bad_request("--after-changes needs --wait"));
         }
         if arguments.watch && (arguments.line || arguments.verify) {
             return Err(Failure::bad_request(
@@ -181,11 +185,16 @@ impl Operation for Status {
         let mut status = match &arguments.wait {
             Some(wait) => {
                 let wait = super::line::listing_wait(wait, call.caller.channel())?;
-                status::wait(call, wait, arguments.after, || {
-                    status::answer(call.daemon, vectors.clone(), arguments.log)
+                status::wait(call, wait, arguments.after_changes, || {
+                    status::answer(
+                        call.daemon,
+                        vectors.clone(),
+                        arguments.log,
+                        arguments.details,
+                    )
                 })?
             }
-            None => status::answer(call.daemon, vectors, arguments.log),
+            None => status::answer(call.daemon, vectors, arguments.log, arguments.details),
         };
         if arguments.verify
             && status
@@ -226,24 +235,17 @@ impl Operation for Help {
         )
     };
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-        if arguments.to.is_some() || arguments.format.is_some() {
-            let option = if arguments.to.is_some() {
-                "to"
-            } else {
-                "format"
-            };
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("help --{option} is not built yet"),
-            ));
-        }
         if arguments.all {
             return Ok(ok(serde_json::json!({"manual": crate::manual::text()})));
         }
         let topic = arguments.topic.as_deref().unwrap_or("");
         let subject = match topic {
-            "units" | "fields" | "transforms" => topic,
+            "units" | "fields" | "transforms" | "capabilities" => topic,
             "query" => "syntax",
+            "unbuilt" => return Ok(ok(serde_json::json!({"manual": crate::unbuilt::text()}))),
+            "views" | "kinds" | "keys" | "saved" => {
+                return Err(crate::unbuilt::refusal("help", topic).into());
+            }
             _ => {
                 let steps = crate::daemon::verbs::declarations();
                 if let Some(verb) = steps.verbs().iter().find(|verb| verb.verb() == topic) {
@@ -257,10 +259,12 @@ impl Operation for Help {
                 if let Some(line) = crate::explain::removed_word(topic) {
                     return Ok(ok(serde_json::json!({ "manual": line })));
                 }
-                return Ok(error(
-                    polylogue_model::Code::NotBuilt,
-                    format!("help {topic} is not built yet"),
-                ));
+                if crate::commands::is_cli_command(topic) {
+                    return Err(crate::unbuilt::refusal("help", "COMMAND").into());
+                }
+                return Err(Failure::bad_value(format!(
+                    "help {topic}: no such topic, verb or command; topics: query, units, fields, transforms, capabilities, unbuilt"
+                )));
             }
         };
         crate::explain::answer(
@@ -376,69 +380,107 @@ impl Operation for Import {
             return super::browser::import_provider(call, &arguments, provider)
                 .map(|answer| answer.map(protocol::import::Answer::Provider));
         }
-        if let Some((_, option)) = [
-            (arguments.since.is_some(), "--since"),
-            (arguments.cancel, "--cancel"),
-            (arguments.wait.is_some(), "--wait"),
-        ]
-        .into_iter()
-        .find(|(used, _)| *used)
-        {
-            return Err(Failure::bad_request(format!(
-                "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
-            )));
+        let answer = import_files(arguments, call).unwrap_or_else(Failure::answer);
+        if let Some(error) = answer.failure() {
+            let code = error.code.as_deref().unwrap_or(error.kind.name());
+            polylogue_store::log!(
+                error,
+                "import failed ({code}): {}",
+                error.message.replace('\n', " | ")
+            );
         }
-        if arguments.withdraw_missing {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                "import --withdraw-missing is not built yet",
-            ));
-        }
-        let paths = arguments
-            .paths
-            .iter()
-            .map(|path| call.path(path, "import path"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let d = call.daemon;
-        let invocation = call.invocation;
-        let (reply, wait) = sync_channel(1);
-        let Ok(tx) = d.loop_tx.lock() else {
-            return Ok(loop_stopped());
-        };
-        if let Err(error) = invocation.check_parent_lifetime() {
-            return Ok(store_error(&error));
-        }
-        let sent = tx
-            .send(polylogue_engine::LoopMsg::Import {
-                paths,
-                format: arguments.origin.clone(),
-                dry_run: arguments.dry_run,
-                authorship: invocation.authorship.clone(),
-                parent: invocation.parent_lifetime(),
-                reply,
-            })
-            .is_ok();
-        drop(tx);
-        if !sent {
-            return Ok(loop_stopped());
-        }
-        Ok(match wait.recv() {
-            Ok(Ok(report)) => {
-                super::import_answer(report).map(|r| protocol::import::Answer::Files(Box::new(r)))
-            }
-            Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
-            Ok(Err(polylogue_engine::ImportFailure::Import(
-                polylogue_engine::EngineError::Store(error),
-            ))) => store_error(&error),
-            Ok(Err(polylogue_engine::ImportFailure::Import(
-                polylogue_engine::EngineError::Stopped,
-            ))) => store_error(&polylogue_store::StoreError::Stopped),
-            Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
-                super::error(polylogue_model::Code::Import, error)
-            }
-            Err(_) => loop_stopped(),
-        })
+        Ok(answer)
     }
+}
+
+fn import_files(
+    arguments: protocol::import::Arguments,
+    call: &Call<'_>,
+) -> Result<Answer<protocol::import::Answer>, Failure> {
+    if let Some((_, option)) = [
+        (arguments.since.is_some(), "--since"),
+        (arguments.cancel, "--cancel"),
+        (arguments.wait.is_some(), "--wait"),
+    ]
+    .into_iter()
+    .find(|(used, _)| *used)
+    {
+        return Err(Failure::bad_request(format!(
+            "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
+        )));
+    }
+    if let Some(origin) = &arguments.origin
+        && origin != "python-vectors"
+    {
+        use polylogue_sources::origin::{ORIGINS, Support};
+        let importable = ORIGINS.iter().filter(|spec| {
+            spec.support == Support::Parsed
+                || (spec.support == Support::NoParser && !spec.capture.is_row_dump())
+        });
+        if !importable.clone().any(|spec| spec.name == origin.as_str()) {
+            let known = importable
+                .map(|spec| spec.name)
+                .chain(["python-vectors"])
+                .collect();
+            return Err(Failure::refusal(polylogue_model::Reason::UnknownChoice {
+                field: "--origin".into(),
+                value: origin.clone(),
+                known,
+            }));
+        }
+    }
+    let paths = arguments
+        .paths
+        .iter()
+        .map(|path| call.path(path, "import path"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let d = call.daemon;
+    let invocation = call.invocation;
+    let (reply, wait) = sync_channel(1);
+    let Ok(tx) = d.loop_tx.lock() else {
+        return Ok(loop_stopped());
+    };
+    if let Err(error) = invocation.check_parent_lifetime() {
+        return Ok(store_error(&error));
+    }
+    let sent = tx
+        .send(polylogue_engine::LoopMsg::Import {
+            paths,
+            format: arguments.origin,
+            dry_run: arguments.dry_run,
+            authorship: invocation.authorship.clone(),
+            parent: invocation.parent_lifetime(),
+            reply,
+        })
+        .is_ok();
+    drop(tx);
+    if !sent {
+        return Ok(loop_stopped());
+    }
+    Ok(match wait.recv() {
+        Ok(Ok(report)) => super::import_answer(report, arguments.dry_run)
+            .map(|r| protocol::import::Answer::Files(Box::new(r))),
+        Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
+        Ok(Err(polylogue_engine::ImportFailure::Import(polylogue_engine::EngineError::Store(
+            error,
+        )))) => store_error(&error),
+        Ok(Err(polylogue_engine::ImportFailure::Import(
+            polylogue_engine::EngineError::Stopped,
+        ))) => store_error(&polylogue_store::StoreError::Stopped),
+        Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
+            use polylogue_model::{Caused, Code};
+            let code = match &error {
+                polylogue_engine::EngineError::Io(io)
+                    if io.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    Code::NotFound
+                }
+                _ => error.code(),
+            };
+            super::error(code, error)
+        }
+        Err(_) => loop_stopped(),
+    })
 }
 
 /// Submit the complete Save as one authored write and one retry receipt.
@@ -447,7 +489,7 @@ pub(crate) fn save_selection(
     query: String,
     selection: &crate::daemon::verbs::Selection,
     call: &Call<'_>,
-) -> Result<Answer<(protocol::line::SaveReport, Vec<polylogue_model::Reference>)>, Failure> {
+) -> Result<Answer<Committed<WriteResult>>, Failure> {
     let (d, invocation) = (call.daemon, call.invocation);
     let request_id: String = call.request_id.into();
     let reader = call.reader()?;
@@ -457,7 +499,7 @@ pub(crate) fn save_selection(
         query,
         denominator: step.denominator,
         rows_json: String::new(),
-        read_at: String::new(),
+        read_position: String::new(),
         outcomes: None,
         watch: step.watch.then_some(polylogue_model::user::SaveWatch {
             hold: step.hold,
@@ -465,15 +507,6 @@ pub(crate) fn save_selection(
         }),
     };
     let intended = UserWrite::Save(Box::new(save.clone()));
-    let present = |receipt: polylogue_store::user_writes::WriteResult| {
-        let mut report = receipt
-            .save
-            .expect("Save transaction returns its resolved outcomes");
-        let written = receipt.written;
-        report.pending = receipt.outcome.pending;
-        report.repeat |= receipt.outcome.repeat;
-        (report, written)
-    };
     match repeated_request(&reader, &request_id, &intended, invocation) {
         Ok(Some(previous)) => {
             drop(reader);
@@ -483,7 +516,6 @@ pub(crate) fn save_selection(
                 request_id,
                 previous,
                 Some(selected_scope),
-                present,
             ));
         }
         Err(failure) => return Err(failure),
@@ -520,16 +552,16 @@ pub(crate) fn save_selection(
     );
     let kept = kept?;
     drop(reader);
-    let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
+    let read_position =
+        serde_json::json!({ "now": kept["now"], "position":kept["read_position"] }).to_string();
     save.rows_json = kept.to_string();
-    save.read_at = read_at;
+    save.read_position = read_position;
     Ok(super::answers::submit_result(
         d,
         invocation,
         request_id,
         UserWrite::Save(Box::new(save)),
         Some(selected_scope),
-        present,
     ))
 }
 
@@ -741,7 +773,7 @@ impl Operation for Advisory {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeliveryEventArguments {
     pub delivery: String,
-    pub what: polylogue_model::DeliveryOutcome,
+    pub outcome: polylogue_model::DeliveryOutcome,
     pub detail: Option<String>,
 }
 
@@ -760,7 +792,7 @@ impl Operation for DeliveryEvent {
             call.request_id.into(),
             UserWrite::DeliveryEvent {
                 delivery: arguments.delivery,
-                what: arguments.what,
+                outcome: arguments.outcome,
                 detail: arguments.detail,
             },
         ))
@@ -780,32 +812,21 @@ impl Operation for SelectionNote {
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
-        let input = crate::browser::notes::SelectionNote {
-            request_id: call.request_id.into(),
-            body: arguments.body,
-            quote: arguments.quote,
-            source: crate::browser::notes::Source {
-                provider: arguments.provider,
-                conversation_id: arguments.conversation_id,
-                message_id: arguments.message_id,
-                page_url: arguments.page_url,
-                selected_at: arguments.selected_at,
-            },
-        };
-        let (session, message_id) = input.references()?;
+        let input = arguments;
+        let (session, message_id) = input.references(call.request_id)?;
         let reader = call.reader()?;
         let message = polylogue_model::Reference::Message(message_id.clone());
         let intended = UserWrite::Assert {
             annotations: vec![input.annotation(session.clone(), message.clone())],
         };
         let selected_scope = reader.scope_token();
-        match repeated_request(&reader, &input.request_id, &intended, invocation) {
+        match repeated_request(&reader, call.request_id, &intended, invocation) {
             Ok(Some(previous)) => {
                 drop(reader);
                 return Ok(write_from_read(
                     d,
                     invocation,
-                    input.request_id,
+                    call.request_id.into(),
                     previous,
                     selected_scope,
                 ));
@@ -830,7 +851,7 @@ impl Operation for SelectionNote {
         Ok(write_from_read(
             d,
             invocation,
-            input.request_id,
+            call.request_id.into(),
             intended,
             selected_scope,
         ))

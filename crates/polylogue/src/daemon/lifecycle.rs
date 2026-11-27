@@ -22,7 +22,7 @@ use tokio::{
 };
 
 /// Reports termination even while unwinding; joins keep the result.
-/// A finite completion snapshot explicitly marks its expected return.
+/// A worker that may finish on its own marks its expected return.
 pub(crate) struct WorkerExit {
     events: tokio::sync::watch::Sender<Option<&'static str>>,
     name: &'static str,
@@ -504,7 +504,17 @@ async fn supervise(
     progress: Progress,
 ) -> io::Result<()> {
     let mut steps = progress.subscribe();
-    let mut reports = tokio::time::interval(REPORT_EVERY);
+    // The start timeout is extended before the first step is reported:
+    // sent here, ahead of the loop, so no race between two ready branches
+    // decides the order. The interval then extends it once a period.
+    if let Some(notifications) = &notifications {
+        notifications.report(&format!(
+            "EXTEND_TIMEOUT_USEC={}",
+            OPEN_EXTENSION.as_micros()
+        ));
+    }
+    let mut reports =
+        tokio::time::interval_at(tokio::time::Instant::now() + REPORT_EVERY, REPORT_EVERY);
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut first_signal = None;
     let mut app = loop {
@@ -516,7 +526,6 @@ async fn supervise(
                 first_signal = Some(signal);
             }
             started = &mut receive => match started { Ok(started) => break started, Err(_) => return Ok(()) },
-            // The first tick is immediate, so the extension precedes any step.
             _ = reports.tick() => {
                 if let Some(notifications) = &notifications {
                     notifications.report(&format!("EXTEND_TIMEOUT_USEC={}", OPEN_EXTENSION.as_micros()));

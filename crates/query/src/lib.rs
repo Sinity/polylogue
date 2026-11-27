@@ -171,7 +171,28 @@ impl QueryError {
         }
     }
 
-    pub fn language(error: query_language::Error, source: &str) -> Self {
+    pub fn language(mut error: query_language::Error, source: &str) -> Self {
+        if error.kind == query_language::ErrorKind::BadValue
+            && error.message.to_ascii_lowercase().starts_with("`origin`")
+        {
+            let value = source
+                .get(error.position..)
+                .unwrap_or_default()
+                .trim_start_matches(['\"', '\''])
+                .split(|c: char| c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ')'))
+                .next()
+                .unwrap_or_default();
+            let listed = error.candidates.join(", ");
+            error
+                .candidates
+                .sort_by_key(|name| (strsim::damerau_levenshtein(value, name), name.clone()));
+            error.message = error.message.replace(&listed, &error.candidates.join(", "));
+        }
+        if error.kind == query_language::ErrorKind::UnknownField
+            && let Some((message, _)) = error.message.split_once("; fields: ")
+        {
+            error.message = message.to_owned();
+        }
         let diagnostic = error.diagnostic(source);
         Self::Language {
             error: Box::new(error),

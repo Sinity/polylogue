@@ -136,7 +136,7 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         let reader = w.daemon.reads.reader().unwrap();
         let seal = CursorSeal {
             key: reader.cursor_key().unwrap(),
-            generation: reader.change_position().unwrap().generation,
+            index_instance: reader.change_position().unwrap().index_instance,
         };
         PageCursor::open(
             call.arguments["steps"][0]["cursor"].as_str().unwrap(),
@@ -200,7 +200,7 @@ fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes
         let reader = w.daemon.reads.reader().unwrap();
         let seal = CursorSeal {
             key: reader.cursor_key().unwrap(),
-            generation: reader.change_position().unwrap().generation,
+            index_instance: reader.change_position().unwrap().index_instance,
         };
         PageCursor::open(
             request.arguments["steps"][0]["cursor"].as_str().unwrap(),
@@ -560,6 +560,7 @@ mod judgments;
 
 mod saved;
 
+mod archive_outcomes;
 mod deliveries;
 mod outcomes;
 
@@ -675,6 +676,7 @@ mod advisory;
 
 mod read_annotations;
 mod read_attachments;
+mod read_composition;
 mod read_links;
 mod read_objects;
 mod read_runs;

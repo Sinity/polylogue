@@ -370,8 +370,9 @@ impl Receive for &[u8] {
     }
 }
 
-/// Sends one request to a running daemon, without waiting for one that is
-/// still starting. A deadline that passes is the deadline failure.
+/// Sends a finite test request to a running daemon, without waiting for
+/// one that is still starting. A deadline that passes is the deadline failure.
+#[cfg(test)]
 pub fn call(
     socket: &Path,
     request: &command_surface::RunnableRequest,

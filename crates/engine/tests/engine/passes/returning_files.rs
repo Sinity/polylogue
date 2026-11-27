@@ -218,7 +218,7 @@ fn capture_log_with_mixed_captures_is_read_to_its_end() {
 /// segment log holds each content once, whatever number of chains cite it
 /// (docs/archive.md, stored inputs).
 #[test]
-fn identical_chains_store_their_bytes_once() {
+fn chains_with_the_same_bytes_store_them_once() {
     let w = ClaudeHome::new();
     let one = user("u1", "same", "the same body every time");
     let other = user("u1", "same", "a different body");

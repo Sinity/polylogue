@@ -23,6 +23,8 @@ pub enum Set {
     /// Sessions #1–#8: Claude Code, Codex with its state database, the
     /// hook spool, and the ChatGPT and claude.ai exports.
     Main,
+    /// Claude Code sessions #1–#4 plus the parents set.
+    Parents,
     /// The live set V1–V3 with its hook spool files.
     Live,
     /// The main set plus the annotation session.
@@ -36,6 +38,10 @@ const MAIN: &[(&str, &str)] = &[
     ("codex/sessions", ".codex/sessions"),
     ("codex/state_5.sqlite", ".codex/state_5.sqlite"),
     ("hooks", ".local/state/polylogue/hooks"),
+];
+const PARENTS: &[(&str, &str)] = &[
+    ("claude-code", ".claude"),
+    ("claude-code-only/claude-code", ".claude"),
 ];
 const LIVE: &[(&str, &str)] = &[
     ("live/claude-code", ".claude"),
@@ -64,20 +70,26 @@ impl Morrow {
         let dir = tempfile::tempdir().expect("temporary directory");
         let home = dir.path().join("home");
         let root = dir.path().join("archive");
-        let src = morrow_dir();
-        let parts: Vec<&(&str, &str)> = match set {
-            Set::Main => MAIN.iter().collect(),
-            Set::Live => LIVE.iter().collect(),
-            Set::Annotation => MAIN.iter().chain(ANNOTATION).collect(),
-        };
-        for (from, to) in parts {
-            copy(&src.join(from), &home.join(to)).expect("lay out the example");
-        }
+        Self::lay_out_in(set, &home);
         Self {
             dir,
             home,
             root,
             set,
+        }
+    }
+
+    /// The set's files laid out in `home`, where each tool writes them.
+    pub fn lay_out_in(set: Set, home: &Path) {
+        let src = morrow_dir();
+        let parts: Vec<&(&str, &str)> = match set {
+            Set::Main => MAIN.iter().collect(),
+            Set::Live => LIVE.iter().collect(),
+            Set::Parents => PARENTS.iter().collect(),
+            Set::Annotation => MAIN.iter().chain(ANNOTATION).collect(),
+        };
+        for (from, to) in parts {
+            copy(&src.join(from), &home.join(to)).expect("lay out the example");
         }
     }
 

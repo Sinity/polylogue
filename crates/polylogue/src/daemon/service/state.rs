@@ -15,7 +15,6 @@ pub struct Daemon {
     pub reads: ReadPool,
     /// The requests being answered, which a stop waits for.
     pub(crate) requests: Requests,
-    pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::hook::open_calls::OpenCalls,
 
     pub(crate) warm: crate::daemon::warm::Warm,

@@ -199,7 +199,7 @@ impl Engine {
         plan: &Plan,
         failure: polylogue_model::ChainFailure,
     ) -> Result<(), EngineError> {
-        let mut step = polylogue_store::ParseStep::failed(plan.parse_pos..plan.parse_pos, failure);
+        let mut step = polylogue_store::ParsePart::failed(plan.parse_pos..plan.parse_pos, failure);
         step.reset = false;
         step.parse_version = plan.origin.parse_version();
         step.prepare();
@@ -613,6 +613,7 @@ impl Engine {
             }) {
                 errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
+            errors.extend(scan.errors);
             (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
@@ -782,7 +783,7 @@ impl Engine {
             .collect();
         for path in unseen {
             let state = &self.inputs[&path];
-            if sources && state.facts.is_some() && !path.try_exists()? {
+            if sources && state.facts.is_some() && path.try_exists().is_ok_and(|exists| !exists) {
                 let batch = polylogue_store::Batch {
                     input: InputKey {
                         id: state.input_id.clone(),
@@ -1153,22 +1154,25 @@ impl Engine {
 
     /// The chain a file holds fewer bytes of, each equal to the stored byte
     /// at its place: its input's current chain when it is longer than the
-    /// file and begins with the file's bytes.
+    /// file and begins with the file's bytes (an empty file included).
     fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
         let st = &self.inputs[path];
         let reader = self.reads.reader()?;
         let Some(progress) = reader.latest_chain(&st.input_id)? else {
             return Ok(None);
         };
-        if now.size == 0 || progress.stored <= now.size || progress.stored < st.stored {
+        if progress.stored <= now.size || progress.stored < st.stored {
             return Ok(None);
         }
-        let intact = reader
-            .stored_chain(&st.input_id, progress.chain, now.size)
-            .ok()
-            .is_some_and(|chain| {
-                read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
-            });
+        // An emptied file holds no byte that differs: the chain seen back
+        // holding nothing, never a new, empty current chain.
+        let intact = now.size == 0
+            || reader
+                .stored_chain(&st.input_id, progress.chain, now.size)
+                .ok()
+                .is_some_and(|chain| {
+                    read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
+                });
         Ok(intact.then_some(progress.chain))
     }
 
@@ -1562,7 +1566,7 @@ impl Engine {
                 CompletenessDimension::Incomplete(reasons)
                 | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
                     matches!(
-                        reason,
+                        reason.reason,
                         CompletenessReason::MissingCheckpoint
                             | CompletenessReason::ParseVersionChanged
                             | CompletenessReason::ParserBehind
@@ -1700,7 +1704,7 @@ impl Engine {
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if from.is_none() && c.state != polylogue_model::chain::ChainState::Unparsed {
+            if from.is_none() && replaces(&c.state, origin) {
                 plan.replace = true;
                 replacements.push(plan);
                 continue;
@@ -1837,7 +1841,7 @@ impl Engine {
             self.config.chunk,
             tracked,
         );
-        plan.replace = *state != polylogue_model::chain::ChainState::Unparsed && parse_pos == 0;
+        plan.replace = replaces(state, origin) && parse_pos == 0;
         Ok(plan)
     }
 
@@ -2042,10 +2046,19 @@ impl Engine {
             let Some(mut plan) = self.admit(plan, pass)? else {
                 continue;
             };
+            // A file read from its first byte over a chain whose parse holds
+            // records stores its new bytes first and parses the chain again
+            // as a replacement. One whose parse holds none (a first line
+            // still being written) has nothing to replace: it is read on
+            // from the first byte like any append.
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
-                && !matches!(plan.change, Change::First | Change::Rewritten);
+                && !matches!(plan.change, Change::First | Change::Rewritten)
+                && self
+                    .inputs
+                    .get(&plan.path)
+                    .is_some_and(|st| st.parsed_upto > 0);
             if store_first {
                 let later = later_paths(&plan, &plans);
                 self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
@@ -2743,6 +2756,7 @@ impl Engine {
             );
             summary.passes += 1;
             summary.work.add(finished.clone());
+            finished.errors = self.failure_log.errors();
             status.update(|s| {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
@@ -2751,6 +2765,7 @@ impl Engine {
                     || s.last_pass.capture_pending
                     || finished.capture_pending
                     || !finished.errors.is_empty()
+                    || !s.last_pass.errors.is_empty()
                     || s.passes == 0
                 {
                     s.last_pass = finished;
@@ -2965,6 +2980,22 @@ fn changed_since_read(path: &Path, st: &InputState) -> bool {
             .or(st.facts)
             .is_some_and(|read| read.unchanged_as(&now))
     })
+}
+
+/// Whether parsing a chain from its first byte replaces the parse it has.
+/// A parse at the current version that holds no complete record yet (a
+/// first line still being written) has nothing to replace: reading from the
+/// first byte continues it, where its state already stands.
+fn replaces(state: &polylogue_model::chain::ChainState, origin: &OriginSpec) -> bool {
+    match state {
+        polylogue_model::chain::ChainState::Unparsed => false,
+        polylogue_model::chain::ChainState::Parsed {
+            version,
+            parsed_to: 0,
+            ..
+        } => *version != origin.parse_version(),
+        _ => true,
+    }
 }
 
 /// A stored input at a path this build's parser does not read: refused for

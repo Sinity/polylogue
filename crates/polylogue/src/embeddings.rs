@@ -811,10 +811,7 @@ pub fn handle(
         Err(e) => return error(polylogue_model::Code::BadRequest, e),
     };
     let Some(provider) = provider else {
-        return error(
-            polylogue_model::Code::EmbeddingsOff,
-            "embeddings are off; `polylogue set embed.provider local` (or `voyage`) turns them on",
-        );
+        return crate::daemon::Failure::refusal(polylogue_model::Reason::EmbeddingsOff {}).answer();
     };
     // A query limits the work to the sessions it finds.
     let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
@@ -825,11 +822,8 @@ pub fn handle(
         },
     };
     if yes && !provider.calls {
-        return error(
-            polylogue_model::Code::ModelCallsOff,
-            "model calls are off, so no text is sent to the provider; \
-             `polylogue set embed.calls on` turns them on",
-        );
+        return crate::daemon::Failure::refusal(polylogue_model::Reason::EmbeddingCallsOff {})
+            .answer();
     }
     let result = if yes {
         build(context.clock, reader, &provider, sessions.as_deref()).map(Answer::Built)

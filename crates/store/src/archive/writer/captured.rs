@@ -6,10 +6,96 @@ use super::*;
 use crate::ConnExt as _;
 use crate::blobs::Change;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Produced, Revision, Seen};
+use crate::row::{Rows as _, row};
+use crate::source::Source;
 use crate::{ImportMember, NewBlob};
 use polylogue_model::BlobHash;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use std::collections::BTreeSet;
+
+row! {
+    struct RevisionLength {
+        chain: i64,
+        length: i64,
+    }
+    statements {
+        const LATEST = "SELECT chain, length FROM revision WHERE input = ?1
+            ORDER BY number DESC LIMIT 1";
+    }
+}
+
+row! {
+    struct RepeatedImport {
+        chain: i64,
+        length: i64,
+        observed: bool,
+    }
+    statements {
+        const MATCHING = "SELECT r.chain,r.length,
+               EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format')) AS observed
+             FROM revision r WHERE r.input=?1
+               AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
+               AND r.length=?2
+               AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
+               AND EXISTS(SELECT 1 FROM extent x JOIN blob b ON b.hash=x.blob
+                   WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0
+                     AND x.length=?2 AND x.blob_offset=0 AND x.blob=?3 AND b.size=?2)";
+    }
+}
+
+row! {
+    struct RevisionExists {
+        present: bool,
+    }
+    statements {
+        const OF_LENGTH = "SELECT EXISTS(SELECT 1 FROM revision
+            WHERE input=?1 AND chain=?2 AND length>=?3) AS present";
+    }
+}
+
+macro_rules! latest_revision {
+    ($table:literal) => {
+        concat!(
+            "SELECT number, chain, length, produced FROM ",
+            $table,
+            " WHERE input = ?1
+            ORDER BY number DESC LIMIT 1"
+        )
+    };
+}
+
+row! {
+    struct LatestRevision {
+        number: i64,
+        chain: i64,
+        length: i64,
+        produced: String,
+    }
+    statements {
+        const OF_INPUT = latest_revision!("revision");
+        const SOURCE_OF_INPUT = latest_revision!("source_revision");
+    }
+}
+
+macro_rules! observation_ordinal {
+    ($table:literal) => {
+        concat!(
+            "SELECT count(*)+1 AS ordinal FROM ",
+            $table,
+            " WHERE commit_seq = ?1"
+        )
+    };
+}
+
+row! {
+    struct ObservationOrdinal {
+        ordinal: i64,
+    }
+    statements {
+        const NEXT = observation_ordinal!("observation");
+        const SOURCE_NEXT = observation_ordinal!("source_observation");
+    }
+}
 
 impl Inner {
     /// Commits the rows of `batches`, whose blobs are put, in one
@@ -84,20 +170,14 @@ impl Inner {
                 .sum();
             // An immutable import named by its bytes may be stored already, or
             // appear twice in a group (equal container members).
-            let known: Option<(i64, i64)> = tx
-                .query_row(
-                    "SELECT chain, length FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1",
-                    [&b.input.id],
-                    |r| <(_, _)>::try_from(r),
-                )
-                .optional()?;
+            let known = tx.maybe(&RevisionLength::LATEST, [&b.input.id])?;
             let again = !seen.insert(b.input.id.clone());
             if b.input.route.is_imported() && b.new_blob.is_some() && (known.is_some() || again) {
                 let new_blob = b.new_blob.as_ref().expect("checked new_blob");
                 // Empty bytes are stored with no extent.
                 let same: bool = tx.scalar("SELECT CASE WHEN ?2 <> ?3 THEN 0 WHEN ?3 = 0 THEN count(*) = 0
                             ELSE count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4 END
-                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)", params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]])?;
+                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)", params![b.input.id, known.map_or(b.length as i64, |row| row.length), b.length as i64, &new_blob.hash.0[..]])?;
                 if !same {
                     return Err(StoreError::Conflict(
                         "an import named by its bytes holds other bytes".into(),
@@ -191,20 +271,22 @@ fn repeated_imports(conn: &Connection, group: &[Batch]) -> Result<Option<Vec<Sto
                 )
             })
             .transpose()?;
-        let known = conn.query_row(
-            "SELECT r.chain,r.length,
-               EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))
-             FROM revision r WHERE r.input=?1
-               AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
-               AND r.length=?2
-               AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
-               AND EXISTS(SELECT 1 FROM extent x JOIN blob b ON b.hash=x.blob
-                   WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0
-                     AND x.length=?2 AND x.blob_offset=0 AND x.blob=?3 AND b.size=?2)",
-            params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
-            |row| <(i64, i64, bool)>::try_from(row),
-        ).optional()?;
-        let Some((chain, length, true)) = known else {
+        let Some(RepeatedImport {
+            chain,
+            length,
+            observed: true,
+        }) = conn.maybe(
+            &RepeatedImport::MATCHING,
+            params![
+                b.input.id,
+                b.length as i64,
+                &blob.hash.0[..],
+                observation.machine,
+                observation.path_bytes,
+                details
+            ],
+        )?
+        else {
             return Ok(None);
         };
         stored.push(StoredInput {
@@ -260,21 +342,16 @@ pub(crate) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i
         ));
     };
     let length = crate::to_i64(batch.length, "input exceeds archive address space")?;
-    let latest: Option<(i64, i64)> = conn
-        .prepare_cached(
-            "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",
-        )?
-        .query_row([&batch.input.id], |row| <(_, _)>::try_from(row))
-        .optional()?;
+    let latest = conn.maybe(&RevisionLength::LATEST, [&batch.input.id])?;
     let stored = match latest {
-        Some((latest_chain, stored_length)) if latest_chain == chain => stored_length >= length,
-        Some(_) => conn
-            .prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
+        Some(latest) if latest.chain == chain => latest.length >= length,
+        Some(_) => {
+            conn.one(
+                &RevisionExists::OF_LENGTH,
+                params![batch.input.id, chain, length],
             )?
-            .query_row(params![batch.input.id, chain, length], |row| {
-                row.get::<_, bool>(0)
-            })?,
+            .present
+        }
         None => false,
     };
     if batch.new_blob.is_some() || !stored {
@@ -289,20 +366,24 @@ pub(crate) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i
 /// revision and the step's change.
 /// Returns it with the revision chain the step's records are in.
 fn input_rows(tx: &Connection, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRows)> {
-    let source = crate::source::Source::of(tx)?;
-    let latest: Option<(i64, i64, i64, String)> = tx
-        .prepare_cached(&source.sql(
-            "SELECT number, chain, length, produced FROM @source.revision WHERE input = ?1
-             ORDER BY number DESC LIMIT 1",
-        ))?
-        .query_row([&b.input.id], |r| <(_, _, _, _)>::try_from(r))
-        .optional()?;
-    let latest = latest
-        .map(|(number, chain, length, produced)| {
-            Produced::from_name(&produced)
-                .map(|produced| (number, chain, length, produced))
-                .ok_or_else(|| StoreError::stored(3, format!("revision produced {produced:?}")))
-        })
+    let statement = match Source::of(tx)? {
+        Source::Standalone => &LatestRevision::OF_INPUT,
+        Source::Cache => &LatestRevision::SOURCE_OF_INPUT,
+    };
+    let latest = tx
+        .maybe(statement, [&b.input.id])?
+        .map(
+            |LatestRevision {
+                 number,
+                 chain,
+                 length,
+                 produced,
+             }| {
+                Produced::from_name(&produced)
+                    .map(|produced| (number, chain, length, produced))
+                    .ok_or_else(|| StoreError::stored(3, format!("revision produced {produced:?}")))
+            },
+        )
         .transpose()?;
     input_rows_at(tx, b, seq, latest, &std::collections::BTreeSet::new())
 }
@@ -573,12 +654,11 @@ fn check_blob_size(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
 /// place among those of its commit, both in fixed-width hex. A UUID
 /// distinguishes independent archives with equal local counters.
 pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<String> {
-    let ordinal: i64 = tx
-        .prepare_cached(
-            &crate::source::Source::of(tx)?
-                .sql("SELECT count(*)+1 FROM @source.observation WHERE commit_seq = ?1"),
-        )?
-        .query_row([seq], |r| r.get(0))?;
+    let statement = match Source::of(tx)? {
+        Source::Standalone => &ObservationOrdinal::NEXT,
+        Source::Cache => &ObservationOrdinal::SOURCE_NEXT,
+    };
+    let ordinal = tx.one(statement, [seq])?.ordinal;
     Ok(format!(
         "{seq:016x}-{ordinal:016x}-{}-{input}",
         uuid::Uuid::now_v7()
@@ -609,37 +689,43 @@ pub(crate) fn check_import_format(
     Ok(())
 }
 
-/// The observation a step records, checked against what the archive
-/// already holds for the input. `staged` holds the inputs staged earlier in
-/// this capture group, which are not in the archive yet.
-/// Where and as what file the input was last observed.
-struct LastLocation {
-    machine: String,
-    path_bytes: Vec<u8>,
-    class: String,
-    device: Option<i64>,
-    inode: Option<i64>,
+macro_rules! last_location {
+    ($table:literal) => {
+        concat!(
+            "SELECT machine, path_bytes, class, device, inode FROM ",
+            $table,
+            "
+            WHERE input = ?1 ORDER BY commit_seq DESC, id DESC LIMIT 1"
+        )
+    };
+}
+
+row! {
+    /// Where and as what file the input was last observed.
+    struct LastLocation {
+        machine: String,
+        path_bytes: Vec<u8>,
+        class: String,
+        device: Option<i64>,
+        inode: Option<i64>,
+    }
+    statements {
+        const OF_INPUT = last_location!("observation");
+        const SOURCE_OF_INPUT = last_location!("source_observation");
+    }
 }
 
 fn last_location(tx: &Connection, input: &str) -> Result<Option<LastLocation>> {
-    let source = crate::source::Source::of(tx)?;
-    Ok(tx
-        .prepare_cached(&source.sql(
-            "SELECT machine, path_bytes, class, device, inode FROM @source.observation
-             WHERE input = ?1 ORDER BY commit_seq DESC, id DESC LIMIT 1",
-        ))?
-        .query_row([input], |r| {
-            Ok(LastLocation {
-                machine: r.get(0)?,
-                path_bytes: r.get(1)?,
-                class: r.get(2)?,
-                device: r.get(3)?,
-                inode: r.get(4)?,
-            })
-        })
-        .optional()?)
+    let statement = match Source::of(tx)? {
+        Source::Standalone => &LastLocation::OF_INPUT,
+        Source::Cache => &LastLocation::SOURCE_OF_INPUT,
+    };
+    tx.maybe(statement, [input])
 }
 
+/// The observation a step records, checked against what the archive
+/// already holds for the input. `staged` holds the inputs staged earlier in
+/// this capture group, which are not in the archive yet.
 pub(crate) fn observation(
     tx: &Connection,
     b: &Batch,
@@ -683,4 +769,14 @@ pub(crate) fn observation(
         },
         container,
     }))
+}
+
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<RevisionLength>();
+    check.row::<RepeatedImport>();
+    check.row::<RevisionExists>();
+    check.row::<LatestRevision>();
+    check.row::<ObservationOrdinal>();
+    check.row::<LastLocation>();
 }

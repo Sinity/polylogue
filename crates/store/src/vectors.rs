@@ -20,11 +20,13 @@
 use crate::ConnExt as _;
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
+use crate::row::{Rows as _, Statement, TextKey, row};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -99,6 +101,158 @@ pub struct KeyStatus {
     pub failures: u64,
 }
 
+row! {
+    struct VectorBytes {
+        vector: Vec<u8>,
+    }
+    statements {
+        const QUERY = "SELECT vector FROM query_vector
+             WHERE substr(key, 1, length(?1)) = ?1 AND text_hash = ?2
+             ORDER BY key LIMIT 1";
+        const AT_ADDRESS = "SELECT vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3";
+    }
+}
+
+row! {
+    struct TextVector {
+        text_hash: Vec<u8>,
+        vector: Vec<u8>,
+    }
+    statements {
+        const OF_TEXTS = "SELECT text_hash, vector FROM embedded WHERE model = ?1 AND text_hash IN (?2)";
+    }
+}
+
+row! {
+    struct TextChunk {
+        text_hash: Vec<u8>,
+        chunk: u32,
+    }
+    statements {
+        const OF_TEXTS = "SELECT text_hash,chunk FROM embedded WHERE model=?1 AND text_hash IN (?2)";
+    }
+}
+
+row! {
+    struct RefusedText {
+        text_hash: Vec<u8>,
+    }
+    statements {
+        const OF_MODEL = "SELECT text_hash FROM embed_failure WHERE model=?1";
+    }
+}
+
+row! {
+    struct PurchasedVector {
+        id: i64,
+        dims: i64,
+        vector: Vec<u8>,
+        embedded_at: i64,
+    }
+    statements {
+        const AT_ADDRESS = "SELECT id,dims,vector,embedded_at FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3";
+    }
+}
+
+row! {
+    struct ModelVector {
+        id: i64,
+        text_hash: Vec<u8>,
+        dims: i64,
+        vector: Vec<u8>,
+    }
+    statements {
+        const AFTER_ID = "SELECT id, text_hash, dims, vector FROM embedded WHERE model = ?1 AND id > ?2 ORDER BY id";
+    }
+}
+
+row! {
+    struct ModelCounts {
+        model: String,
+        dims: Option<i64>,
+        texts: i64,
+        vectors: i64,
+        failures: i64,
+    }
+    statements {
+        const ALL = "WITH stored AS (
+                 SELECT model, max(dims) AS dims, count(DISTINCT text_hash) AS texts,
+                        count(*) AS vectors
+                 FROM embedded GROUP BY model),
+               refused AS (SELECT model, count(*) AS failures FROM embed_failure GROUP BY model)
+             SELECT key.model, stored.dims, coalesce(stored.texts, 0) AS texts,
+                    coalesce(stored.vectors, 0) AS vectors, coalesce(refused.failures, 0) AS failures
+             FROM (SELECT model FROM stored UNION SELECT model FROM refused) key
+             LEFT JOIN stored ON stored.model = key.model
+             LEFT JOIN refused ON refused.model = key.model
+             ORDER BY key.model";
+    }
+}
+
+row! {
+    struct ProseRow {
+        id: TextKey,
+        hash: Vec<u8>,
+        body: Option<Vec<u8>>,
+        start: i64,
+        length: i64,
+    }
+    statements {
+        const BY_NORMALIZED_HASH = "SELECT t.id,t.hash,g.body,t.start,t.length FROM text t JOIN content_group g ON g.id=t.group_id WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
+             AND EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
+             ORDER BY t.id LIMIT ?3";
+        const AFTER_ID = "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
+                     WHERE t.indexed & 1 AND t.id > ?1
+                     AND EXISTS (SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
+                     ORDER BY t.id LIMIT ?2";
+        const OF_SESSIONS = "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
+                         WHERE t.indexed & 1 AND t.id > ?1
+                         AND t.id IN (SELECT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
+                                      WHERE s.id IN (SELECT value FROM json_each(?3)))
+                         ORDER BY t.id LIMIT ?2";
+    }
+}
+
+row! {
+    struct SessionMember {
+        id: String,
+    }
+    statements {
+        const OF_ROOTS = "SELECT s.id FROM session s WHERE (?2) IN
+             (SELECT r.pk FROM session r WHERE r.id IN (SELECT value FROM json_each(?1)))
+             ORDER BY s.id";
+    }
+}
+
+impl ProseRow {
+    fn text(&self) -> Result<String> {
+        let body = self
+            .body
+            .as_deref()
+            .ok_or_else(|| StoreError::stored(2, "a text row has no group"))?;
+        crate::text_rows::slice(body, self.start, self.length).map_err(|error| match error {
+            StoreError::StoredValue { reason, .. } => StoreError::stored(2, reason),
+            other => other,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn declared_rows(
+    index: &mut crate::row::Check<'_>,
+    embeddings: &mut crate::row::Check<'_>,
+) {
+    index.row::<ProseRow>();
+    index.row::<SessionMember>();
+    embeddings.row::<VectorBytes>();
+    embeddings.row::<TextVector>();
+    embeddings.row::<TextChunk>();
+    embeddings.row::<RefusedText>();
+    embeddings.row::<PurchasedVector>();
+    embeddings.row::<ModelVector>();
+    embeddings.row::<ModelCounts>();
+}
+
 /// The embeddings database. One process writes it (the daemon's embedding
 /// build); each reader owns its optional connection.
 pub struct Vectors {
@@ -150,15 +304,10 @@ impl Vectors {
     /// starting with `prefix`, if one was stored.
     pub fn query_vector(&self, prefix: &str, text: &str) -> Result<Option<Vec<f32>>> {
         let _read = self.read_transaction()?;
-        let mut statement = self.conn.prepare_cached(
-            "SELECT vector FROM query_vector
-             WHERE substr(key, 1, length(?1)) = ?1 AND text_hash = ?2
-             ORDER BY key LIMIT 1",
-        )?;
-        let bytes: Option<Vec<u8>> = statement
-            .query_row(params![prefix, query_text_hash(text)], |row| row.get(0))
-            .optional()?;
-        Ok(bytes.map(|bytes| floats(&bytes)))
+        let found = self
+            .conn
+            .maybe(&VectorBytes::QUERY, params![prefix, query_text_hash(text)])?;
+        Ok(found.map(|row| floats(&row.vector)))
     }
 
     /// Stores the provider's vector for a query text (NFC) under its
@@ -202,14 +351,20 @@ impl Vectors {
                 .iter()
                 .map(|hash| rusqlite::types::Value::Blob(hash.to_vec())),
         );
-        let mut statement = self.conn.prepare_cached(&format!(
-            "SELECT text_hash, vector FROM embedded WHERE model = ?1 AND text_hash IN ({placeholders})"
-        ))?;
-        let mut rows = statement.query(rusqlite::params_from_iter(arguments))?;
-        while let Some(row) = rows.next()? {
-            let bytes: Vec<u8> = row.get(1)?;
-            out.entry(row.get(0)?).or_default().push(floats(&bytes));
-        }
+        let select = TextVector::OF_TEXTS;
+        let statement = Statement::<TextVector>::built(select.sql().replacen(
+            "IN (?2)",
+            &format!("IN ({placeholders})"),
+            1,
+        ));
+        let _ = self
+            .conn
+            .each(&statement, rusqlite::params_from_iter(arguments), |row| {
+                out.entry(row.text_hash)
+                    .or_default()
+                    .push(floats(&row.vector));
+                Ok(ControlFlow::Continue(()))
+            })?;
         Ok(out)
     }
 
@@ -264,29 +419,31 @@ impl Vectors {
                 .iter()
                 .map(|(hash, _)| rusqlite::types::Value::Blob(hash.clone())),
         );
-        let mut statement = self.conn.prepare_cached(&format!(
-            "SELECT text_hash,chunk FROM embedded WHERE model=?1 AND text_hash IN ({placeholders})"
-        ))?;
-        for row in statement.query_map(rusqlite::params_from_iter(arguments), |row| {
-            <(Vec<u8>, u32)>::try_from(row)
-        })? {
-            let (hash, chunk) = row?;
-            if let Some(chunks) = missing.get_mut(&hash) {
-                chunks.remove(&chunk);
-            }
-        }
+        let select = TextChunk::OF_TEXTS;
+        let statement = Statement::<TextChunk>::built(select.sql().replacen(
+            "IN (?2)",
+            &format!("IN ({placeholders})"),
+            1,
+        ));
+        let _ = self
+            .conn
+            .each(&statement, rusqlite::params_from_iter(arguments), |row| {
+                if let Some(chunks) = missing.get_mut(&row.text_hash) {
+                    chunks.remove(&row.chunk);
+                }
+                Ok(ControlFlow::Continue(()))
+            })?;
         Ok(missing)
     }
 
     /// Whole texts permanently refused for this exact embedding key.
     pub fn rejected(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
         let _read = self.read_transaction()?;
-        let mut statement = self
-            .conn
-            .prepare_cached("SELECT text_hash FROM embed_failure WHERE model=?1")?;
-        let rejected = statement
-            .query_map([key], |row| row.get::<_, Vec<u8>>(0))?
-            .collect::<rusqlite::Result<_>>()?;
+        let mut rejected = HashSet::new();
+        let _ = self.conn.each(&RefusedText::OF_MODEL, [key], |row| {
+            rejected.insert(row.text_hash);
+            Ok(ControlFlow::Continue(()))
+        })?;
         Ok(rejected)
     }
 
@@ -305,9 +462,6 @@ impl Vectors {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut stored = false;
         {
-            let mut find = tx.prepare_cached(
-                "SELECT vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
-            )?;
             let mut insert = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -315,11 +469,10 @@ impl Vectors {
             let now = clock.now_ms();
             for v in vectors {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
-                let known: Option<Vec<u8>> = find
-                    .query_row(params![v.text_hash, key, v.chunk], |r| r.get(0))
-                    .optional()?;
+                let known =
+                    tx.maybe(&VectorBytes::AT_ADDRESS, params![v.text_hash, key, v.chunk])?;
                 match known {
-                    Some(known) if known == bytes => {}
+                    Some(known) if known.vector == bytes => {}
                     Some(_) => {
                         return Err(StoreError::internal(format!(
                             "the embeddings store holds a different vector for chunk {} of this text under {key}",
@@ -361,9 +514,6 @@ impl Vectors {
         let mut out = Vec::with_capacity(vectors.len());
         let mut stored = false;
         {
-            let mut find = tx.prepare_cached(
-                "SELECT id,dims,vector,embedded_at FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
-            )?;
             let mut insert = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -381,25 +531,24 @@ impl Vectors {
                     )));
                     continue;
                 }
-                let known: Option<(i64, i64, Vec<u8>, i64)> = find
-                    .query_row(params![v.text_hash, v.model, v.chunk], |r| {
-                        <(_, _, _, _)>::try_from(r)
-                    })
-                    .optional()?;
+                let known = tx.maybe(
+                    &PurchasedVector::AT_ADDRESS,
+                    params![v.text_hash, v.model, v.chunk],
+                )?;
                 out.push(match known {
-                    Some((_, dims, _, _)) if dims != v.dims => Restored::Refused(
+                    Some(row) if row.dims != v.dims => Restored::Refused(
                         "this address has another vector dimension under the same embedding key".into(),
                     ),
-                    Some((_, _, _, paid_at)) if paid_at > v.embedded_at => Restored::Present,
-                    Some((_, _, vector, paid_at)) if paid_at == v.embedded_at => {
-                        if vector == v.vector {
+                    Some(row) if row.embedded_at > v.embedded_at => Restored::Present,
+                    Some(row) if row.embedded_at == v.embedded_at => {
+                        if row.vector == v.vector {
                             Restored::Present
                         } else {
                             Restored::Refused("this address holds different vector values with the same purchase time".into())
                         }
                     }
-                    Some((id, _, _, _)) => {
-                        update.execute(params![id,v.vector,v.embedded_at])?;
+                    Some(row) => {
+                        update.execute(params![row.id,v.vector,v.embedded_at])?;
                         stored = true;
                         Restored::Stored
                     },
@@ -517,44 +666,42 @@ impl Vectors {
             runs: base.runs.clone(),
         };
         let mut run = Run::default();
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, text_hash, dims, vector FROM embedded WHERE model = ?1 AND id > ?2 ORDER BY id",
-        )?;
-        let mut rows = stmt.query(params![key, base.through])?;
-        while let Some(row) = rows.next()? {
-            loaded.through = row.get(0)?;
-            loaded.rows_read += 1;
-            let hash: Vec<u8> = row.get(1)?;
-            let dims = usize::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
-            let bytes: Vec<u8> = row.get(3)?;
-            if loaded.dims == 0 {
-                loaded.dims = dims;
-            }
-            if dims != loaded.dims {
-                return Err(StoreError::stored_data(format!(
-                    "a stored vector under {key} has {dims} values, not {}",
-                    loaded.dims
-                )));
-            }
-            if bytes.len() != dims * 4 {
-                return Err(StoreError::stored_data(format!(
-                    "a stored vector under {key} has {} bytes, not {}",
-                    bytes.len(),
-                    dims * 4
-                )));
-            }
-            let floats = floats(&bytes);
-            let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
-            let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
-            let text = run.text(hash.into_boxed_slice());
-            run.text.push(text);
-            run.scale.push(scale);
-            run.values.extend(
-                floats
-                    .iter()
-                    .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8),
-            );
-        }
+        let _ = self
+            .conn
+            .each(&ModelVector::AFTER_ID, params![key, base.through], |row| {
+                loaded.through = row.id;
+                loaded.rows_read += 1;
+                let dims = usize::try_from(row.dims).unwrap_or(0);
+                let bytes = row.vector;
+                if loaded.dims == 0 {
+                    loaded.dims = dims;
+                }
+                if dims != loaded.dims {
+                    return Err(StoreError::stored_data(format!(
+                        "a stored vector under {key} has {dims} values, not {}",
+                        loaded.dims
+                    )));
+                }
+                if bytes.len() != dims * 4 {
+                    return Err(StoreError::stored_data(format!(
+                        "a stored vector under {key} has {} bytes, not {}",
+                        bytes.len(),
+                        dims * 4
+                    )));
+                }
+                let floats = floats(&bytes);
+                let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
+                let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
+                let text = run.text(row.text_hash.into_boxed_slice());
+                run.text.push(text);
+                run.scale.push(scale);
+                run.values.extend(
+                    floats
+                        .iter()
+                        .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8),
+                );
+                Ok(ControlFlow::Continue(()))
+            })?;
         if !run.text.is_empty() {
             loaded.push(run);
         }
@@ -567,30 +714,18 @@ impl Vectors {
     /// under a key of its own.
     pub fn status(&self) -> Result<VectorStatus> {
         let _read = self.read_transaction()?;
-        let mut stmt = self.conn.prepare(
-            "WITH stored AS (
-                 SELECT model, max(dims) AS dims, count(DISTINCT text_hash) AS texts,
-                        count(*) AS vectors
-                 FROM embedded GROUP BY model),
-               refused AS (SELECT model, count(*) AS failures FROM embed_failure GROUP BY model)
-             SELECT key.model, stored.dims, coalesce(stored.texts, 0),
-                    coalesce(stored.vectors, 0), coalesce(refused.failures, 0)
-             FROM (SELECT model FROM stored UNION SELECT model FROM refused) key
-             LEFT JOIN stored ON stored.model = key.model
-             LEFT JOIN refused ON refused.model = key.model
-             ORDER BY key.model",
-        )?;
-        let keys = stmt
-            .query_map([], |r| {
-                Ok(KeyStatus {
-                    key: r.get(0)?,
-                    dims: r.get::<_, Option<i64>>(1)?.map(|dims| dims as u32),
-                    texts: r.get::<_, i64>(2)? as u64,
-                    vectors: r.get::<_, i64>(3)? as u64,
-                    failures: r.get::<_, i64>(4)? as u64,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        let keys = self
+            .conn
+            .all(&ModelCounts::ALL, [])?
+            .into_iter()
+            .map(|row| KeyStatus {
+                key: row.model,
+                dims: row.dims.map(|dims| dims as u32),
+                texts: row.texts as u64,
+                vectors: row.vectors as u64,
+                failures: row.failures as u64,
+            })
+            .collect();
         Ok(VectorStatus { keys })
     }
 }
@@ -613,28 +748,28 @@ impl Reader<'_> {
         limit: u64,
     ) -> Result<Vec<ProseText>> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT t.id,t.hash,g.body,t.start,t.length FROM text t JOIN content_group g ON g.id=t.group_id WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
-             AND EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
-             ORDER BY t.id LIMIT ?3")?;
-        let mut rows = statement.query(params![hash.as_slice(), after, limit as i64])?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let text = crate::text_rows::joined(row, 2)?;
-            let raw: Vec<u8> = row.get(1)?;
-            if raw.as_slice() != blake3::hash(text.as_bytes()).as_bytes()
-                || crate::encoding::normalized_text_hash(&text) != *hash
-            {
-                return Err(StoreError::internal(
-                    "stored text does not match its request identity",
-                ));
-            }
-            out.push(ProseText {
-                id: row.get(0)?,
-                hash: raw,
-                text,
-            });
-        }
+        let _ = conn.each(
+            &ProseRow::BY_NORMALIZED_HASH,
+            params![hash.as_slice(), TextKey(after), limit as i64],
+            |row| {
+                let text = row.text()?;
+                let raw = row.hash;
+                if raw.as_slice() != blake3::hash(text.as_bytes()).as_bytes()
+                    || crate::encoding::normalized_text_hash(&text) != *hash
+                {
+                    return Err(StoreError::internal(
+                        "stored text does not match its request identity",
+                    ));
+                }
+                out.push(ProseText {
+                    id: row.id.0,
+                    hash: raw,
+                    text,
+                });
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
         Ok(out)
     }
 
@@ -646,16 +781,17 @@ impl Reader<'_> {
             return Ok(Vec::new());
         }
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(&format!(
-            "SELECT s.id FROM session s WHERE {} IN \
-             (SELECT r.pk FROM session r WHERE r.id IN (SELECT value FROM json_each(?1))) \
-             ORDER BY s.id",
-            crate::query::fields::logical_root("s")
-        ))?;
+        let statement = Statement::<SessionMember>::built(SessionMember::OF_ROOTS.sql().replacen(
+            "(?2)",
+            &crate::query::fields::logical_root("s"),
+            1,
+        ));
         let roots = serde_json::to_string(roots)?;
-        let rows = statement.query_map([roots], |row| row.get(0))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        Ok(conn
+            .all(&statement, [roots])?
+            .into_iter()
+            .map(|row| row.id)
+            .collect())
     }
 
     /// Indexed prose texts with current message membership, with IDs above
@@ -670,39 +806,24 @@ impl Reader<'_> {
         let mut out = Vec::new();
         let conn = self.conn()?;
         let limit = limit as i64;
-        let list;
-        let (mut statement, params): (_, Vec<&dyn rusqlite::ToSql>) = match sessions {
-            None => (
-                conn.prepare_cached(
-                    "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
-                     WHERE t.indexed & 1 AND t.id > ?1
-                     AND EXISTS (SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
-                     ORDER BY t.id LIMIT ?2",
-                )?,
-                vec![&after, &limit],
-            ),
-            Some(ids) => {
-                list = serde_json::to_string(ids)?;
-                (
-                    conn.prepare_cached(
-                        "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
-                         WHERE t.indexed & 1 AND t.id > ?1
-                         AND t.id IN (SELECT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
-                                      WHERE s.id IN (SELECT value FROM json_each(?3)))
-                         ORDER BY t.id LIMIT ?2",
-                    )?,
-                    vec![&after, &limit, &list],
-                )
-            }
-        };
-        let mut rows = statement.query(params.as_slice())?;
-        while let Some(row) = rows.next()? {
+        let after = TextKey(after);
+        let mut visit = |row: ProseRow| {
+            let text = row.text()?;
             out.push(ProseText {
-                id: row.get(0)?,
-                hash: row.get(1)?,
-                text: crate::text_rows::joined(row, 2)?,
+                id: row.id.0,
+                hash: row.hash,
+                text,
             });
-        }
+            Ok(ControlFlow::Continue(()))
+        };
+        let _ = match sessions {
+            None => conn.each(&ProseRow::AFTER_ID, params![after, limit], &mut visit)?,
+            Some(ids) => conn.each(
+                &ProseRow::OF_SESSIONS,
+                params![after, limit, serde_json::to_string(ids)?],
+                &mut visit,
+            )?,
+        };
         Ok(out)
     }
 }

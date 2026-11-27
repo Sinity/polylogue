@@ -35,7 +35,7 @@
       case states.NO_CONVERSATION_OPEN:
         return said("neutral", `${providerName(page.provider)}: no conversation open`, "");
       case states.HOST_NOT_INSTALLED:
-        return said("bad", "Polylogue is not installed for this browser", "Run `polylogue install chrome --extension-id <id>`.");
+        return said("bad", "Polylogue is not installed for this browser", "Run `polylogue install chrome`.");
       case states.HOST_DID_NOT_ANSWER:
         return said("bad", "Polylogue did not answer", lastOrFailureLine);
       case states.IN_ARCHIVE:

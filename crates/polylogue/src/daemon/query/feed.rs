@@ -15,9 +15,9 @@ use std::io::{Seek, SeekFrom, Write};
 pub(crate) enum Line {
     Begin {
         position: Option<String>,
-        generation: String,
+        index_instance: String,
         replacement: bool,
-        generation_changed: bool,
+        index_instance_changed: bool,
     },
     Change {
         position: Option<String>,
@@ -83,15 +83,15 @@ pub(crate) fn prepare_with(
     let previous = after
         .map(|s| {
             ChangePosition::parse(s).ok_or_else(|| {
-                Failure::bad_request("after takes a position GENERATION:INDEX:ARCHIVE")
+                Failure::bad_value("after takes a position INDEX_INSTANCE:INDEX:ARCHIVE")
             })
         })
         .transpose()?;
     let target = reader.change_position()?;
-    let generation_changed = previous
+    let index_instance_changed = previous
         .as_ref()
-        .is_some_and(|p| p.generation != target.generation);
-    let replacement = previous.is_none() || generation_changed;
+        .is_some_and(|p| p.index_instance != target.index_instance);
+    let replacement = previous.is_none() || index_instance_changed;
     if !replacement
         && previous
             .as_ref()
@@ -106,9 +106,9 @@ pub(crate) fn prepare_with(
         &mut file,
         Line::Begin {
             position: position.clone(),
-            generation: target.generation.clone(),
+            index_instance: target.index_instance.clone(),
             replacement,
-            generation_changed,
+            index_instance_changed,
         },
     )?;
     // Archive local order is meaningful only within archive.db. Index-side

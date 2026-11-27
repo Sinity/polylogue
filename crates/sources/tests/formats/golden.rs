@@ -24,8 +24,8 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
         .find(|p| p.file_stem().is_some_and(|s| s == "input"))
         .ok_or("no input.* file")?;
     let input = fs::read(&input_file).map_err(|e| format!("input: {e}"))?;
-    let head = &input[..input.len().min(64)];
-    if !(spec.recognize)(path, head) {
+    let head = polylogue_sources::document::Head::new(&input[..input.len().min(64)]);
+    if !(spec.recognize)(path, &head) {
         return Err(format!("{} does not recognize {}", origin, path.display()));
     }
     let mut parser = (spec.open)(path).ok_or("origin does not open this path")?;

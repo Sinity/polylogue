@@ -192,7 +192,7 @@ pub(crate) fn prepare_delivery(
     let events = if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
         vec![DeliveryEvent {
             request: r.id.clone(),
-            what: polylogue_model::DeliveryOutcome::Delivered,
+            outcome: polylogue_model::DeliveryOutcome::Delivered,
             at,
             detail: Some("written to the harness hook output".into()),
         }]
@@ -438,7 +438,7 @@ pub(crate) fn apply_using(
         }
         UserWrite::DeliveryEvent {
             delivery,
-            what,
+            outcome,
             detail,
         } => {
             let known: bool = tx
@@ -450,7 +450,7 @@ pub(crate) fn apply_using(
             tx.execute(
                 &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, outcome, at, detail, request, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
-                params![delivery, what.as_str(), at, detail, r.id, seq],
+                params![delivery, outcome.as_str(), at, detail, r.id, seq],
             )?;
             Ok(UserOutcome {
                 pending: false,

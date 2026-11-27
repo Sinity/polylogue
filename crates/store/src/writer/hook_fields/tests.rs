@@ -1,14 +1,14 @@
 use crate::fixture::writer::message;
-use crate::writer::ParseStep;
+use crate::writer::ParsePart;
 use polylogue_model::{Block, MessageRow, Output, ParsedHookField, RecordCounts, Role};
 
-fn step() -> ParseStep {
+fn step() -> ParsePart {
     step_with_second_block(Block::Text {
         text: "actual context".into(),
     })
 }
 
-fn step_with_second_block(second: Block) -> ParseStep {
+fn step_with_second_block(second: Block) -> ParsePart {
     let message = message(
         "hook",
         "session",
@@ -41,7 +41,7 @@ fn step_with_second_block(second: Block) -> ParseStep {
             pointer: "/hookAdditionalContext/3".into(),
         }],
     );
-    let mut step = ParseStep::new(output, RecordCounts::default(), 0..100, true);
+    let mut step = ParsePart::new(output, RecordCounts::default(), 0..100, true);
     step.prepare();
     step
 }
@@ -146,7 +146,7 @@ fn sparse_hook_fields_keep_original_ordinals() {
             pointer: "/hookAdditionalContext/2".into(),
         }],
     );
-    let mut reading = ParseStep::new(output, RecordCounts::default(), 0..100, true);
+    let mut reading = ParsePart::new(output, RecordCounts::default(), 0..100, true);
     reading.prepare();
     reading.prepared.validate(&reading.output).unwrap();
     assert_eq!(reading.prepared.messages[0].hash, source_version.0);

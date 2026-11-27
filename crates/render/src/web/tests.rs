@@ -37,10 +37,11 @@ fn page() -> ReadPage {
     ReadPage {
         format: Format::Html,
         snapshot: ReadPageSnapshot {
+            incomplete: Vec::new(),
             query: format!("query:{}", "a".repeat(64)),
             ran_at: Timestamp::from_unix_ms(0).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 4,
                 archive: 7,
             },
@@ -49,7 +50,6 @@ fn page() -> ReadPage {
                 sinex: IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(true), None),
             },
         },
-        records: vec![],
         document: ReadDocument {
             header: ReadHeader {
                 target: "session:test:session".into(),
@@ -60,6 +60,8 @@ fn page() -> ReadPage {
                 },
                 figures: vec![],
                 zone: None,
+                snapshot: None,
+                options: None,
             },
             items: vec![ReadItem {
                 source: Source::record("block:test:session:message#0"),
