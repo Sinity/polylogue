@@ -229,11 +229,8 @@ pub(crate) fn context(
                 .map_err(|error| Box::new(store_error(&error)))?;
             crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
         };
-        let near = |q: &str| match &provider {
-            Ok(Some(p)) => d.warm.similarity(&reader, p, q),
-            Ok(None) => Err("embeddings are off".into()),
-            Err(error) => Err(error.clone()),
-        };
+        let near =
+            |q: &str| super::super::query::ranking_similarity(&reader, &d.warm, &provider, q);
         let near: Option<&crate::daemon::query::NearFn<'_>> =
             (!matches!(provider, Ok(None))).then_some(&near);
         let ranking_identity = crate::embeddings::ranking_key(

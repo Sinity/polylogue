@@ -148,6 +148,7 @@ impl<'a> Compiler<'a> {
             Some(semantic) => Some((
                 Near {
                     text: semantic.text.clone(),
+                    text_ranked: false,
                 },
                 RowContext {
                     unit: semantic.unit,
@@ -346,14 +347,8 @@ impl<'a> Compiler<'a> {
     ) -> Result<Option<(String, String)>, QueryError> {
         let rows_answer = parts.matched.is_none() && parts.measure.is_none();
         let similarity = match parts.similar.take().filter(|_| rows_answer) {
-            Some(_) if !self.opts.embeddings => {
-                let note = "semantic search is not enabled; rows are ordered by time and unranked";
-                if !self.incomplete.iter().any(|n| n == note) {
-                    self.incomplete.push(note.into());
-                }
-                None
-            }
-            Some((near, rows)) => {
+            Some((mut near, rows)) => {
+                near.text_ranked = parts.ranking.is_some();
                 Some(self.similarity(&near, &rows, &parts.scope, &parts.where_sql))
             }
             None => None,
@@ -850,8 +845,9 @@ impl<'a> Compiler<'a> {
         ));
         let fused = format!("f{}", self.ctes.len() + 1);
         self.ctes.push(format!(
-            "{fused} AS MATERIALIZED (SELECT k, -(1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY t IS NULL, t, k))) \
-             - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY n IS NULL, n, k)) END AS r \
+            "{fused} AS MATERIALIZED (SELECT k, CASE WHEN count(n) OVER () = 0 THEN t ELSE \
+             -(1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY t IS NULL, t, k))) \
+             - CASE WHEN n IS NULL THEN 0.0 ELSE 1.0 / ({RANK_FUSION_OFFSET} + row_number() OVER (ORDER BY n IS NULL, n, k)) END END AS r \
              FROM {rows})"
         ));
         // The fused rows are the rows the conditions keep: the join

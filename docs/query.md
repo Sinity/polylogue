@@ -192,7 +192,8 @@ Every surface returns the shared typed reply: `outcome`, a `value` on success or
 ```
 
 - The document carries no outcome of its own: the reply's outcome ([terminal.md](terminal.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"outcome":"error","error":{…}}`. `positions` is filled only for cross-system replies ([primary-mode.md](primary-mode.md#cross-system-queries)).
-- `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`.
+- `origin:` takes the daemon's declared origins. An unknown value is refused with the known origins nearest first. The diagnostic for `near:` points to `similar:`; an unknown measurement is refused with the available measurements.
+- `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`. A paged reading with no matching rows says "no rows matched" and exits 1, as a streaming reading does.
 - A reply assembled from parts (the two sides of a hybrid search, the lists fused in the brief of a search, cross-system parts) is `incomplete` if any part failed, naming each.
 - `up_to_date` is false while files have unparsed growth, inputs wait, derived products are behind, or the index is held; `notes` say which.
 - `unknown.unparsed_inputs` counts stored inputs the query's origins cannot read yet; a reply that would be `empty` is then `incomplete`.

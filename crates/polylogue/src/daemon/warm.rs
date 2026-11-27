@@ -253,15 +253,27 @@ impl Warm {
         reader: &Reader<'_>,
         provider: &Provider,
         text: &str,
-    ) -> Result<Arc<Similarity>, String> {
-        let Some(loaded) = self.vectors(reader, provider)? else {
-            return Err("no vectors for this provider's model: `polylogue embed --yes`".into());
+    ) -> polylogue_store::Result<Arc<Similarity>> {
+        use polylogue_model::Reason;
+        let loaded = self.vectors(reader, provider);
+        reader.check()?;
+        let loaded = loaded.map_err(|problem| Reason::EmbeddingStore { problem })?;
+        let Some(loaded) = loaded else {
+            return Err(Reason::NoVectors {
+                model: provider.model.clone(),
+            }
+            .into());
         };
-        let query = self.query_vector(provider, text)?;
-        loaded
-            .similarity(&query)
-            .map(Arc::new)
-            .map_err(|e| e.to_string())
+        let query = self.query_vector(provider, text);
+        reader.check()?;
+        let query = query.map_err(|problem| {
+            if problem == crate::embeddings::CALLS_OFF {
+                Reason::EmbeddingCallsOff {}
+            } else {
+                Reason::EmbeddingProvider { problem }
+            }
+        })?;
+        loaded.similarity(&query).map(Arc::new)
     }
 
     /// The vector for `text`: kept from an earlier read, taken from a

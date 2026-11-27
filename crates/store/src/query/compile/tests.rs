@@ -503,8 +503,8 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             "similar:dates | group by origin | first 1 | count",
         ] {
             let program = compile(text, &options).unwrap();
-            assert_eq!(program.near.is_some(), embeddings, "{text}");
-            assert_eq!(program.incomplete.is_empty(), embeddings, "{text}");
+            assert!(program.near.is_some(), "{text}");
+            assert!(program.incomplete.is_empty(), "{text}");
         }
         for text in [
             "sessions | where similar:dates",

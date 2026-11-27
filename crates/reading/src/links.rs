@@ -539,6 +539,7 @@ pub(super) fn page(
         ran_at: operation.ran_at,
         read_position: reader.change_position()?,
         freshness: services.freshness(reader)?,
+        incomplete: Vec::new(),
     };
     Ok(ReadPage {
         format,

@@ -11,7 +11,7 @@ use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
 use crate::unbuilt;
 use command_surface::{Answer, Deadline, RunnableRequest};
-use polylogue_model::read::{Format, ReadBudget, ReadFooter, ReadPage, ReadyCall};
+use polylogue_model::read::{Format, HeaderKind, ReadBudget, ReadFooter, ReadPage, ReadyCall};
 use polylogue_model::{Reason, Reference};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
@@ -235,7 +235,36 @@ pub(crate) fn page(
         crate::daemon::seen::record(call.daemon, call.invocation, marks);
     }
     let freshness = page.snapshot.freshness.clone();
-    Ok(crate::protocol::read(page, &freshness))
+    let missing = page.snapshot.incomplete.clone();
+    let empty = page.document.footer.shown == 0
+        && page.document.footer.coverage.is_empty()
+        && matches!(&page.document.header.kind,
+            HeaderKind::Record { record_type } if record_type == "query");
+    let mut answer = crate::protocol::read(page, &freshness);
+    if !missing.is_empty() {
+        answer.outcome = match answer.outcome {
+            command_surface::Outcome::Ok(value) | command_surface::Outcome::Empty(value) => {
+                command_surface::Outcome::Degraded { value, missing }
+            }
+            command_surface::Outcome::Degraded {
+                value,
+                missing: mut notes,
+            } => {
+                notes.extend(missing);
+                command_surface::Outcome::Degraded {
+                    value,
+                    missing: notes,
+                }
+            }
+            error => error,
+        };
+    } else if empty {
+        if let command_surface::Outcome::Ok(value) = answer.outcome {
+            answer.outcome = command_surface::Outcome::Empty(value);
+        }
+        answer.envelope.notes.push("no rows matched".into());
+    }
+    Ok(answer)
 }
 
 /// A read as a stream of events; `services` make its ready calls.
