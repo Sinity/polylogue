@@ -173,7 +173,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.event"
                 | "polylogue.background"
                 | "polylogue.repository" => 8,
-                "polylogue.query_run" => 11,
+                "polylogue.query_run" => 12,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 6,
@@ -182,7 +182,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.historical_restore" => 1,
                 "polylogue.query" => 4,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 4,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 9,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 10,
                 "polylogue.line_save" | "polylogue.line_save_restore" => 6,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
@@ -562,9 +562,9 @@ fn stored_keys_version_every_changed_declaration() {
     assert_versioned_transition(&source16, &recorded_kinds(&source17), &[], &[]);
 }
 
-/// Source 18 names why a reference link exists as its reason.
+/// Source 18 names the reason for a reference link and adds message windows.
 #[test]
-fn link_reason_versions_its_declaration() {
+fn source18_versions_its_changed_declarations() {
     let previous: serde_json::Value =
         serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
     assert_eq!(
