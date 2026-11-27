@@ -24,7 +24,9 @@ env:
 
 concurrency:
   group: check-${{ inputs.rev || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A newer push supersedes an older run on the same ref: on master the newest
+  # commit's run is the one that says whether master is green.
+  cancel-in-progress: true
 
 # Each job runs one xtask command that `cargo xtask check` also runs locally.
 jobs:
