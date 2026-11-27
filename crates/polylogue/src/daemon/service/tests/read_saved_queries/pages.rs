@@ -9,7 +9,7 @@ fn first(d: &Daemon, target: &str, id: &str) -> ReadPage {
             "--budget".into(),
             "1024".into(),
         ],
-        &crate::cli::line::FirstWordCatalog::default(),
+        &crate::cli::line::SavedNames::default(),
         false,
     )
     .unwrap();
@@ -194,12 +194,7 @@ fn saved_history_pages_preserve_text_actions_rows_and_both_directions_after_rest
         .unwrap();
     let (words, bytes) = crate::cli::line::tests::shell_arguments(&encoded);
     assert!(bytes.is_empty());
-    crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     assert!(matches!(
         crate::test_answers::step(Call::from_request(&commands[0].request).answer(&d.daemon)),
         crate::protocol::line::StepAnswer::Saved(_)

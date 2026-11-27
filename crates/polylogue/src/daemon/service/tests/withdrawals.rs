@@ -80,12 +80,8 @@ fn request(d: &test_daemon::TestDaemon, id: &str) -> polylogue_model::authored::
 }
 fn command(d: &test_daemon::TestDaemon, text: &str) -> StepsAnswer {
     let (words, input) = crate::cli::line::tests::shell_arguments(text);
-    let mut parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let mut parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     crate::cli::run_line::read_stdin(&mut parsed, &mut std::io::Cursor::new(input)).unwrap();
     let request = crate::cli::run_line::request(&parsed).unwrap();
     steps(

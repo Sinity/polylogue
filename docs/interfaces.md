@@ -2,7 +2,7 @@
 
 Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table, the line grammar (selections, verbs, steps and commands), each verb's words, the rule that keeps the set of words small, option names, and failure kinds and exit codes. Latency classes, deadlines, the daemon's states as the command line sees them and warm state are [latency.md](latency.md).
 
-The [terminal interface](terminal.md) owns what a person sees: the orientation screen, the picker, row numbers, footers, refusals, output, `help` and `--explain`. [Completion](completion.md) owns completion and its catalog file. Selections and the query language are [query.md](query.md), references [references.md](references.md), reading [reading.md](reading.md), annotations and the write path [annotations.md](annotations.md), live sessions [session-control.md](session-control.md), `brief` [agent-context.md](agent-context.md), the three MCP tools [agents.md](agents.md#mcp-server) and the web [web.md](web.md). The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and reply envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's.
+The [terminal interface](terminal.md) owns what a person sees: the orientation screen, the picker, row numbers, footers, refusals, output, `help` and `--explain`. [Completion](completion.md) owns completion and where its values come from. Selections and the query language are [query.md](query.md), references [references.md](references.md), reading [reading.md](reading.md), annotations and the write path [annotations.md](annotations.md), live sessions [session-control.md](session-control.md), `brief` [agent-context.md](agent-context.md), the three MCP tools [agents.md](agents.md#mcp-server) and the web [web.md](web.md). The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and reply envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's.
 
 ## Principles
 
@@ -31,7 +31,7 @@ The [terminal interface](terminal.md) owns what a person sees: the orientation s
 
 - **Access belongs to the request.** A line's access is its highest step's, decided from the typed arguments: `set` without a value and `import` of paths are not acts. MCP tool hints describe the tool; the same operation and arguments have the same access on every surface.
 - **Replies are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach. The operation keeps its declared reply type through execution and deadline handling. JSON serialization belongs to the transport or local wire boundary; the daemon does not serialize a reply and decode it back.
-- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Completion, `help`, grammar refusals and `--explain` of the grammar run in the CLI from its own tables and the catalog file, without the daemon.
+- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. `help`, grammar refusals and `--explain` of the grammar run in the CLI from its own tables, without the daemon; completion asks the daemon for the archive's values and offers the grammar alone without it.
 - **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker, row numbers and `edit` with no text, and each refusal off a terminal names the line that works there ([terminal.md](terminal.md#the-picker)).
 - There is no REPL or terminal reader; the interactive elements in a terminal are completion, row numbers, the pager, the picker and the editor that `edit` with no text opens, and interactive reading is the web reader.
 
@@ -74,7 +74,7 @@ polylogue session:claude-code:example resume --in codex
 
 ### The first word
 
-The CLI decides what the first argument is from its own tables and the catalog file, with no daemon round trip (local class). The first matching rule wins:
+The CLI decides what the first argument is from its own tables (local class); only a single plain word shaped like a saved name costs one question to the daemon before the line runs, answered as completing `query:WORD`. With the daemon down that word is a search, and the line fails as every line does then. The first matching rule wins:
 
 1. **Nothing**: the orientation screen on a terminal, the `status` block otherwise ([terminal.md](terminal.md#the-orientation-screen)).
 2. **`-`**: references read from standard input, one per line.

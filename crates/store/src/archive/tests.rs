@@ -30,7 +30,7 @@ fn open_refuses_mode_mismatch_before_creating_files() {
         Archive::open_or_create(&root).unwrap_err().to_string(),
         expected
     );
-    let Err(blocked) = Archive::open_blocked_with_invalidator(&root, || Ok(())) else {
+    let Err(blocked) = Archive::open_blocked(&root) else {
         panic!("a primary archive opened as blocked");
     };
     assert_eq!(blocked.to_string(), expected);

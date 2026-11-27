@@ -334,12 +334,7 @@ fn shape(words: &[String], leading: &[String]) -> Shape {
     match row {
         Some(row) if row.name == "internal hook" => Shape::Hook,
         Some(row) => Shape::Command(Some(row)),
-        None if words == ["--version"]
-            || super::line::parse(words, &super::line::FirstWordCatalog::default(), false)
-                .is_ok_and(|parsed| parsed.first == super::line::FirstWord::Command) =>
-        {
-            Shape::Command(None)
-        }
+        None if words == ["--version"] || super::line::names_command(words) => Shape::Command(None),
         None => Shape::Line,
     }
 }
