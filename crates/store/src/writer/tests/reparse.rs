@@ -968,7 +968,7 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         .into_iter()
         .map(|row| {
             (
-                row["what"].as_str().unwrap().to_owned(),
+                row["item"].as_str().unwrap().to_owned(),
                 row["n"].as_u64().unwrap(),
             )
         })

@@ -1138,7 +1138,7 @@ impl<'c> Work<'_, 'c> {
         let mut insert = self.tx().prepare_cached(
             "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                  content_start, content_length, data_length, call_id, blob_hash, media_type,
-                 file_name, size, url, direction, encrypted, other_type, ordinal)
+                 file_name, size, url, direction, encrypted, other_type, source_position)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )?;
         for (idx, (block, piece)) in m.blocks.iter().zip(&value.pieces).enumerate() {

@@ -336,7 +336,7 @@ fn stored_rows(
     Vec<(String, i64, i64, i64)>,
 ) {
     let shapes = conn
-        .prepare("SELECT path,unknown_kinds,unknown_tables,unused,first,last FROM wire_shape ORDER BY path")
+        .prepare("SELECT path,unknown_kinds,unknown_tables,unused,first_position,last_position FROM wire_shape ORDER BY path")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
@@ -345,7 +345,7 @@ fn stored_rows(
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     let types = conn
-        .prepare("SELECT json_type,count,first,last FROM wire_type ORDER BY path,json_type")
+        .prepare("SELECT json_type,count,first_position,last_position FROM wire_type ORDER BY path,json_type")
         .unwrap()
         .query_map([], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
