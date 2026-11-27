@@ -19,13 +19,11 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **index rebuild**: writing a new index in the private file
   `index-rebuild/build.db`, renamed `ready.db` when it ends and then over
   `index.db`; the first index of an archive, or one replacing an index this
-  build cannot use. Its reason is `index-rebuild/reason.json`, written first. It runs in named **steps** (reading stored files, sorting texts,
-  writing tables, indexing, assembling sessions, indexing sessions, joining
-  sessions across files, finishing indexes, search index, installing), which
-  status and the log list by those names. Assembling sessions writes each
-  session whose readings one file states; joining sessions across files
-  writes, from the index, the sessions whose readings several files state or
-  that copies name.
+  build cannot use. Its reason is `index-rebuild/reason.json`, written first. It runs in named **stages** (parsing, keying texts, loading
+  parses, assembling, indexing, full text, installing), which status and the
+  log list by those names. Each stage leaves a **stage record**: its start
+  and end, what it handled, the bytes read and written, and its peak memory
+  with the process's.
 - **index files**: the pair `status` shows of the index: the installed index
   (none, current, or unusable with why) and the rebuild (none, writing with
   its reason, or ready).

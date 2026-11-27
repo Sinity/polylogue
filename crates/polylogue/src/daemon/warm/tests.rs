@@ -878,8 +878,9 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
 /// Installs a new archive's empty build, as a daemon's first pass over
 /// nothing does, so reads are served.
 fn installed(archive: &polylogue_store::Archive) {
-    polylogue_store::Writer::start(archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    polylogue_store::fixture::install_empty_rebuild(
+        archive,
+        &polylogue_store::Writer::start(archive).unwrap().sender(),
+    )
+    .unwrap();
 }

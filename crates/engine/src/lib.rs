@@ -555,12 +555,16 @@ pub struct ImportReport {
     /// When what the import stored can be read.
     #[serde(default)]
     pub readable: Readable,
+    /// The archive position after the import's commits: a reader that
+    /// waits for the index to follow it reads what the import stored.
+    #[serde(default)]
+    pub position: polylogue_store::archive::writer::Position,
 }
 
 /// When an import's inputs can be read. An import parses and derives what
 /// it stored before it answers, so its rows are readable at once, except
-/// while an index is built: the build reads them, and they are readable
-/// once it is installed.
+/// while an index is rebuilt with no installed index to parse them into:
+/// they are readable once the rebuild is installed.
 #[derive(
     Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

@@ -8,21 +8,21 @@ use crate::{Engine, Pass};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use std::time::{Duration, Instant};
 
-/// The steps the engine runs in a build, as `status`, the log and the docs
-/// name them; the writer's steps follow ([`polylogue_store::writer::build::STEPS`]).
+/// The steps the engine runs before a rebuild, as `status`, the log and the
+/// docs name them; the rebuild's stages follow
+/// ([`polylogue_store::index::rebuild::RebuildStage`]).
 pub(crate) const FINDING_FILES: &str = "finding files";
 pub(crate) const STORING_FILES: &str = "storing files";
-pub(crate) const READING_STORED_FILES: &str = "reading stored files";
 
 /// How often a build logs its storing rate.
 const EVERY: Duration = Duration::from_secs(60);
 
 impl Engine {
-    /// Records the steps a build runs once its files are stored.
+    /// Records the stages a rebuild runs once its files are stored.
     pub(crate) fn plan_build_steps(&self) {
-        let mut steps = vec![READING_STORED_FILES];
-        steps.extend_from_slice(polylogue_store::writer::build::STEPS);
-        self.archive.record_build_plan(&steps);
+        use polylogue_store::index::rebuild::RebuildStage;
+        self.archive
+            .record_build_plan(&RebuildStage::ALL.map(RebuildStage::name));
     }
 
     /// Logs that a build started `step`, with the time the previous step
@@ -47,19 +47,6 @@ impl Engine {
             })
             .unwrap_or_default();
         polylogue_store::log!(info, "index: {step}: {detail}{previous}");
-    }
-
-    /// Records that a build started `step`, for `status`, without a line of
-    /// its own: the step's line, when it ends, carries its time, items,
-    /// bytes and peak memory ([`polylogue_store::writer::build::PhaseClock`]).
-    pub(crate) fn enter_build_step(&mut self, step: &'static str) {
-        if self.archive.index_build().is_none() {
-            return;
-        }
-        if let Some(since) = polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms()) {
-            self.archive.record_build_step(step, since);
-        }
-        self.build_step = Some((step, Instant::now()));
     }
 }
 

@@ -401,6 +401,9 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         )
         .unwrap();
         let building = archive.index_build().is_some();
+        // An import is read once: during the rebuild, with no installed
+        // index, it is stored and read after the install.
+        imported_bytes += std::fs::metadata(&path).unwrap().len();
         let (reply, answer) = sync_channel(1);
         let sent = Instant::now();
         if tx
@@ -424,7 +427,13 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
             .expect("the import is answered")
             .unwrap();
         latencies.push(sent.elapsed());
-        imported_bytes += report.pass.bytes_read;
+        if building && !archive.index_files().unwrap().serves() {
+            assert!(
+                matches!(report.readable, crate::Readable::AfterBuild { .. }),
+                "{:?}",
+                report.readable
+            );
+        }
         answered_during_build += u64::from(building && archive.index_build().is_some());
         std::thread::sleep(Duration::from_millis(100));
         if archive.index_build().is_none() {
@@ -445,9 +454,8 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         "imports answered: {}, {answered_during_build} during the build; slowest {slowest:?}",
         latencies.len()
     );
-    // The writer serves an import between its build steps; a step is a
-    // quarter of a second of release-build work, longer in a debug build on
-    // a shared runner, and one session is composed in one step.
+    // The loop answers an import between the chains it hands the workers
+    // and while the rebuild's own thread runs its later stages.
     assert!(*slowest < Duration::from_secs(20), "{latencies:?}");
     // What the parser read, less the imports' own files: the chain once.
     // A range ends inside a record and the next range starts at that
@@ -469,4 +477,72 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
             "request-{n}"
         );
     }
+}
+
+/// A new archive's first pass stores its files, rebuilds the index from
+/// them and parses each file exactly once, in the rebuild: with no
+/// installed index nothing plans a parse before the install
+/// (docs/architecture.md, one path).
+#[test]
+fn a_first_pass_over_a_new_archive_parses_each_file_once_in_the_rebuild() {
+    let home = ClaudeHome::new();
+    home.append("first.jsonl", &claude_user("one", "first", "first file"));
+    home.append("second.jsonl", &claude_user("two", "second", "second file"));
+    fault::clear();
+    fault::arm("parse", "", Action::Record, 0, 1_000);
+    let (mut engine, _lock) = home.engine(1 << 20);
+    assert!(engine.archive.index_build().is_some());
+    let pass = engine.run_pass().unwrap();
+    let parses = fault::recorded("parse");
+    fault::clear();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(engine.archive.index_build().is_none());
+    let mut parsed: Vec<String> = parses
+        .iter()
+        .map(|(subject, thread)| {
+            assert!(
+                thread.starts_with("polylogue-build-"),
+                "{subject} on {thread}"
+            );
+            std::path::Path::new(subject)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    parsed.sort();
+    assert_eq!(parsed, ["first.jsonl", "second.jsonl"]);
+    assert_eq!(home.texts("first"), ["first file"]);
+    assert_eq!(home.texts("second"), ["second file"]);
+}
+
+#[test]
+fn a_live_spool_found_before_index_install_is_planned_for_capture_only() {
+    let home = ClaudeHome::new();
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(&home.root).unwrap();
+    let config = Config {
+        home: home.home.clone(),
+        chunk: 4096,
+        ..crate::test_config()
+    };
+    let mut engine = Engine::new(config, archive).unwrap();
+    let spool = engine
+        .config
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    std::fs::create_dir_all(&spool).unwrap();
+    let path = spool.join("42.ndjson");
+    std::fs::write(
+        &path,
+        "{\"at_ns\":\"1767225600000000000\",\"event\":\"Stop\",\"provider\":\"claude-code\",\"session_id\":\"synthetic\",\"payload\":{}}\n",
+    )
+    .unwrap();
+    let plans = engine
+        .live_plans(&std::collections::HashSet::new(), &mut Pass::default())
+        .unwrap();
+    let [plan] = plans.as_slice() else {
+        panic!("expected one new spool path, got {}", plans.len());
+    };
+    assert_eq!(plan.path, path);
+    assert!(plan.storing_only);
 }

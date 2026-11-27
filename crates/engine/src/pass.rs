@@ -686,12 +686,19 @@ impl Engine {
                     .ok_or_else(|| {
                         EngineError::internal("capture observation time is out of range")
                     })?;
-            if let Err(error) = self.writer.coverage(polylogue_model::capture::Coverage {
-                version: 1,
-                machine: self.config.machine.clone(),
-                observed_at,
-                roots: scan.roots,
-            }) {
+            // With no installed index the walk after the rebuild's install
+            // reports it.
+            let coverage = if self.archive.index_files()?.serves() {
+                self.writer.coverage(polylogue_model::capture::Coverage {
+                    version: 1,
+                    machine: self.config.machine.clone(),
+                    observed_at,
+                    roots: scan.roots,
+                })
+            } else {
+                Ok(())
+            };
+            if let Err(error) = coverage {
                 errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
             errors.extend(scan.errors);
@@ -780,7 +787,7 @@ impl Engine {
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
-            self.refresh_import_assets(&mut pass)?;
+            self.refresh_import_assets(&mut pass, None)?;
         }
 
         // Files no earlier pass stored are planned and stored first. Their
@@ -1241,7 +1248,22 @@ impl Engine {
                 plans.push(plan);
             }
         }
+        if self.archive.index_build().is_some() && !self.archive.index_files()?.serves() {
+            self.store_without_parsing(&mut plans);
+        }
         Ok(plans)
+    }
+
+    /// Keeps source capture runnable before there is an installed index.
+    fn store_without_parsing(&mut self, plans: &mut Vec<Plan>) {
+        plans.retain_mut(|plan| {
+            let local = matches!(plan.source, pool::Bytes::File);
+            plan.storing_only |= local;
+            local
+        });
+        for capture in &mut self.rollout_captures {
+            capture.storing_only = true;
+        }
     }
 
     /// The chain a file holds fewer bytes of, each equal to the stored byte
@@ -1674,7 +1696,7 @@ impl Engine {
             })
             .collect::<Vec<_>>();
         let mut pass = Pass::default();
-        self.refresh_import_assets(&mut pass)?;
+        self.refresh_import_assets(&mut pass, None)?;
         let mut last = None::<String>;
         loop {
             self.archive.stop().check()?;
@@ -2179,6 +2201,14 @@ impl Engine {
         // stored chains to be read. Arrays run serially only after preceding
         // pool work has committed.
         let mut plans = plans;
+        // With no installed index there is nothing to parse into, so no
+        // parse is planned: files are stored, chains already stored stay
+        // due, and the rebuild (which covers the archive up to the position
+        // it starts at) or the incremental update after its install parses
+        // them.
+        if !self.archive.index_files()?.serves() {
+            self.store_without_parsing(&mut plans);
+        }
         if self.archive.index_build().is_some() {
             let key = |plan: &Plan| {
                 let stores =
@@ -2213,6 +2243,10 @@ impl Engine {
             let Some(mut plan) = admitted else {
                 continue;
             };
+            if plan.storing_only {
+                pooled.push(plan);
+                continue;
+            }
             // A file read from its first byte over a chain whose parse holds
             // records stores its new bytes first and parses the chain again
             // as a replacement. One whose parse holds none (a first line
@@ -2409,7 +2443,9 @@ impl Engine {
                     match live {
                         Ok(live) => {
                             for plan in live.into_iter().rev() {
-                                if plan.replace {
+                                if plan.storing_only {
+                                    waiting.push_front(plan);
+                                } else if plan.replace {
                                     chains.push_front(plan);
                                 } else if let Some(parser) = export_parser(&plan) {
                                     exports.push_front((plan, parser));

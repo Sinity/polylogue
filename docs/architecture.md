@@ -380,8 +380,8 @@ The daemon reaches the index two ways, which must agree.
   holds. A session whose shown rows depend on readings stated
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
-  under several sessions, a reading holding part of a version other readings
-  complete, or readings upkeep wrote while the build ran. A session's events
+  under several sessions, or a reading holding part of a version other
+  readings complete. A session's events
   that follow a message of another session are placed knowing, from what the
   merge read of every message's statements, that the message is shown
   there, so a session composed from its group looks no message up by ID
@@ -401,21 +401,31 @@ The daemon reaches the index two ways, which must agree.
   behind its record, a parse version changed for most of the corpus, a
   large import into a small archive), and nothing a reader sees depends on
   which it chose.
-- **A build reads the record as it stood at one position.** It writes only
-  its own private files; upkeep writes only the installed index. What is
-  captured while a build runs is stored and committed to the record at once,
-  as always, and kept current in the installed index if there is one. When
-  the build installs, it is an index behind its record like any other and
-  upkeep brings it forward from the position it was built at. Preparing may
+- **A build reads the record as it stood at one position.** It is its own
+  object with its own connection to its private file, on a thread of its
+  own; the index writer never writes that file, and writes only the
+  installed index. What is captured while a build runs is stored and
+  committed to the record at once, as always, and parsed into the installed
+  index if there is a current one; with none, the index writer refuses
+  index writes with `index_building` and what was refused stays due. The
+  build records the record position it started at, takes in what the record
+  committed up to it (the text of alternates as well as every chain at the
+  length it was stored at when planned) and writes that position into its
+  meta. When the build installs, it is an index behind its record like any
+  other: chains that grew or appeared meanwhile are due by their stored
+  length, and the index writer follows the record's other changes from that
+  position. The index writer stops using its index only for the install, and
+  starts again on the new file. Preparing may
   start on a chain as soon as its bytes are stored, also while other inputs
   are still being captured; the merge takes only readings that are of their
   chain at the length the build's position gives.
 - **A build never makes a request wait for it.** Its workers read chains
-  without the writer or the index a request reads, so they never pause;
-  an import is answered between the chains handed to the workers, and the
-  writer's own build work (load, indexes, composition, full text) runs in
-  steps of one transaction each, between the requests it serves. No chain
-  is read twice.
+  without the writer or the index a request reads, so they never pause; an
+  import is answered between the chains handed to the workers and while the
+  build's later stages (load, assembly, indexes, full text) run on the
+  build's own thread. An import's reply does not wait for the build: with no
+  installed index it says its rows are readable once the build is installed.
+  No chain is read twice by the build.
 - **Live inputs go before bulk work.** A file being written now is read and
   committed ahead of stored chains waiting for a reading.
 - **Memory is bounded by streaming.** A build's memory does not grow with
@@ -428,7 +438,7 @@ The daemon reaches the index two ways, which must agree.
   shared by the caches and the work, with no fixed ceiling: a build's
   prepared readings in flight, its workers' sort buffers, each step's run
   readers and read-ahead are given fixed shares, and the build file's cache
-  takes what the step leaves. Parse workers follow the physical cores the
+  takes what the stage leaves. Parse workers follow the physical cores the
   process may use, each with at least a minimum share of memory; the
   memory a chain's prepared readings need is admitted per chain, so the
   number of workers does not trade against the caches. A worker holds the

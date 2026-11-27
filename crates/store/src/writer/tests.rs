@@ -166,7 +166,7 @@ fn test_archive() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    writer.build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
     TestArchive {
         _dir: dir,
         archive,
@@ -1379,7 +1379,7 @@ fn a_completed_empty_index_does_not_begin_another_build() {
         archive.index_build().is_some(),
         "a new archive's index is built"
     );
-    writer.build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
     assert!(archive.index_build().is_none());
     drop(writer);
     drop(lock);

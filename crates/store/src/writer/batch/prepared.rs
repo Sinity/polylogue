@@ -4,7 +4,7 @@ use super::*;
 /// before the parsed structured payloads are dropped.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedRows {
-    pub(in crate::writer) messages: Vec<PreparedMessage>,
+    pub(crate) messages: Vec<PreparedMessage>,
     pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
     pub(in crate::writer) texts: crate::text_rows::PreparedTexts,

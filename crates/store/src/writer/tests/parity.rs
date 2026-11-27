@@ -563,8 +563,8 @@ fn build_from_record(
     let w = w.reopened_without_index();
     let sender = w.writer.sender();
     let mut runs = [
-        crate::writer::build::BuildWorker::create(&w.archive, 0, 32 << 20).unwrap(),
-        crate::writer::build::BuildWorker::create(&w.archive, 1, 32 << 20).unwrap(),
+        crate::index::rebuild::RebuildWorker::create(&w.archive, 0, 32 << 20).unwrap(),
+        crate::index::rebuild::RebuildWorker::create(&w.archive, 1, 32 << 20).unwrap(),
     ];
     for (i, (&(n, chain), &stored)) in chains.iter().enumerate() {
         let records = stored_records[&(n, chain)];
@@ -581,20 +581,10 @@ fn build_from_record(
         .into_iter()
         .flat_map(|run| run.finish().unwrap())
         .collect();
-    let phases = w.writer.build(paths).unwrap();
+    let phases = crate::fixture::rebuild_from_runs(&w.archive, &w.writer.sender(), paths).unwrap();
     assert_eq!(
-        phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        [
-            "sorting texts",
-            "writing tables",
-            "indexing",
-            "assembling sessions",
-            "indexing sessions",
-            "joining sessions across files",
-            "finishing indexes",
-            "search index",
-            "installing"
-        ]
+        phases.iter().map(|p| p.stage).collect::<Vec<_>>(),
+        crate::index::rebuild::RebuildStage::ALL
     );
     assert!(w.archive.index_build().is_none());
     w

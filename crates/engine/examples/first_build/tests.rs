@@ -38,10 +38,11 @@ fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     // A pass ends its first build by installing the built file as `index.db`.
-    polylogue_store::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    polylogue_store::fixture::install_empty_rebuild(
+        &archive,
+        &polylogue_store::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let writer = polylogue_store::archive::open_write(
         &archive.index_db(),
         polylogue_store::archive::cache::SETUP,

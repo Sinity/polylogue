@@ -202,7 +202,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
         // Committed positions survive a lost process once the index is
         // installed; a build lost with its process starts over
         // (docs/architecture.md, Durability).
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         let output = polylogue_model::Output {
             sessions: vec![polylogue_model::Session::new(
                 crate::fixture::writer::sid("resume"),
@@ -265,10 +265,11 @@ fn opening_adds_a_missing_read_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     // An installed index: a build in progress defers this index to its end.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index.execute_batch("DROP INDEX message_time;").unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
@@ -336,10 +337,11 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     // An installed index: a build in progress defers these to its end.
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index
         .execute_batch(
@@ -662,10 +664,11 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             );
         }
     }
-    crate::Writer::start(&archive)
-        .unwrap()
-        .build(Vec::new())
-        .unwrap();
+    crate::fixture::install_empty_rebuild(
+        &archive,
+        &crate::Writer::start(&archive).unwrap().sender(),
+    )
+    .unwrap();
     assert!(archive.index_build().is_none());
     assert!(
         archive

@@ -47,7 +47,7 @@ fn empty_archive() -> Result<&'static [ArchiveFile]> {
     let root = dir.path().join("archive");
     {
         let (archive, _lock) = Archive::open_or_create(&root)?;
-        crate::Writer::start(&archive)?.build(Vec::new())?;
+        install_empty_rebuild(&archive, &crate::Writer::start(&archive)?.sender())?;
     }
     let mut files = Vec::new();
     let mut pending = vec![root.clone()];
@@ -1105,3 +1105,26 @@ fn fixture_time(at: Option<i64>) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests;
+
+/// Runs and installs the rebuild of an archive with nothing parsed, as a
+/// daemon's first pass over a new archive does, and returns its stages.
+pub fn install_empty_rebuild(
+    archive: &Archive,
+    writer: &crate::WriterSender,
+) -> Result<Vec<crate::index::rebuild::StageRecord>> {
+    rebuild_from_runs(archive, writer, Vec::new())
+}
+
+/// Runs the stages of the archive's rebuild after parsing, from parse
+/// workers' sorted files `runs`, and installs it; returns its stages.
+pub fn rebuild_from_runs(
+    archive: &Archive,
+    writer: &crate::WriterSender,
+    runs: Vec<std::path::PathBuf>,
+) -> Result<Vec<crate::index::rebuild::StageRecord>> {
+    crate::index::rebuild::Rebuild::start(
+        archive,
+        polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+    )?
+    .finish(runs, 0, 2, writer)
+}

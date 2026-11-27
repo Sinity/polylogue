@@ -190,7 +190,7 @@ fn a_turn_in_a_takeout_and_a_page_capture_is_shown_once() {
         fs::write(&export, &takeout).unwrap();
         let spool = w.home.join(".local/state/polylogue/browser-capture/gemini");
         fs::create_dir_all(&spool).unwrap();
-        let (mut e, _lock) = w.engine(64 << 20);
+        let (mut e, _lock) = w.installed_engine(64 << 20);
         if capture_first {
             fs::write(spool.join("chat1.json"), &capture).unwrap();
             assert!(e.run_pass().unwrap().errors.is_empty());

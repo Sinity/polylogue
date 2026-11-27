@@ -430,7 +430,7 @@ impl ArchiveSender {
     }
 
     /// The position of the last commit, for the index writer to follow.
-    pub(crate) fn committed_position(&self) -> Position {
+    pub fn committed_position(&self) -> Position {
         *self.0.followed.locked()
     }
 
@@ -811,4 +811,4 @@ impl Inner {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

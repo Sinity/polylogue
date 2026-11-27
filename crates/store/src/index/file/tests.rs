@@ -7,7 +7,8 @@ use crate::{ReadPool, StoreError, Writer};
 /// An archive at `root` with an installed index.
 fn built(root: &Path) {
     let (archive, _lock) = Archive::open_or_create(root).unwrap();
-    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+        .unwrap();
 }
 
 fn archive_id(root: &Path) -> ArchiveId {
@@ -99,7 +100,8 @@ fn an_index_of_another_archive_is_replaced_by_a_rebuild() {
         }
     );
     assert_eq!(served_reason(&archive), RebuildReason::OtherArchive);
-    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+        .unwrap();
     assert_eq!(
         archive.index_files().unwrap(),
         IndexFiles {
@@ -148,7 +150,8 @@ fn a_second_process_sees_the_files_the_open_made() {
             archive.index_files().unwrap()
         );
         assert_eq!(served_reason(&archive), RebuildReason::NoIndex);
-        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+            .unwrap();
     }
     // An extra index changes the schema but not its tables: this build
     // reads the file while a rebuild replaces it.
@@ -238,7 +241,8 @@ fn an_index_of_another_format_is_replaced_and_the_rebuild_records_why() {
             schema: schema::build_index_identity().unwrap(),
         };
         assert_eq!(rebuild_record(dir.path()).unwrap(), Some(record.clone()));
-        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+            .unwrap();
         let status = ReadPool::serving(&archive, 1, 8 << 20)
             .unwrap()
             .reader()

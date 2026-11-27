@@ -21,7 +21,7 @@ use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What composition writes with.
-pub(super) struct Context<'a> {
+pub(crate) struct Context<'a> {
     pub tx: &'a Transaction<'a>,
     pub counter: i64,
     pub changes: &'a ChangeSummary,
@@ -29,7 +29,7 @@ pub(super) struct Context<'a> {
 
 /// One chain's reading of a message.
 #[derive(Debug)]
-pub(super) struct MessageReading {
+pub(crate) struct MessageReading {
     pub input_pk: i64,
     pub input: String,
     pub chain: i64,
@@ -57,7 +57,7 @@ pub(super) struct MessageReading {
 /// its session, and what composition takes from its value besides its
 /// stored content.
 #[derive(Debug)]
-pub(super) struct Given {
+pub(crate) struct Given {
     pub kind: Option<polylogue_model::SessionKind>,
     /// A newer chain of its input was read to its end or waits for more.
     pub superseded: bool,
@@ -71,7 +71,7 @@ pub(super) struct Given {
 /// blocks' pieces are stored. The message's texts are needed only for its
 /// word count, so a value given it may carry the message without them.
 #[derive(Debug)]
-pub(super) struct ReadingValue {
+pub(crate) struct ReadingValue {
     pub message: Message,
     pub words: i64,
     pub selection: polylogue_model::bundle::ShownBlocks,
@@ -86,7 +86,7 @@ pub(super) struct ReadingValue {
 
 impl ReadingValue {
     /// The value of a message as its readings hold it, with its texts.
-    pub(super) fn of(stored: readings::StoredReading) -> Result<Self> {
+    pub(crate) fn of(stored: readings::StoredReading) -> Result<Self> {
         let readings::StoredReading {
             message,
             selection,
@@ -105,7 +105,7 @@ impl ReadingValue {
 }
 
 /// The words of a message's text blocks.
-pub(super) fn text_words(message: &Message) -> i64 {
+pub(crate) fn text_words(message: &Message) -> i64 {
     message
         .blocks
         .iter()
@@ -116,7 +116,7 @@ pub(super) fn text_words(message: &Message) -> i64 {
 
 /// Writes the shown rows of everything `touched` names; returns the number
 /// of message rows written, changed or removed.
-pub(super) fn compose(context: &Context<'_>, touched: Touched) -> Result<u64> {
+pub(crate) fn compose(context: &Context<'_>, touched: Touched) -> Result<u64> {
     let mut work = Work::new(context, Identities::new(context.tx), None)?;
     work.run(touched)?;
     Ok(work.written)
@@ -219,7 +219,7 @@ struct CallResult {
 
 /// One chain's reading of an event.
 #[derive(Debug, Clone)]
-pub(super) struct EventRow {
+pub(crate) struct EventRow {
     pub input: String,
     pub input_pk: i64,
     pub chain: i64,
@@ -235,7 +235,7 @@ pub(super) struct EventRow {
 
 /// One chain's statement of a call's background outcome.
 #[derive(Debug)]
-pub(super) struct OutcomeRow {
+pub(crate) struct OutcomeRow {
     pub input_pk: i64,
     pub chain: i64,
     pub position: i64,
@@ -249,10 +249,10 @@ pub(super) struct OutcomeRow {
 /// A session is begun, given its readings (facts, then each message's
 /// readings, events and outcomes), and ended; the transaction's sessions are
 /// then finished by [`super::rows::finish_summaries`].
-pub(super) struct Composer<'a, 'c>(Work<'a, 'c>);
+pub(crate) struct Composer<'a, 'c>(Work<'a, 'c>);
 
 impl<'a, 'c> Composer<'a, 'c> {
-    pub(super) fn new(
+    pub(crate) fn new(
         context: &'a Context<'c>,
         aliases: Arc<super::identity::Aliases>,
         shared_events: Arc<std::collections::HashSet<String>>,
@@ -272,7 +272,7 @@ impl<'a, 'c> Composer<'a, 'c> {
     }
 
     /// Starts a session.
-    pub(super) fn begin(&mut self) {
+    pub(crate) fn begin(&mut self) {
         let stream = self.stream();
         stream.own = false;
         stream.events.clear();
@@ -284,12 +284,12 @@ impl<'a, 'c> Composer<'a, 'c> {
     }
 
     /// The session's readings state its facts.
-    pub(super) fn facts(&mut self) {
+    pub(crate) fn facts(&mut self) {
         self.stream().own = true;
     }
 
     /// Composes the message the session's readings name `id`.
-    pub(super) fn message(&mut self, id: &str, readings: Vec<MessageReading>) -> Result<()> {
+    pub(crate) fn message(&mut self, id: &str, readings: Vec<MessageReading>) -> Result<()> {
         let stream = self.stream();
         stream.own = true;
         stream.pending = readings;
@@ -297,17 +297,17 @@ impl<'a, 'c> Composer<'a, 'c> {
         Ok(())
     }
 
-    pub(super) fn event(&mut self, event: EventRow) {
+    pub(crate) fn event(&mut self, event: EventRow) {
         self.stream().events.push(event);
     }
 
-    pub(super) fn outcome(&mut self, outcome: OutcomeRow) {
+    pub(crate) fn outcome(&mut self, outcome: OutcomeRow) {
         self.stream().outcomes.push(outcome);
     }
 
     /// Ends the session `session`: pairs its calls, composes its events and
     /// settles its row.
-    pub(super) fn end(&mut self, session: &str) -> Result<()> {
+    pub(crate) fn end(&mut self, session: &str) -> Result<()> {
         let work = &mut self.0;
         work.pair_stream_calls(session)?;
         let events = std::mem::take(&mut work.stream().events);
@@ -343,7 +343,7 @@ impl<'a, 'c> Composer<'a, 'c> {
 
     /// The messages written, and the events left to compose from the
     /// index.
-    pub(super) fn finish(mut self) -> (u64, Vec<(Option<String>, String)>) {
+    pub(crate) fn finish(mut self) -> (u64, Vec<(Option<String>, String)>) {
         let deferred = std::mem::take(&mut self.stream().deferred);
         (self.0.written, deferred)
     }
@@ -2299,7 +2299,7 @@ static INSERT_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
 /// Marks each text the shown blocks and document blocks hold as a member of
 /// the search indexes their kinds name (search_triggers.sql), for a build,
 /// whose composition runs before those triggers exist.
-pub(super) fn mark_searched_texts(tx: &Transaction<'_>) -> Result<()> {
+pub(crate) fn mark_searched_texts(tx: &Transaction<'_>) -> Result<()> {
     tx.execute(
         "UPDATE text SET indexed = b.bits
          FROM (SELECT text_id, max(bit) | min(bit) AS bits FROM (
@@ -2314,7 +2314,7 @@ pub(super) fn mark_searched_texts(tx: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {
+pub(crate) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {
     let (reason, exit) = match o {
         ToolOutcome::Ok | ToolOutcome::Error { reason: None } => (None, None),
         ToolOutcome::Error {
@@ -2331,7 +2331,7 @@ pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>,
     (o.stored().as_str(), reason, exit)
 }
 
-pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn name<T: serde::Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
         Ok(serde_json::Value::String(s)) => s,
         _ => String::new(),

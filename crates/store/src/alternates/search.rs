@@ -1,4 +1,5 @@
 use super::*;
+use crate::archive::writer::Position;
 
 /// Derived text only. Lifecycle and normal derive transactions maintain it
 /// alongside their source position, using the same source rows.
@@ -11,10 +12,30 @@ pub struct AlternateMatch {
 }
 
 pub fn project(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM alternate_text WHERE NOT EXISTS(SELECT 1 FROM source_alternate v WHERE v.id=alternate_text.alternate)",[])?;
-    conn.execute("DELETE FROM alternate_indexed WHERE NOT EXISTS(SELECT 1 FROM source_alternate v WHERE v.id=alternate_indexed.alternate)",[])?;
-    let mut statement=conn.prepare("SELECT v.id,v.commit_seq FROM source_alternate v LEFT JOIN alternate_indexed i ON i.alternate=v.id WHERE i.commit_seq IS NULL OR i.commit_seq!=v.commit_seq ORDER BY v.id")?;
-    let mut rows = statement.query([])?;
+    project_through(conn, None)
+}
+
+pub(crate) fn project_through(conn: &Connection, cut: Option<Position>) -> Result<()> {
+    let through = cut.map(|position| position.0);
+    conn.execute(
+        "DELETE FROM alternate_text WHERE NOT EXISTS(
+             SELECT 1 FROM source_alternate v WHERE v.id=alternate_text.alternate
+             AND (?1 IS NULL OR v.commit_seq<=?1))",
+        [through],
+    )?;
+    conn.execute(
+        "DELETE FROM alternate_indexed WHERE NOT EXISTS(
+             SELECT 1 FROM source_alternate v WHERE v.id=alternate_indexed.alternate
+             AND (?1 IS NULL OR v.commit_seq<=?1))",
+        [through],
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT v.id,v.commit_seq FROM source_alternate v
+         LEFT JOIN alternate_indexed i ON i.alternate=v.id
+         WHERE (i.commit_seq IS NULL OR i.commit_seq!=v.commit_seq)
+         AND (?1 IS NULL OR v.commit_seq<=?1) ORDER BY v.id",
+    )?;
+    let mut rows = statement.query([through])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let counter: i64 = row.get(1)?;

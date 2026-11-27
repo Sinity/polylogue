@@ -186,7 +186,8 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     polylogue_testkit::delete_index(&home.root);
     let (engine, _lock) = crate::import::tests::engine(&home, CHUNK as u64);
     // The pool writes through upkeep: the index is installed empty first.
-    engine.writer.build(Vec::new()).unwrap();
+    polylogue_store::fixture::install_empty_rebuild(&engine.archive, &engine.writer.sender())
+        .unwrap();
     let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
     let mut plans = Vec::new();
     for (path, ..) in &expected {

@@ -232,14 +232,18 @@ impl Worker {
         }
     }
 
-    /// Computes the sessions readers wait for. While a build is in progress
-    /// this thread's index is not the one being written, so none is
-    /// computed: the readers read the lines as stored.
+    /// Computes the sessions readers wait for. While no index this build
+    /// reads is installed none is computed: there is nothing to read.
     fn answer(&mut self, asked: Vec<crate::summary::ask::Asked>) {
         if asked.is_empty() {
             return;
         }
-        if self.queue.location.index_build.building() {
+        if !self
+            .queue
+            .location
+            .index_files()
+            .is_ok_and(|files| files.serves())
+        {
             for question in asked {
                 question.answer(Ok(false));
             }

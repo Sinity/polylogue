@@ -5,7 +5,7 @@ pub use crate::writer::ParsePart;
 /// Where a chain's parts go as they are parsed, in byte order from where the
 /// chain is read: a replacement staged on disk for one index transaction
 /// ([`crate::writer::Replacement`]), or a rebuild worker's scratch index
-/// ([`crate::writer::build::OpenChain`]). A part that extends a chain in
+/// ([`crate::index::rebuild::OpenChain`]). A part that extends a chain in
 /// place goes to the index writer with the bytes it was read from
 /// ([`crate::Batch::parse`]).
 ///
