@@ -204,7 +204,7 @@ impl Reader<'_> {
     /// sessions removed after it.
     pub fn scope_changes(&self, after: Option<&ChangePosition>) -> Result<ScopeChanges> {
         let position = self.change_position()?;
-        let after = after.filter(|after| after.generation == position.generation);
+        let after = after.filter(|after| after.index_instance == position.index_instance);
         let conn = self.conn()?;
         let columns = columns();
         let mut rows = Vec::new();
@@ -281,7 +281,7 @@ impl ScopeIndex {
     /// in the same index generation.
     pub fn is_newer_than(&self, changes: &ScopeChanges) -> bool {
         self.position.as_ref().is_some_and(|stored| {
-            stored.generation == changes.position.generation
+            stored.index_instance == changes.position.index_instance
                 && stored.index > changes.position.index
         })
     }

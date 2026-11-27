@@ -1331,7 +1331,7 @@ fields! {
     FeedAfter = sp(
         Feed,
         "after",
-        "changes after a feed position `GENERATION:INDEX:ARCHIVE`: the `view` of an earlier answer",
+        "changes after a feed position `INDEX_INSTANCE:INDEX:ARCHIVE`: the `view` of an earlier answer",
     ),
     FeedSessions = sp(
         Feed,

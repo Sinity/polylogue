@@ -272,7 +272,7 @@ fn prepare_inner(
                 for node in std::iter::once(node).chain(dependency_nodes) {
                     if let Some(existing) = saved_definitions
                         .iter()
-                        .find(|existing| existing.question == node.question)
+                        .find(|existing| existing.query_id == node.query_id)
                     {
                         if *existing != node {
                             return Err(QueryError::invalid(
@@ -305,7 +305,7 @@ fn prepare_inner(
             for dependency in object.definitions {
                 if !saved_definitions
                     .iter()
-                    .any(|known| known.question == dependency.question)
+                    .any(|known| known.query_id == dependency.query_id)
                 {
                     saved_definitions.push(dependency);
                 }

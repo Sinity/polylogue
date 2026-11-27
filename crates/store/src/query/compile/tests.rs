@@ -225,7 +225,7 @@ fn changes_continue_from_a_feed_position() {
     assert!(sql.contains(".seq > 3) OR ("), "{sql}");
     assert!(sql.contains(".seq > 12) OR"), "{sql}");
     assert!(sql.contains(".changed > 12 OR"), "{sql}");
-    assert!(compile_err("feed where after:12").contains("GENERATION:INDEX:ARCHIVE"));
+    assert!(compile_err("feed where after:12").contains("INDEX_INSTANCE:INDEX:ARCHIVE"));
 }
 
 #[test]

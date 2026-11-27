@@ -249,20 +249,20 @@ pub fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 }
                 UserWrite::DeliveryEvent {
                     delivery,
-                    what,
+                    outcome,
                     detail,
                 } => {
                     value["delivery"] = delivery.clone().into();
-                    value["what"] = what.as_str().into();
+                    value["outcome"] = outcome.as_str().into();
                     value["detail"] = serde_json::to_value(detail)?;
                 }
                 _ => {}
             }
             value
         }
-        Product::Query { object } => json!({"question": object.id}),
+        Product::Query { object } => json!({"query_id": object.id}),
         Product::QueryRun { run } => json!({
-            "run": run.id, "question": run.question, "at": run.at,
+            "run": run.id, "query_id": run.query_id, "at": run.at,
             "machine": run.machine, "binding_hash": run.binding_hash()?, "run_hash": run.record_hash()?,
         }),
         Product::QueryRunOutcome { outcome } => json!({
@@ -641,28 +641,28 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.annotation_restore" {
-                        1
-                    } else if *name == "polylogue.annotation" {
                         2
+                    } else if *name == "polylogue.annotation" {
+                        3
                     } else if matches!(*name, "polylogue.line_save" | "polylogue.line_save_restore")
                     {
-                        5
+                        6
                     } else if matches!(
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        8
+                        9
                     } else {
                         match *product {
                             "message" => 11,
-                            "request" | "restored_request" => 11,
+                            "request" | "restored_request" => 12,
                             "session" | "link" | "parse_progress" => 9,
                             "input" => 8,
                             "document" | "event" | "background" | "repository" => 8,
                             "fragment" => 6,
-                            "query_run" => 10,
+                            "query_run" => 11,
                             "tool_call" | "prefix_copy" | "prefix_member" => 4,
-                            "query" => 3,
+                            "query" => 4,
                             "query_run_outcome" => 2,
                             "attachment_binding" => 2,
                             "restored_history" => 1,

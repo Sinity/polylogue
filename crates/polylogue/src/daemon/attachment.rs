@@ -24,7 +24,7 @@ pub struct BytePage {
 /// Names attachment cursors in the seal, so no other cursor opens as one.
 const SEAL_DOMAIN: &[u8] = b"polylogue.attachment-cursor\0";
 
-/// Sealed with the index generation's key ([`CursorSeal`]), so only a
+/// Sealed with the index instance's key ([`CursorSeal`]), so only a
 /// cursor this archive issued can supply a byte position.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,7 +88,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     let seal = match (|| {
         Ok::<_, polylogue_store::StoreError>(CursorSeal {
             key: reader.cursor_key()?,
-            generation: reader.change_position()?.generation,
+            index_instance: reader.change_position()?.index_instance,
         })
     })() {
         Ok(seal) => seal,

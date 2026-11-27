@@ -3,7 +3,7 @@ fn metadata(index: i64) -> Metadata {
     Metadata {
         archive: "synthetic".into(),
         position: ChangePosition {
-            generation: "generation".into(),
+            index_instance: "generation".into(),
             index,
             archive: index,
         },

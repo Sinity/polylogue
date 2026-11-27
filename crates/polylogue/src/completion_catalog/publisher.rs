@@ -225,11 +225,11 @@ impl State {
         if self
             .writer
             .as_ref()
-            .is_some_and(|(generation, _)| generation != &position.generation)
+            .is_some_and(|(generation, _)| generation != &position.index_instance)
             || self
                 .position
                 .as_ref()
-                .is_some_and(|old| old.generation != position.generation)
+                .is_some_and(|old| old.index_instance != position.index_instance)
         {
             self.writer = None;
             self.position = None;
@@ -256,7 +256,7 @@ impl State {
             }
             self.vocabulary.kept = vocabulary.kept;
             self.position = Some(saved.position);
-            self.writer = Some((position.generation.clone(), writer));
+            self.writer = Some((position.index_instance.clone(), writer));
         }
         if self.position.as_ref() == Some(&position) {
             pointer.activate(
@@ -295,7 +295,7 @@ impl State {
                     self.apply(writer, Sessions::All, &update, reader)
                 })
                 .map(|writer| {
-                    self.writer = Some((position.generation.clone(), writer));
+                    self.writer = Some((position.index_instance.clone(), writer));
                 })
         };
         result?;
@@ -593,7 +593,7 @@ impl State {
             Sessions::All => {
                 polylogue_store::fault::check(
                     "completion.full_snapshot",
-                    &reader.change_position()?.generation,
+                    &reader.change_position()?.index_instance,
                 )?;
                 reader.visit_completion_sessions(None, &mut put)?;
                 true

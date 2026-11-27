@@ -381,7 +381,7 @@ fn the_change_feed_continues_from_its_cursor() {
     let r = pool.reader().unwrap();
     let all = run(&r, ask("feed", T0)).unwrap();
     assert_eq!(refs(&all), ["claude-code:a", "claude-code:b"]);
-    let cursor = all["read_at"]["cursor"].as_str().unwrap().to_owned();
+    let cursor = all["read_position"]["cursor"].as_str().unwrap().to_owned();
     let after = format!("feed where after:{cursor}");
     assert!(refs(&run(&r, ask(&after, T0)).unwrap()).is_empty());
     drop(r);

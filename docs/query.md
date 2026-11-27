@@ -153,9 +153,9 @@ Conditions over related rows, transforms after `|`, attached rows and combining 
 - **Links between sessions have no time of their own**, so `session_links` reads in the order of their identity: parent, child, kind, `reason`, branch point, spawning call. A parent's links are listed together, and an index holds that order. To see recent lineage first, sort by the parent's activity, which sorts the links it reads.
 - **Key first.** A page of a unit's rows is read in two steps: the selection's keys and order values are ordered and paged, then only the page's rows are read. Sorting and paging touch keys, never the columns of rows off the page.
 - For tool-call queries, a named session resolves to one indexed session key.
-- **Cursors** (`--cursor`) hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are opaque and integrity-checked.
+- **Cursors** (`--cursor`) hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index instance, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the cursor's position.
-- **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
+- **Refusals:** a cursor from another query is `invalid_query`; one from an earlier index instance, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is saved first ([saved-queries.md](saved-queries.md#kept-results)), then paged.
 - The count is computed once per question and read position, and reused by later pages.
 - A listing that should wait for rows takes the line option `--wait D` ([interfaces.md](interfaces.md#steps)).
@@ -185,7 +185,7 @@ Every surface returns the shared typed reply: `outcome`, a `value` on success or
   "notes": [], "incomplete": [],
   "unknown": {"similar": 0, "cost": 2, "unparsed_inputs": 0},
   "up_to_date": true,
-  "read_at": {"generation": "…", "index": 1234, "archive": 87, "cursor": "…"},
+  "read_position": {"index_instance": "…", "index": 1234, "archive": 87, "cursor": "…"},
   "resolved": {"now": "…Z", "zone": "Europe/Lisbon", "day_start_minutes": 240},
   "positions": null
 }

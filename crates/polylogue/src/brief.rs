@@ -266,7 +266,7 @@ impl LastBrief {
 
 pub struct BriefContext<'a, 'reader> {
     pub reader: &'a Reader<'reader>,
-    pub pending_deliveries: &'a [polylogue_store::archive::writer::PendingDelivery],
+    pub pending_deliveries: &'a [polylogue_model::user::UserRequest],
     pub delivery_id: &'a str,
     pub context: &'a std::sync::Arc<polylogue_reading::operation::Context>,
     pub ranking_identity: Option<&'a str>,
@@ -794,7 +794,7 @@ impl Fitter {
                             },
                         );
                         self.left_out.push(LeftOut {
-                            what: format!("details of {}", item.refs.join(" ")),
+                            item: format!("details of {}", item.refs.join(" ")),
                             reason: format!("not available ({error})"),
                         });
                         Item {
@@ -815,7 +815,7 @@ impl Fitter {
                 } else {
                     unavailable[section_index].push("budget");
                     self.left_out.push(LeftOut {
-                        what: format!("details of {}", item.refs.join(" ")),
+                        item: format!("details of {}", item.refs.join(" ")),
                         reason: format!(
                             "budget cannot fit source attribution; expand: {}",
                             section.pull
@@ -874,13 +874,13 @@ impl Fitter {
             );
             if omitted > 0 {
                 self.left_out.push(LeftOut {
-                    what: format!("{omitted} {}", section.what),
+                    item: format!("{omitted} {}", section.what),
                     reason: format!("budget {} tokens; expand: {}", self.budget, section.pull),
                 });
             }
             if shortened > 0 {
                 self.left_out.push(LeftOut {
-                    what: format!("{shortened} shortened {}", section.what),
+                    item: format!("{shortened} shortened {}", section.what),
                     reason: format!(
                         "source tails omitted for budget {} tokens; expand: {}",
                         self.budget, section.pull
@@ -971,7 +971,7 @@ impl Deadline {
             }
             Err(error) => {
                 self.failed.push(LeftOut {
-                    what: what.into(),
+                    item: what.into(),
                     reason: format!("not available ({error})"),
                 });
                 None
@@ -982,7 +982,7 @@ impl Deadline {
     fn show_failures(&mut self, fit: &mut Fitter) {
         for failure in self.failed.drain(..) {
             fit.pointers
-                .push(format!("{}: {}", failure.what, failure.reason));
+                .push(format!("{}: {}", failure.item, failure.reason));
             fit.left_out.push(failure);
         }
     }
@@ -1157,8 +1157,8 @@ fn session_start(
             let pending = brief.pending_deliveries;
             let delivered = |id: &str| {
                 pending.iter().any(|request| {
-                    matches!(&request.request.write, UserWrite::DeliveryEvent {
-                        delivery, what: polylogue_model::DeliveryOutcome::Delivered, ..
+                    matches!(&request.write, UserWrite::DeliveryEvent {
+                        delivery, outcome: polylogue_model::DeliveryOutcome::Delivered, ..
                     } if delivery == id)
                 })
             };
@@ -1172,23 +1172,24 @@ fn session_start(
                 })
                 .map(|delivery| LastBrief {
                     at: delivery.at,
-                    seq: delivery.seq,
+                    // A delivery written before its read position was
+                    // recorded counts from its own commit.
+                    seq: delivery.prepared_position.unwrap_or(delivery.seq),
                 });
             let mut previous = committed;
-            for pending in pending.iter().rev() {
-                let request = &pending.request;
+            for request in pending.iter().rev() {
                 if let UserWrite::Deliver(delivery) = &request.write
                     && delivery.recipient_id.as_deref() == Some(recipient.as_str())
                     && BRIEF_EVENTS.contains(&delivery.event)
                     && delivered(&request.id)
-                    && let Some(prepared_at) = pending.prepared_at
+                    && let Some(prepared_position) = delivery.prepared_position
                     && !stored.iter().any(|delivery| delivery.id == request.id)
                 {
                     previous = LastBrief::newest(
                         previous,
                         Some(LastBrief {
                             at: request.at,
-                            seq: prepared_at,
+                            seq: prepared_position,
                         }),
                     );
                     break;
@@ -1220,7 +1221,7 @@ fn session_start(
         Some(h) => (h.recent, Some(h.live), Some(h.beads)),
         None => {
             deadline.failed.push(LeftOut {
-                what: "live sessions, open Beads, recent sessions".into(),
+                item: "live sessions, open Beads, recent sessions".into(),
                 reason: "not available (scope index has not loaded); check `polylogue status`"
                     .into(),
             });
@@ -1381,7 +1382,7 @@ fn session_start(
     let (notices, inspect_count) = notices.unwrap_or_default();
     if inspect_count > 0 {
         fit.left_out.push(LeftOut {
-            what: format!("{inspect_count} signal records"),
+            item: format!("{inspect_count} signal records"),
             reason: "recipient/directory scope or historical effect state requires inspection"
                 .into(),
         });
@@ -1408,7 +1409,7 @@ fn session_start(
         .unwrap_or(0);
     if other_annotations > 0 {
         fit.left_out.push(LeftOut {
-            what: format!("{other_annotations} annotations by other authors"),
+            item: format!("{other_annotations} annotations by other authors"),
             reason: "an annotation by another author needs an eligible operator judgment before injection".into(),
         });
         fit.pointers.push(format!(
@@ -1419,7 +1420,7 @@ fn session_start(
     if !deadline.late.is_empty() {
         for what in &deadline.late {
             fit.left_out.push(LeftOut {
-                what: (*what).into(),
+                item: (*what).into(),
                 reason: "deadline".into(),
             });
         }
@@ -1686,7 +1687,7 @@ fn session_brief(
     }
     let _ = writeln!(text, "Messages available: {}", messages.len());
     let mut left_out = vec![LeftOut {
-        what: "tool calls and their output".into(),
+        item: "tool calls and their output".into(),
         reason: "a session brief carries prompts, notes and the last answer".into(),
     }];
     if other_annotations > 0 {
@@ -1700,14 +1701,14 @@ fn session_brief(
             ))
         );
         left_out.push(LeftOut {
-            what: format!("{other_annotations} annotations by other authors"),
+            item: format!("{other_annotations} annotations by other authors"),
             reason: "an annotation by another author needs an eligible operator judgment before injection".into(),
         });
     }
     for issue in &parent_issues {
         let _ = writeln!(text, "Parents incomplete: {issue}");
         left_out.push(LeftOut {
-            what: "inherited session content".into(),
+            item: "inherited session content".into(),
             reason: issue.to_string(),
         });
     }
@@ -1742,7 +1743,7 @@ fn session_brief(
         fit.pointers
             .push(format!("{what}: not available (deadline)"));
         fit.left_out.push(LeftOut {
-            what: what.into(),
+            item: what.into(),
             reason: "deadline".into(),
         });
     }

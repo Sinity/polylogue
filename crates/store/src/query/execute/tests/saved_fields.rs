@@ -1192,9 +1192,9 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     drop(pool);
     let expected = QueryRun {
         id: RunId::parse("018f0000-0000-7000-8000-000000000011").unwrap(),
-        question: Some(object.id),
+        query_id: Some(object.id),
         at: opts.clock.now.into(),
-        read_at: position.clone(),
+        read_position: position.clone(),
         machine: "synthetic-machine".into(),
         authorship: Authorship {
             author: Author::Operator,
@@ -1217,13 +1217,13 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
                         resolved_times: vec![],
                         random_seed: 7,
                         read_positions: BTreeMap::from([
-                            ("generation".into(), position.generation.clone()),
+                            ("index_instance".into(), position.index_instance.clone()),
                             ("index".into(), position.index.to_string()),
                             ("archive".into(), position.archive.to_string()),
                         ]),
                         versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
                     },
-                    scope_fingerprint: None,
+                    access_fingerprint: None,
                     original_text: "sessions where since:1d".into(),
                 },
             }),
@@ -1362,12 +1362,12 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     drop(pool);
     let mut object_run = expected.clone();
     object_run.id = RunId::parse("018f0000-0000-7000-8000-000000000012").unwrap();
-    object_run.question = None;
+    object_run.query_id = None;
     object_run.binding = RunBinding::OriginalObject {
         execution: Box::new(polylogue_model::query_objects::ObjectExecutionBinding {
             reference: Reference::Request("synthetic-original-read".into()),
             content_hash: polylogue_model::BlobHash::of(b"synthetic original object"),
-            scope_fingerprint: None,
+            access_fingerprint: None,
             versions: Default::default(),
             presentation: ExecutionPresentation::Read {
                 options: Default::default(),

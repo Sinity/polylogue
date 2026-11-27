@@ -122,7 +122,7 @@ pub(crate) fn target(selection: &Selection) -> Result<String, Failure> {
     // The fixed empty population supplies membership; its question still
     // supplies the reading's unit and recorded query identity.
     if selection.resolved.as_ref().is_some_and(Vec::is_empty)
-        && let Some(question) = &selection.question
+        && let Some(question) = &selection.query
     {
         return Ok(question.clone());
     }

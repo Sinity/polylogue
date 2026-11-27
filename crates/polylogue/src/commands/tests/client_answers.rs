@@ -295,7 +295,7 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
     let value = answer.as_ref().expect("session read succeeds");
     let page = crate::test_answers::read(command_surface::Answer::ok(value.clone()));
     assert_eq!(
-        &page.snapshot.read_at, position,
+        &page.snapshot.read_position, position,
         "the page must report the independently observed position"
     );
     assert!(
@@ -471,10 +471,10 @@ fn every_client_answers_the_same_request_identically() {
             // Keep the complete raw answer. Only its expected per-invocation
             // descriptor differs, and that value was observed outside the answer.
             let mut expected = cli.as_ref().unwrap().clone();
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
                 serde_json::to_value(mcp_position.unwrap()).unwrap();
             assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
                 serde_json::to_value(http_position.unwrap()).unwrap();
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;

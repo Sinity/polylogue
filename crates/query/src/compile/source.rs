@@ -271,7 +271,7 @@ pub(crate) fn saved_body<'o>(
                 object
                     .definitions
                     .iter()
-                    .find(|node| node.question == definition.hash)
+                    .find(|node| node.query_id == definition.hash)
                     .ok_or_else(|| {
                         QueryError::invalid("saved query differs from its declared hash")
                     })?

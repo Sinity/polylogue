@@ -173,7 +173,7 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
     archive.archive.advance_generation_for_test().unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let new_position = pool.reader().unwrap().change_position().unwrap();
-    assert_ne!(new_position.generation, before_reset.generation);
+    assert_ne!(new_position.index_instance, before_reset.index_instance);
     assert_eq!(new_position.archive, before_reset.archive);
     let new = SeenMark {
         at: new_position,

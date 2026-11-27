@@ -301,6 +301,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
             text: "A delivery unrelated to alternate history".into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         };
         let request = crate::fixture::authored::operator_request(
             format!("delivery-{advice}"),

@@ -537,7 +537,7 @@ pub(super) fn page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        read_at: reader.change_position()?,
+        read_position: reader.change_position()?,
         freshness: services.freshness(reader)?,
     };
     Ok(ReadPage {

@@ -70,7 +70,7 @@ fn save(writer: &WriterSender, name: &str, text: &str) {
             query: text.into(),
             denominator: None,
             rows_json: r#"{"unit":"tool_calls","columns":[],"rows":[]}"#.into(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             watch: None,
             outcomes: None,
         })),

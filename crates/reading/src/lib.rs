@@ -243,7 +243,7 @@ fn page_terms(request: &ReadRequest) -> Result<(Format, PageBudget, String), Err
 fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Error> {
     Ok(CursorSeal {
         key: reader.cursor_key()?,
-        generation: reader.change_position()?.generation,
+        index_instance: reader.change_position()?.index_instance,
     })
 }
 
@@ -343,7 +343,7 @@ fn prepared<T>(
             query: format!("query:{}", selection.question_id()),
             query_text: reading.target.clone(),
             ran_at: operation.ran_at,
-            read_at: reader.change_position()?,
+            read_position: reader.change_position()?,
             freshness: services.freshness(reader)?,
             enabled_alternates: reading.alternates.clone(),
             author: operation.authorship.author.clone(),
@@ -558,9 +558,9 @@ fn record_compiled(
         .extend(operation.cursor_versions());
     let run = QueryRun {
         id: crate::operation::new_run_id(),
-        question: Some(selection.question_id()),
+        query_id: Some(selection.question_id()),
         at: operation.ran_at,
-        read_at: reader.change_position()?,
+        read_position: reader.change_position()?,
         machine: operation.machine.clone(),
         authorship: operation.authorship.clone(),
         binding: RunBinding::Original {
@@ -668,7 +668,7 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     }
     if let Some(position) = request.options.annotation_position() {
         let current = reader.change_position()?;
-        if position.generation != current.generation {
+        if position.index_instance != current.index_instance {
             return Err(Reason::PositionFromAnotherGeneration {}.into());
         }
         if position.index > current.index || position.archive > current.archive {
@@ -782,7 +782,7 @@ pub fn page(
                         snapshot,
                         header,
                         ReadFraming::Query {
-                            question: compiled.selection.question_id(),
+                            query_id: compiled.selection.question_id(),
                         },
                         compiled.history.map_or_else(
                             || Ok(PageCursor::version(&[])),

@@ -73,7 +73,7 @@ impl Target {
                 .annotations
                 .iter()
                 .any(|value| value.id == *id && value.root == *root),
-            Self::Result { id, .. } => effect.kept_results.iter().any(|value| value.id == *id),
+            Self::Result { id, .. } => effect.saved_rows.iter().any(|value| value.id == *id),
             Self::Delivery { id, .. } => effect
                 .deliveries
                 .iter()
@@ -333,7 +333,7 @@ fn index_effect(
     for fact in &effect.annotations {
         add("annotation", &fact.id, &fact.root)?;
     }
-    for result in &effect.kept_results {
+    for result in &effect.saved_rows {
         add("result", &result.id, "")?;
     }
     for delivery in &effect.deliveries {

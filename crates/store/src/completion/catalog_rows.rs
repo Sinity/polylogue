@@ -70,7 +70,7 @@ impl Reader<'_> {
     ) -> Result<ChangePosition> {
         let position = self.change_position()?;
         if let Some(after) = after
-            && (after.generation != position.generation
+            && (after.index_instance != position.index_instance
                 || after.index > position.index
                 || after.archive > position.archive)
         {
@@ -203,7 +203,7 @@ impl Reader<'_> {
     pub fn completion_authored_replaced(&self, after: Option<&ChangePosition>) -> Result<bool> {
         let Some(after) = after else { return Ok(false) };
         let current = self.change_position()?;
-        if after.generation != current.generation
+        if after.index_instance != current.index_instance
             || after.archive > current.archive
             || after.index > current.index
         {

@@ -80,7 +80,7 @@ pub(crate) fn prepare_query_plan_on(
                 format!("no saved run {id}"),
             )
         })?;
-        let question = run.question.ok_or_else(|| {
+        let question = run.query_id.ok_or_else(|| {
             SelectionError::invalid(
                 polylogue_model::Code::BadRequest,
                 "this run read an object and has no query question to run again",
