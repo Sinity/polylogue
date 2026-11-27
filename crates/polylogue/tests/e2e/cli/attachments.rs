@@ -247,17 +247,106 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
         assert!(imported.status.success(), "{imported:?}");
         assert_eq!(json(&imported)["pass"]["errors"], json!([]));
         wait_status(&receiver, |status| status["store"]["messages"] == 1);
-        drop(receiving_daemon);
-        let (archive, _lock) = polylogue_store::Archive::open_or_create(&receiving_root).unwrap();
-        let mut restored = Vec::new();
-        archive
-            .blob_reader()
-            .unwrap()
-            .read_plain(&hashed_blobs::Hash(hash.0), SECRET.len() as u64, || Ok(()))
-            .unwrap()
-            .read_to_end(&mut restored)
+        let target = fixture._dir.path().join("restored.bin");
+        let restored = cli(
+            &receiver,
+            &[
+                "--json",
+                ATTACHMENT,
+                "read",
+                "--to",
+                target.to_str().unwrap(),
+            ],
+        );
+        assert!(restored.status.success(), "{restored:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), SECRET);
+
+        let exported_again = fixture._dir.path().join("exported-again");
+        std::fs::create_dir(&exported_again).unwrap();
+        let reexport = cli(
+            &receiver,
+            &[
+                "--json",
+                SESSION,
+                "read",
+                "--format",
+                "json",
+                "--to",
+                exported_again.to_str().unwrap(),
+            ],
+        );
+        assert!(reexport.status.success(), "{reexport:?}");
+        assert_eq!(
+            std::fs::read(exported_again.join("blobs").join(hash.to_string())).unwrap(),
+            SECRET
+        );
+
+        // A fresh reader of the same message with only its claims must not
+        // borrow a hash already stored by a different explicit import.
+        if !zip {
+            let claims_only = fixture._dir.path().join("claims-only");
+            std::fs::create_dir(&claims_only).unwrap();
+            let files_only = fixture._dir.path().join("files-only");
+            std::fs::create_dir_all(files_only.join("blobs")).unwrap();
+            std::fs::copy(
+                blobs.join(hash.to_string()),
+                files_only.join("blobs").join(hash.to_string()),
+            )
             .unwrap();
-        assert_eq!(restored, SECRET);
+            let mut claims = std::fs::File::create(claims_only.join("records.jsonl")).unwrap();
+            let mut files = std::fs::File::create(files_only.join("records.jsonl")).unwrap();
+            for mut record in records {
+                match &mut record {
+                    Record::Blob(_) => {
+                        serde_json::to_writer(&mut files, &record).unwrap();
+                        writeln!(files).unwrap();
+                        continue;
+                    }
+                    Record::Manifest(manifest) => {
+                        manifest.inventory = None;
+                        let mut files_manifest = manifest.clone();
+                        files_manifest.counts = polylogue_model::bundle::Counts {
+                            blobs: 1,
+                            ..Default::default()
+                        };
+                        serde_json::to_writer(&mut files, &Record::Manifest(files_manifest))
+                            .unwrap();
+                        writeln!(files).unwrap();
+                        manifest.counts.blobs = 0;
+                    }
+                    _ => {}
+                }
+                serde_json::to_writer(&mut claims, &record).unwrap();
+                writeln!(claims).unwrap();
+            }
+            let separate_root = fixture._dir.path().join("archive-with-claims-only");
+            let separate = crate::Fixture::new(&separate_root, &fixture.home, &fixture.config);
+            let _separate_daemon = start_daemon(&separate);
+            for path in [files_only, claims_only] {
+                let report = cli(&separate, &["--json", "import", path.to_str().unwrap()]);
+                assert!(report.status.success(), "{report:?}");
+                assert_eq!(json(&report)["pass"]["errors"], json!([]), "{report:?}");
+            }
+            wait_status(&separate, |status| status["store"]["messages"] == 1);
+            let not_written = fixture._dir.path().join("unavailable.bin");
+            let absent = cli(
+                &separate,
+                &[
+                    "--json",
+                    ATTACHMENT,
+                    "read",
+                    "--to",
+                    not_written.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(absent.status.code(), Some(4), "{absent:?}");
+            assert!(
+                String::from_utf8_lossy(&[absent.stdout, absent.stderr].concat())
+                    .contains("attachment_unavailable")
+            );
+            assert!(!not_written.exists());
+        }
+        drop(receiving_daemon);
 
         let shown = cli(&fixture.env(), &[SESSION, "read", "--format", "markdown"]);
         assert!(shown.status.success(), "{shown:?}");
