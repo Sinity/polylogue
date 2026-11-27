@@ -68,6 +68,11 @@ pub(crate) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         .unwrap();
     let mut out = BTreeMap::new();
     for table in tables {
+        if table == "capture_coverage" {
+            // Discovery coverage is the latest full walk of this host's
+            // files. A rebuild computes readings from archived bytes.
+            continue;
+        }
         let statement = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
         let names: Vec<String> = statement
             .column_names()
