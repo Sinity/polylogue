@@ -136,19 +136,7 @@ pub(crate) fn read_stdin(parsed: &mut ParsedLine, input: &mut impl Read) -> io::
     Ok(())
 }
 pub(crate) fn refusal(error: Refusal, client: &crate::config::Client, json: bool) -> ExitCode {
-    let mut failure = crate::protocol::failure(error.code, error.message);
-    failure.position = error.position.map(|start| command_surface::InputSpan {
-        offset: start,
-        length: 1,
-    });
-    failure.hint = error.try_line.map(|line| format!("try: {line}"));
-    if !error.candidates.is_empty() {
-        failure
-            .hint
-            .get_or_insert_default()
-            .push_str(&format!("\n{}", error.candidates.join("\n")));
-    }
-    super::fail_with(client.output, json, &failure, &[])
+    super::fail_with(client.output, json, &error.failure(), &[])
 }
 fn call(
     archive: &Archive,
@@ -294,10 +282,12 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
             if parsed.steps[0].verb == "resume" {
                 before.arguments["steps"] = json!([parsed.steps[0].step]);
             } else {
-                before.arguments["selection"] =
-                    json!(crate::protocol::steps::usual_read_selection(
+                before.arguments["selection"] = json!(format!(
+                    "query:{}",
+                    crate::protocol::steps::usual_read_selection(
                         parsed.steps[0].step["follow"] == true
-                    ));
+                    )
+                ));
             }
         }
         let question = before.arguments["selection"]
@@ -321,6 +311,9 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
                     Ok(answer) => answer,
                     Err(error) => return super::fail_with(client.output, json, &error, &[]),
                 };
+                if answer.is_error() {
+                    return super::fail_answer(client.output, json, &answer);
+                }
                 let line = match decoded(&answer) {
                     Ok(line) => line,
                     Err(error) => return super::fail_with(client.output, json, &error, &[]),
@@ -424,6 +417,11 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
             };
             match picker::open(source, options) {
                 Ok(picker::Choice::Selected(references)) => references,
+                Ok(picker::Choice::Empty) => {
+                    let answer =
+                        Answer::empty(Value::Null).with_note("no rows match the selection");
+                    return super::fail_answer(client.output, json, &answer);
+                }
                 Ok(picker::Choice::Cancelled) => {
                     return ExitCode::from(if output_state.exit_code() == 5 { 5 } else { 0 });
                 }
@@ -497,6 +495,9 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
         );
         return ExitCode::from(failed_code(&answer).unwrap_or_else(|| answer.exit_code()));
     }
+    if answer.is_error() {
+        return super::fail_answer(client.output, json, &answer);
+    }
     let line = match decoded(&answer) {
         Ok(line) => line,
         Err(error) => return super::fail_with(client.output, json, &error, &[]),
@@ -566,7 +567,7 @@ fn output(
                     StepOutcome::WouldDo { would, refusal } => {
                         println!("{}", polylogue_render::terminal::escape(would));
                         if let Some(error) = refusal {
-                            eprintln!("{}", polylogue_render::terminal::escape(&error.message));
+                            super::fail_with(client.output, false, error, &[]);
                         }
                     }
                     StepOutcome::Done { reply, undo: lines } => {

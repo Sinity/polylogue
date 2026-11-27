@@ -655,7 +655,12 @@ fn respond<O: Operation>(
         },
     );
     if let Some(failure) = guarded.stopped.take() {
-        answer = failure.answer();
+        answer = match limit.check() {
+            Err(error) => {
+                super::execution::stopped_read(&error, row.name, query.borrow().as_deref(), &limit)
+            }
+            Ok(()) => failure.answer(),
+        };
     }
     if let Outcome::Error(failure) = &mut answer.outcome {
         // A cursor that no longer names its place suggests the same request
