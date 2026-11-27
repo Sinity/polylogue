@@ -543,7 +543,8 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id, m.session_order,
                               FROM block b WHERE b.message_pk = m.pk)),
     m.role, m.prompt_kind, m.input_tokens, m.cache_read_tokens, m.cache_write_tokens,
     m.on_active_path, m.at,
-    EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
+    EXISTS(SELECT 1 FROM message c INDEXED BY message_parent
+           WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1),
     (SELECT group_concat(o, ',') FROM (SELECT coalesce(CAST(b.source_position AS INTEGER), b.position) AS o
                                       FROM block b WHERE b.message_pk = m.pk ORDER BY b.position)),

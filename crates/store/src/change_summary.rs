@@ -198,7 +198,7 @@ impl ChangeSummary {
         )?;
         let mut parent = conn.prepare_cached(
             "SELECT p.session_order, p.id,
-                    (SELECT count(*) FROM (SELECT 1 FROM message c
+                    (SELECT count(*) FROM (SELECT 1 FROM message c INDEXED BY message_parent
                                            WHERE c.session_pk = ?1 AND c.parent_id = ?2
                                              AND c.duplicate_of IS NULL LIMIT 2))
              FROM message p WHERE p.id = ?2 AND p.session_pk = ?1",
