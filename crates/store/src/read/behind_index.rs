@@ -8,6 +8,9 @@ use crate::archive::writer::agreement::{Chains, recorded_by_input};
 use polylogue_model::chain::{ChainFacts, ChainState, ChainStatusName, Due, due, status};
 use polylogue_model::freshness::CompletenessReason;
 
+type VisitChain<'a> =
+    dyn FnMut(ChainRow, Option<&Chains>) -> Result<std::ops::ControlFlow<()>> + 'a;
+
 /// A build candidate and the prefix it shares with each newer chain of
 /// the same input. Coverage is decided when those readings succeed.
 pub struct BuildChain {
@@ -380,7 +383,7 @@ impl Reader<'_> {
         selected: Option<&[String]>,
         chains: RevisionChains,
         load_agreements: bool,
-        visit: &mut dyn FnMut(ChainRow, Option<&Chains>) -> Result<std::ops::ControlFlow<()>>,
+        visit: &mut VisitChain<'_>,
     ) -> Result<()> {
         let token = self.scope_token();
         let selected_json = selected.map(serde_json::to_string).transpose()?;

@@ -121,11 +121,17 @@ fn a_failed_newer_reading_keeps_the_readable_older_copy() {
     let newest = older.clone() + &assistant("later", "same", "Only in the newest chain");
     {
         let (mut engine, _lock) = w.engine(64 << 20);
-        for bytes in [&older, &unrelated, &newest] {
+        for bytes in [&older, &unrelated] {
             fs::write(&path, bytes).unwrap();
             let pass = engine.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         }
+        fs::write(&path, &newest).unwrap();
+        fault::arm("parse", "same.jsonl", Action::Panic, 0, 1);
+        let pass = engine.run_pass().unwrap();
+        assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
+        assert!(pass.errors[0].to_string().contains("panicked"));
+        assert_eq!(pass.bytes_stored, newest.len() as u64);
     }
     let versions = w.read(|reader| {
         reader.query(
@@ -145,6 +151,9 @@ fn a_failed_newer_reading_keeps_the_readable_older_copy() {
             )
         })
     };
+
+    assert_eq!(reading_chain(), [serde_json::json!({"chain":first})]);
+    assert_eq!(w.texts("same"), ["Shared first message"]);
 
     fs::remove_file(&path).unwrap();
     delete_index(&w.root);

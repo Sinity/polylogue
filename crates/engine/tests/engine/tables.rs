@@ -142,12 +142,14 @@ pub(crate) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             // Compared through the text rows above.
             continue;
         }
+        if table == "summary_resume" {
+            // Fold checkpoints follow the boundaries of previous runs.
+            // The repeated-version property compares their resulting
+            // summaries, including after an append uses these checkpoints.
+            continue;
+        }
         if table == "meta" {
-            rows.retain(|row| {
-                !CREATED_WITH_THE_INDEX
-                    .iter()
-                    .any(|key| row.starts_with(key))
-            });
+            rows.retain(|row| !INDEX_LOCAL_META.iter().any(|key| row.starts_with(key)));
         }
         rows.sort();
         if table == "wire_occurrence" {
@@ -241,9 +243,11 @@ fn resume_without_read_range(value: rusqlite::types::Value) -> rusqlite::types::
 
 /// Rows of `meta` that are the write counter itself or identities each index
 /// is given when it is created.
-const CREATED_WITH_THE_INDEX: &[&str] = &[
+const INDEX_LOCAL_META: &[&str] = &[
     "key=Text(\"write_counter\")",
     "key=Text(\"generation\")",
+    "key=Text(\"index_instance\")",
+    "key=Text(\"import_observation_position\")",
     "key=Text(\"cursor_key\")",
     "key=Text(\"search_files\")",
 ];
