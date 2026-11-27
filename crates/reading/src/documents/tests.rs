@@ -161,6 +161,8 @@ fn header(id: &DocumentId) -> ReadHeader {
         },
         figures: vec![],
         zone: None,
+        snapshot: None,
+        options: None,
     }
 }
 

@@ -10,7 +10,7 @@ use crate::daemon::service::Daemon;
 use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
 use command_surface::{Answer, Deadline, RunnableRequest};
-use polylogue_model::read::{Format, HeaderKind, ReadBudget, ReadComplete, ReadPage, ReadyCall};
+use polylogue_model::read::{Format, HeaderKind, ReadBudget, ReadFooter, ReadPage, ReadyCall};
 use polylogue_model::{Reason, Reference};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
@@ -257,8 +257,7 @@ pub(crate) fn page(
     }
     let freshness = page.snapshot.freshness.clone();
     let missing = page.snapshot.incomplete.clone();
-    let empty = page.records.is_empty()
-        && page.document.footer.shown == 0
+    let empty = page.document.footer.shown == 0
         && page.document.footer.coverage.is_empty()
         && matches!(&page.document.header.kind,
             HeaderKind::Record { record_type } if record_type == "query");
@@ -296,7 +295,7 @@ pub(crate) fn stream(
     context: &Arc<polylogue_reading::operation::Context>,
     output: &mut dyn std::io::Write,
     services: &impl ReadServices,
-) -> Result<Answer<ReadComplete>, Failure> {
+) -> Result<Answer<ReadFooter>, Failure> {
     crate::daemon::service::accepting(call.daemon)?;
     let reader = call.reader()?;
     polylogue_reading::resolve_start(&reader, context, &mut request)
@@ -304,15 +303,12 @@ pub(crate) fn stream(
     let request = polylogue_reading::with_alternates(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
     let freshness = services.freshness(&reader)?;
-    let complete = polylogue_reading::stream(&reader, services, &request, context, output)
+    let footer = polylogue_reading::stream(&reader, services, &request, context, output)
         .map_err(|error| failure(error, &request))?;
-    if complete.counts == polylogue_model::bundle::Counts::default()
-        && complete.footer.coverage.is_empty()
-        && freshness.up_to_date()
-    {
-        Ok(Answer::empty(complete))
+    if footer.counts.is_empty() && footer.coverage.is_empty() && freshness.up_to_date() {
+        Ok(Answer::empty(footer))
     } else {
-        Ok(crate::protocol::read(complete, &freshness))
+        Ok(crate::protocol::read(footer, &freshness))
     }
 }
 

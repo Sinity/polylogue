@@ -27,7 +27,11 @@ pub struct Summary {
 pub struct Bundle {
     destination: PathBuf,
     staging: PathBuf,
-    begin: ReadBegin,
+    /// The reading's header as the stream opened it, without the snapshot
+    /// and options, which the manifest records.
+    header: ReadHeader,
+    snapshot: ReadSnapshot,
+    options: ReadOptions,
     format: Format,
     with_blobs: bool,
     items: Option<ExportItems>,
@@ -45,7 +49,7 @@ fn parent_of(path: &Path) -> &Path {
 impl Bundle {
     pub fn new(
         destination: &Path,
-        begin: ReadBegin,
+        mut header: ReadHeader,
         format: Format,
         with_blobs: bool,
     ) -> Result<Self> {
@@ -58,15 +62,18 @@ impl Bundle {
                 staging: parent.to_owned(),
             })?
             .keep();
-        let build = || -> std::result::Result<ExportItems, String> {
-            begin.options.validate().map_err(|e| e.to_string())?;
+        let opening = header.snapshot.take().zip(header.options.take());
+        let build = || -> std::result::Result<(ExportItems, ReadSnapshot, ReadOptions), String> {
+            let (snapshot, options) =
+                opening.ok_or("the read stream's header has no snapshot or options")?;
+            options.validate().map_err(|e| e.to_string())?;
             Manifest::from_snapshot(
-                begin.snapshot.clone(),
+                (*snapshot).clone(),
                 Counts::default(),
                 Flags {
                     format,
                     with_blobs,
-                    read: begin.options.clone(),
+                    read: (*options).clone(),
                 },
                 None,
             )
@@ -75,19 +82,22 @@ impl Bundle {
             check_destination(destination)?;
             let internal = staging.join("_staging");
             fs::create_dir(&internal).map_err(string)?;
-            let mut header = File::create(internal.join("begin.json")).map_err(string)?;
-            serde_json::to_writer(&mut header, &begin).map_err(string)?;
-            header.sync_all().map_err(string)?;
-            ExportItems::in_directory(&internal).map_err(|e| e.to_string())
+            let mut opened = File::create(internal.join("begin.json")).map_err(string)?;
+            serde_json::to_writer(&mut opened, &header).map_err(string)?;
+            opened.sync_all().map_err(string)?;
+            let items = ExportItems::in_directory(&internal).map_err(|e| e.to_string())?;
+            Ok((items, *snapshot, *options))
         };
-        let items = build().map_err(|message| Error {
+        let (items, snapshot, options) = build().map_err(|message| Error {
             message,
             staging: staging.clone(),
         })?;
         Ok(Self {
             destination: destination.to_owned(),
             staging,
-            begin,
+            header,
+            snapshot,
+            options,
             format,
             with_blobs,
             items: Some(items),
@@ -227,17 +237,17 @@ impl Bundle {
         }
         file.write_all(bytes).map_err(|e| self.error(e))
     }
-    pub fn finish(mut self, complete: ReadComplete) -> Result<Summary> {
+    pub fn finish(mut self, footer: ReadFooter) -> Result<Summary> {
         if self.failed {
             return Err(self.error("bundle delivery already failed"));
         }
-        if complete.counts != self.received {
+        if footer.counts != self.received {
             return Err(self.error("final read counts differ from received records"));
         }
-        if complete.footer.next.is_some() {
+        if footer.next.is_some() {
             return Err(self.error("read completed with a continuation"));
         }
-        let written = self.write_members(&complete).map_err(|e| self.error(e))?;
+        let written = self.write_members(&footer).map_err(|e| self.error(e))?;
         self.items
             .take()
             .expect("open staging")
@@ -304,7 +314,7 @@ impl Bundle {
             .map(|i| serde_json::from_reader(i.reader).map_err(|e| e.to_string()))
             .transpose()
     }
-    fn write_members(&mut self, complete: &ReadComplete) -> std::result::Result<Counts, String> {
+    fn write_members(&mut self, footer: &ReadFooter) -> std::result::Result<Counts, String> {
         let mut inventory = File::create(self.staging.join("members.jsonl")).map_err(string)?;
         let mut counts = Counts::default();
         self.items
@@ -360,16 +370,16 @@ impl Bundle {
             }
         }
         let mut manifest = Manifest::from_snapshot(
-            self.begin.snapshot.clone(),
+            self.snapshot.clone(),
             counts,
             Flags {
                 format: self.format,
                 with_blobs: self.with_blobs,
-                read: self.begin.options.clone(),
+                read: self.options.clone(),
             },
             None,
         );
-        manifest.coverage = complete.footer.coverage.clone();
+        manifest.coverage = footer.coverage.clone();
         if matches!(self.format, Format::Markdown | Format::Html) {
             let mut records = File::create(self.staging.join("records.jsonl")).map_err(string)?;
             self.items
@@ -465,7 +475,7 @@ impl Bundle {
                             None
                         }
                     })
-                    .unwrap_or_else(|| self.begin.header.clone());
+                    .unwrap_or_else(|| self.header.clone());
                 header.target = reference(&first).to_owned();
                 let session_record = if let Some(id) = first.record().and_then(session_id) {
                     self.items
@@ -538,7 +548,12 @@ impl Bundle {
                     }
                 }
                 if let Some(encoder) = encoder {
-                    encoder.finish(&complete.footer).map_err(string)?;
+                    encoder
+                        .finish(&ReadFooter {
+                            counts: Default::default(),
+                            ..footer.clone()
+                        })
+                        .map_err(string)?;
                 }
                 if let Some(mut file) = file {
                     file.write_all(b"]\n").map_err(string)?;
