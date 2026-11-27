@@ -351,7 +351,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsOutlier => Rule::NONE.sql_fn(|a| crate::session_sql::outlier(&a.s)),
         SessionsCorrections => Rule::NONE.sql_fn(|a| crate::session_sql::corrections(&a.s)),
         SessionsOpenItems => Rule::NONE.sql_fn(|a| crate::session_sql::open_items(&a.s)),
-        SessionsSubagentCost => Rule::NONE.sql_fn(|a| crate::measure::cost_of(&format!("SELECT child.pk FROM session child WHERE child.pk IN ({}) AND child.pk<>{}.pk",spawn_tree(&a.s),a.s))),
+        SessionsSubagentCost => Rule::NONE.sql_fn(subagent_cost),
         SessionsCostComplete => Rule::NONE.sql_fn(|a| crate::session_sql::cost_complete(&a.s)),
         SessionsCostWithParents => Rule::NONE.sql_fn(|a| crate::session_sql::cost_with_parents(&a.s)),
         MessagesLang => Rule::NONE.custom(custom::alternate_lang),
@@ -1063,6 +1063,19 @@ pub fn spawn_tree(s: &str) -> String {
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          JOIN session lc ON lc.id = l.child_id \
          WHERE l.kind = 'spawn') SELECT pk FROM tr"
+    )
+}
+
+/// The priced responses of spawned sessions. A priced session with no spawn
+/// links has zero subagent cost; an unresolved or unpriced subtree stays unknown.
+fn subagent_cost(a: &Aliases) -> String {
+    let s = &a.s;
+    let tree = spawn_tree(s);
+    let children = crate::measure::cost_of(&format!("SELECT pk FROM ({tree}) WHERE pk <> {s}.pk"));
+    let own = crate::measure::cost_of(&format!("SELECT {s}.pk"));
+    format!(
+        "(CASE WHEN EXISTS (SELECT 1 FROM session_link l WHERE l.parent_id = {s}.id AND l.kind='spawn')
+          THEN {children} ELSE 0 * {own} END)"
     )
 }
 

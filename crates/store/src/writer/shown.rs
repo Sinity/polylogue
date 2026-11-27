@@ -1849,7 +1849,7 @@ impl<'c> Work<'_, 'c> {
     }
 
     /// Writes the relations between `parent` and `child` of one kind and
-    /// how from all their statements (`session_link`), in one pass over the
+    /// reason from all their statements (`session_link`), in one pass over the
     /// statements, so a reader reads the relations as rows.
     fn resolve_links(
         &mut self,
@@ -1858,18 +1858,19 @@ impl<'c> Work<'_, 'c> {
         let statements: Vec<crate::lineage::LinkStatement> = self
             .tx()
             .prepare_cached(
-                "SELECT pk, branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
-                 FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4
-                 ORDER BY pk",
+                "SELECT l.branch_point, l.spawning_call, l.copies_prefix, l.evidence, l.source_chain, l.input_pk
+                 FROM link_statement l JOIN input_ref i ON i.pk=l.input_pk
+                 WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.reason IS ?4
+                 ORDER BY i.id, l.source_chain",
             )?
             .query_map(params![parent, child, kind, how], |r| {
                 Ok(crate::lineage::LinkStatement {
-                    branch_point: r.get(1)?,
-                    spawning_call: r.get(2)?,
-                    copies_prefix: r.get(3)?,
-                    evidence: r.get(4)?,
-                    source_chain: r.get(5)?,
-                    input_pk: r.get(6)?,
+                    branch_point: r.get(0)?,
+                    spawning_call: r.get(1)?,
+                    copies_prefix: r.get(2)?,
+                    evidence: r.get(3)?,
+                    source_chain: r.get(4)?,
+                    input_pk: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1879,7 +1880,7 @@ impl<'c> Work<'_, 'c> {
             .prepare_cached(
                 "SELECT branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
                  FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4
-                 ORDER BY pk",
+                 ORDER BY branch_point, spawning_call",
             )?
             .query_map(params![parent, child, kind, how], |r| {
                 Ok(crate::lineage::Relation {

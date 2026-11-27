@@ -1806,4 +1806,7 @@ fn tree_cost_follows_spawn_links_only() {
     assert_eq!(costs("parent"), (usd(7), usd(6)));
     assert_eq!(costs("fork"), (usd(24), usd(16)));
     assert_eq!(costs("grandchild"), (usd(4), usd(0)));
+    f.link("test:grandchild", "test:missing", "spawn", None)
+        .unwrap();
+    assert_eq!(costs("grandchild"), (usd(4), serde_json::Value::Null));
 }

@@ -34,9 +34,12 @@ pub(crate) fn is_lineage(kind: &str) -> bool {
 /// Only the affected child's indexed edge set is read while writing.
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
     conn.value(
-        "SELECT json_group_array(json_array(parent_id,child_id,kind,reason,branch_point,spawning_call,copies_prefix))
+        "SELECT json_group_array(json_array(parent_id,child_id,kind,reason,branch_point,spawning_call,
+                                            copies_prefix OR EXISTS(
+                                                SELECT 1 FROM shared_prefix p
+                                                WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id)))
          FROM (SELECT * FROM session_link WHERE child_id=?1
-               ORDER BY parent_id, kind, reason, branch_point, spawning_call)",
+               ORDER BY parent_id, kind, reason, branch_point, spawning_call) l",
         [child],
     )?
     .ok_or_else(|| crate::StoreError::internal("an aggregate read no row"))
@@ -152,7 +155,7 @@ pub(crate) struct LinkStatement {
     pub input_pk: i64,
 }
 
-/// One relation the statements of a (parent, child, kind, how) give.
+/// One relation the statements of a (parent, child, kind, reason) give.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Relation {
     pub branch_point: Option<String>,
@@ -163,8 +166,8 @@ pub(crate) struct Relation {
     pub input_pk: i64,
 }
 
-/// The relations of one (parent, child, kind, how) from all its
-/// statements, in `pk` order: coordinates that agree are one relation; a
+/// The relations of one (parent, child, kind, reason) from all its
+/// statements, ordered by source input ID and chain: coordinates that agree are one relation; a
 /// coordinate recorded with several values gives one relation for each;
 /// when both differ, every statement stands except one that another
 /// statement completes. Each relation takes its input from the first
