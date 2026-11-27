@@ -2,7 +2,7 @@
 use crate::{ColKind, ast::Unit};
 use polylogue_model::{
     AlternateKind, BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender,
-    DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role,
+    DocumentAuthorship, DocumentPurpose, LINK_KIND_NAMES, LINK_REASON_NAMES, PromptKind, Role,
     SessionKind, WrittenBy,
     user::{ChatStatus, ImportJobStatus},
 };
@@ -1106,7 +1106,7 @@ fields! {
         LINK_KIND_NAMES,
         "the recorded session relationship",
     ),
-    SessionLinksHow = v(SessionLinks, "how", LINK_HOW_NAMES, "why the sessions reference each other"),
+    SessionLinksReason = v(SessionLinks, "reason", LINK_REASON_NAMES, "why the sessions reference each other"),
     SessionLinksCopiesPrefix = f(SessionLinks, "copies_prefix", Bool, "the child holds a copy of the parent's prefix"),
     SessionLinksParent = sp(SessionLinks, "parent", "the parent session").reference(Sessions),
     SessionLinksChild = sp(SessionLinks, "child", "the child session").reference(Sessions),
@@ -1331,7 +1331,7 @@ fields! {
     FeedAfter = sp(
         Feed,
         "after",
-        "changes after a feed position `GENERATION:INDEX:ARCHIVE`: the `view` of an earlier answer",
+        "changes after a feed position `INDEX_INSTANCE:INDEX:ARCHIVE`: the `view` of an earlier answer",
     ),
     FeedSessions = sp(
         Feed,

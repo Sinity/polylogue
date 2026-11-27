@@ -106,7 +106,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
             .outcomes
             .as_ref()
             .or_internal("recorded Save has no resolved outcomes")?;
-        let [kept] = prepared.effect.kept_results.as_slice() else {
+        let [kept] = prepared.effect.saved_rows.as_slice() else {
             return Err(StoreError::internal(
                 "recorded Save must carry one kept effect",
             ));
@@ -116,16 +116,16 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         if parts.request != prepared.request.id
             || parts.repeat
             || parts.pending
-            || parts.kept.result != format!("result:{}", kept.id)
-            || parts.kept.at != kept.ran_at
-            || Some(parts.kept.rows) != rows["rows"].as_array().map(|rows| rows.len() as u64)
+            || parts.saved_rows.result != format!("result:{}", kept.id)
+            || parts.saved_rows.at != kept.ran_at
+            || Some(parts.saved_rows.rows) != rows["rows"].as_array().map(|rows| rows.len() as u64)
             || (save.watch.is_some() && parts.watch.is_none())
             || (parts.watch.is_some() && save.name.is_none())
             || prepared.outcome.id != prepared.request.id
             || kept.name != save.name
             || kept.query != save.query
             || kept.ran_at != prepared.request.at
-            || kept.read_at != save.read_at
+            || kept.read_position != save.read_position
             || kept.rows_json != save.rows_json
         {
             return Err(StoreError::internal(
@@ -248,7 +248,7 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
                 "a new named Save accepts its question as well as its rows",
             ));
         }
-        if parts.kept.result != format!("result:{}", prepared.request.id) {
+        if parts.saved_rows.result != format!("result:{}", prepared.request.id) {
             return Err(StoreError::internal(
                 "a new Save keeps rows under its request identity",
             ));

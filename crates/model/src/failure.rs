@@ -223,6 +223,8 @@ reasons! {
         "{path} is not a directory";
     ResumeInNeedsSession "resume_in_needs_session" => BadRequest {}
         "resume --in needs the session whose work it continues";
+    ContinuationRequestUsed "continuation_request_used" => Conflict {}
+        "this request ID already names a different operation";
     ResumeOptionsNeedIn "resume_options_need_in" => BadRequest {}
         "resume --at, --cwd and --stop-source apply only with --in HARNESS";
     /// A session whose harness has no resume command of its own.
@@ -363,6 +365,8 @@ reasons! {
     /// Import options that cannot be used together or with what they name.
     ImportOptions "import_options" => BadRequest { problem: String }
         "the import is refused: {problem}";
+    ImportRefused "import_refused" => BadValue { problem: String }
+        "no files were stored\n{problem}";
     NotAFile "not_a_file" => BadRequest { path: String }
         "{path} is not a file: name one of Python Polylogue's vector stores";
     NotAVectorStore "not_a_vector_store" => BadRequest { path: String }
@@ -398,6 +402,12 @@ reasons! {
     /// A save the daemon did not answer: it may or may not have been written.
     SaveOutcomeUnknown "save_outcome_unknown" => DaemonRequired {}
         "the note may or may not be saved; retry it with the same ID";
+    ReaderNotRunning "reader_not_running" => ReaderUnavailable {}
+        "the reader is not running; start it with `polylogue web`";
+    NativeVersionMismatch "native_version_mismatch" => Refused { version: Option<u64> }
+        "the browser host needs version 2; reload the extension";
+    NativeMessageInvalid "native_message_invalid" => BadRequest { problem: String }
+        "the browser message is invalid: {problem}";
     CaptureNotJson "capture_not_json" => BadRequest {}
         "a capture is one JSON object";
     CaptureNamesNoConversation "capture_names_no_conversation" => BadRequest {}

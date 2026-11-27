@@ -325,7 +325,7 @@ fn a_refused_reading_keeps_its_rows_and_is_read_again_under_a_new_parser_version
         let version = state.origin.parse_version();
         // A refusal after a committed prefix changes neither that prefix's
         // rows nor its cursor. A resetting step would retract the reading.
-        let mut step = polylogue_store::ParseStep::failed(
+        let mut step = polylogue_store::ParsePart::failed(
             length..length,
             polylogue_model::ChainFailure::refused("recorded synthetic refusal"),
         );

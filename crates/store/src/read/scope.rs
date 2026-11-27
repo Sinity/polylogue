@@ -5,9 +5,8 @@ use polylogue_model::LockExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockWriteGuard, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-type Invalidator = dyn Fn() -> Result<()> + Send + Sync;
 /// Wakes a reader waiting for a pool connection, so a scope change ends
 /// its wait.
 pub(crate) type ResetWake = dyn Fn() + Send + Sync;
@@ -16,9 +15,6 @@ pub(crate) type ResetWake = dyn Fn() + Send + Sync;
 pub(crate) struct ReadScopeState {
     epoch: AtomicU64,
     resetting: AtomicBool,
-    /// Publications share the fence; registration and reset take it alone,
-    /// so concurrent publications never wait for each other.
-    fence: RwLock<Vec<Weak<Invalidator>>>,
     wakes: Mutex<Vec<Weak<ResetWake>>>,
 }
 
@@ -32,34 +28,6 @@ impl std::fmt::Debug for ReadScopeState {
     }
 }
 
-/// Keep this registration for the daemon lifetime while a derived cache pointer
-/// can be read, including times when its publisher is stopped.
-pub struct ScopeInvalidation {
-    _state: Arc<ReadScopeState>,
-    _callback: Arc<Invalidator>,
-}
-
-pub(crate) struct ScopeReset<'a> {
-    callbacks: RwLockWriteGuard<'a, Vec<Weak<Invalidator>>>,
-}
-
-impl ScopeReset<'_> {
-    pub(crate) fn invalidate(&mut self) -> Result<()> {
-        self.callbacks
-            .retain(|callback| callback.strong_count() > 0);
-        let mut failed = None;
-        for callback in self.callbacks.iter().filter_map(Weak::upgrade) {
-            if let Err(error) = callback() {
-                failed.get_or_insert(error);
-            }
-        }
-        failed.map_or(Ok(()), Err)
-    }
-}
-
-fn poisoned() -> StoreError {
-    StoreError::internal("scope publication fence poisoned")
-}
 #[derive(Debug, Clone)]
 pub struct ReadScopeToken {
     state: Arc<ReadScopeState>,
@@ -95,35 +63,7 @@ pub(crate) fn root_key(root: &Path) -> PathBuf {
         _ => root.to_path_buf(),
     }
 }
-/// Whether a newly registered callback runs once at registration.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InitialInvalidation {
-    Invalidate,
-    Keep,
-}
-
 impl ReadScopeState {
-    pub(crate) fn register(
-        self: &Arc<Self>,
-        callback: impl Fn() -> Result<()> + Send + Sync + 'static,
-        initial: InitialInvalidation,
-    ) -> Result<ScopeInvalidation> {
-        let callback: Arc<Invalidator> = Arc::new(callback);
-        let mut fence = self.fence.write().map_err(|_| poisoned())?;
-        // Unknown scopes revoke their previous pointer immediately. Standalone
-        // opens install this callback before index setup and invalidate when
-        // that setup actually changes the local generation.
-        if initial == InitialInvalidation::Invalidate {
-            callback()?;
-        }
-        fence.retain(|callback| callback.strong_count() > 0);
-        fence.push(Arc::downgrade(&callback));
-        Ok(ScopeInvalidation {
-            _state: Arc::clone(self),
-            _callback: callback,
-        })
-    }
-
     pub(crate) fn token(self: &Arc<Self>) -> Result<ReadScopeToken> {
         let token = ReadScopeToken {
             state: Arc::clone(self),
@@ -140,7 +80,9 @@ impl ReadScopeState {
         wakes.push(Arc::downgrade(wake));
     }
 
-    pub(crate) fn begin_reset(&self) -> Result<ScopeReset<'_>> {
+    /// Ends every token taken before it; tokens taken until
+    /// [`Self::finish_reset`] fail their check too.
+    pub(crate) fn begin_reset(&self) -> Result<()> {
         self.resetting.store(true, Ordering::Release);
         let wakes: Vec<_> = self
             .wakes
@@ -151,29 +93,18 @@ impl ReadScopeState {
         for wake in wakes {
             wake();
         }
-        let callbacks = self.fence.write().map_err(|_| poisoned())?;
         self.epoch
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
             .or_internal("read scope epoch exhausted")?;
-        Ok(ScopeReset { callbacks })
+        Ok(())
     }
     pub(crate) fn finish_reset(&self) {
         self.resetting.store(false, Ordering::Release);
     }
 }
 impl ReadScopeToken {
-    /// Fence one pointer activation against scope invalidation. Build the cache
-    /// outside this guard; the callback must not acquire archive readers or
-    /// re-enter this fence.
-    pub fn with_current<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.check()?;
-        let _fence = self.state.fence.read().map_err(|_| poisoned())?;
-        self.check()?;
-        publish()
-    }
-
     pub fn check(&self) -> Result<()> {
         if self.state.resetting.load(Ordering::Acquire)
             || self.state.epoch.load(Ordering::Acquire) != self.epoch

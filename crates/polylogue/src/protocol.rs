@@ -2,7 +2,8 @@
 pub mod acts;
 pub mod browser;
 pub mod complete {
-    //! Full query completion uses the shared replacement span and candidate type.
+    //! Completion of a query, or of a setting's key or value, uses the shared
+    //! replacement span and candidate type.
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,12 @@ pub mod complete {
         pub text: String,
         /// UTF-8 byte offset of the cursor (default: end of text)
         pub position: Option<u64>,
+        /// Complete setting keys instead of a query: the text is the typed
+        /// start of the key
+        #[serde(default)]
+        pub setting: bool,
+        /// With `setting`, complete this key's values instead
+        pub key: Option<String>,
     }
     pub type Answer = Vec<query_language::complete::Completion>;
 }
@@ -49,10 +56,6 @@ pub mod help {
         /// Print the full reference
         #[serde(default)]
         pub all: bool,
-        /// Write the reference to a file or browser
-        pub to: Option<String>,
-        /// The reference's document format
-        pub format: Option<String>,
         /// List fields for this unit
         #[schemars(extend("unlisted" = true))]
         pub unit: Option<String>,
@@ -80,9 +83,6 @@ pub mod import {
         /// Read the paths as this declared structure (an origin name), or python-vectors for one of Python Polylogue's vector stores
         #[serde(default)]
         pub origin: Option<String>,
-        /// Withdraw page blocks missing from an imported working copy
-        #[serde(default)]
-        pub withdraw_missing: bool,
         /// Fetch provider conversations changed since this time
         pub since: Option<String>,
         /// Cancel a provider import

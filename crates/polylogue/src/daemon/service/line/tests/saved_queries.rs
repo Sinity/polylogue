@@ -98,7 +98,7 @@ fn shipped_query_resolves_and_withdrawing_an_authored_override_restores_it() {
         session_ids(&original)
     );
     assert_eq!(
-        session_ids(&rows(&d, "override-kept", &overridden.kept.result)),
+        session_ids(&rows(&d, "override-kept", &overridden.saved_rows.result)),
         ["claude-code:s1".into()].into()
     );
 }
@@ -116,11 +116,11 @@ fn resaving_the_same_question_keeps_new_rows_without_a_definition_revision() {
     assert_eq!(second_saved.id, first_saved.id);
     assert_eq!((first_saved.revision, second_saved.revision), (1, 1));
     assert!(!first.repeat && !second.repeat);
-    assert_ne!(first.kept.result, second.kept.result);
-    assert_eq!((first.kept.rows, second.kept.rows), (1, 1));
+    assert_ne!(first.saved_rows.result, second.saved_rows.result);
+    assert_eq!((first.saved_rows.rows, second.saved_rows.rows), (1, 1));
     assert_eq!(
-        rows(&d, "same-first-kept", &first.kept.result)["rows"],
-        rows(&d, "same-second-kept", &second.kept.result)["rows"]
+        rows(&d, "same-first-kept", &first.saved_rows.result)["rows"],
+        rows(&d, "same-second-kept", &second.saved_rows.result)["rows"]
     );
     let reader = d.daemon.reads.reader().unwrap();
     let history = reader.saved_query_record("focused").unwrap().unwrap();
@@ -131,11 +131,11 @@ fn resaving_the_same_question_keeps_new_rows_without_a_definition_revision() {
     );
     assert_eq!(
         history
-            .kept
+            .saved_rows
             .iter()
             .map(|part| part.result.clone())
             .collect::<std::collections::BTreeSet<_>>(),
-        [first.kept.result, second.kept.result].into()
+        [first.saved_rows.result, second.saved_rows.result].into()
     );
 }
 
@@ -243,19 +243,19 @@ fn a_saved_result_name_stays_fixed_when_the_newest_named_result_changes() {
         "sessions where id:claude-code:s2",
         2000,
     );
-    assert_ne!(first.kept.result, second.kept.result);
+    assert_ne!(first.saved_rows.result, second.saved_rows.result);
     let named = rows(&d, "named-newest", "result:population");
     assert_eq!(session_ids(&named), ["claude-code:s2".into()].into());
     assert_eq!(
         named["definitions"],
         json!([{
-            "name":"result:population", "revision":second.kept.result
+            "name":"result:population", "revision":second.saved_rows.result
         }])
     );
     for (id, selection) in [
         ("frozen-definition", "query:frozen-population"),
-        ("first-original", first.kept.result.as_str()),
-        ("frozen-kept", frozen.kept.result.as_str()),
+        ("first-original", first.saved_rows.result.as_str()),
+        ("frozen-kept", frozen.saved_rows.result.as_str()),
     ] {
         assert_eq!(
             session_ids(&rows(&d, id, selection)),
@@ -272,8 +272,8 @@ fn saving_raw_feed_rows_keeps_the_exact_relation_instead_of_reselecting_entities
     assert!(expected["count"].as_u64().unwrap() > 0, "{expected}");
     let kept = save(&d, "raw-feed-save", selection, None, false);
     assert!(kept.saved.is_none() && kept.watch.is_none());
-    assert_eq!(kept.kept.rows, expected["count"].as_u64().unwrap());
-    let actual = rows(&d, "raw-feed-kept", &kept.kept.result);
+    assert_eq!(kept.saved_rows.rows, expected["count"].as_u64().unwrap());
+    let actual = rows(&d, "raw-feed-kept", &kept.saved_rows.result);
     assert_eq!(actual["rows"], expected["rows"]);
     assert_eq!(actual["columns"], expected["columns"]);
 }

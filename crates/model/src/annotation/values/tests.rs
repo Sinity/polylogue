@@ -383,7 +383,7 @@ fn kind_shapes_decode_declared_and_refuse_malformed() {
             K::Slot,
             None,
             Some(
-                serde_json::json!({"section":"Evidence","pos":0.5,"mode":"follow","heading":"Findings"}),
+                serde_json::json!({"section":"Evidence","position":0.5,"mode":"follow","heading":"Findings"}),
             ),
         ),
         (K::Member, Some("reviewer"), None),

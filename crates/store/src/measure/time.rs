@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A message's place in session order (`message_session`): its
 /// `session_order` and ID.
-pub(crate) type OrderKey = (String, String);
+pub(crate) type OrderKey = (Vec<u8>, String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
@@ -143,8 +143,8 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
         None => "",
     };
     let mut statement=conn.prepare_cached(&format!("SELECT m.id,m.at,m.written_by,m.prompt_kind,m.stop_reason,
-        (SELECT b.kind FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1),
-        EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=(SELECT b.pk FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1) AND t.result_message_id IS NULL),
+        (SELECT b.kind FROM block b WHERE b.message_pk=m.pk ORDER BY b.position DESC LIMIT 1),
+        EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=(SELECT b.pk FROM block b WHERE b.message_pk=m.pk ORDER BY b.position DESC LIMIT 1) AND t.result_message_id IS NULL),
         m.session_order
         FROM message m WHERE {own}{tail} ORDER BY m.session_order,m.id"))?;
     let mut messages = Vec::new();
@@ -174,9 +174,9 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
         coalesce(t.at,m.at),CASE WHEN rm.duplicate_of IS NULL AND coalesce(rm.on_active_path,1)=1 THEN rm.at END,t.result_message_id IS NOT NULL,t.outcome='error',m.id,
         rm.session_order,rm.id
         FROM message m CROSS JOIN block b ON b.message_pk=m.pk CROSS JOIN tool_call t ON t.call_block_pk=b.pk
-        LEFT JOIN message rm ON rm.id=t.result_message_id LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
+        LEFT JOIN message rm ON rm.id=t.result_message_id LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.position=t.result_position
         WHERE {own}{tail} AND {}
-        ORDER BY m.session_order,m.id,b.idx,t.call_id,t.command_norm,t.tool",session_sql::counts_as_action("t")))?;
+        ORDER BY m.session_order,m.id,b.position,t.call_id,t.command_norm,t.tool",session_sql::counts_as_action("t")))?;
     let mut tools = Vec::new();
     let mut result_keys = Vec::new();
     let mut found = statement.query(rusqlite::params_from_iter(params.iter()))?;

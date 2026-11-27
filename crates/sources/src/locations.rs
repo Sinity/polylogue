@@ -7,6 +7,16 @@ pub struct Tool {
     pub root: Root,
     pub locations: &'static [&'static str],
     pub ignored: &'static [(&'static str, &'static str)],
+    /// A directory of the home whose subdirectories are each a full home of
+    /// the tool (Hermes profiles).
+    pub profiles: Option<&'static str>,
+    /// Whether a git working tree inside the home is the user's own project
+    /// rather than the tool's data.
+    pub user_projects: bool,
+    /// The origin whose parser reads the tool's other files it can open.
+    pub parsed_by: Option<&'static str>,
+    /// The origin of the tool's compressed (`.zst`) files.
+    pub compressed: Option<&'static str>,
 }
 
 pub const HERMES_ROOT: Root = Root {
@@ -32,6 +42,10 @@ const ANTIGRAVITY_IGNORED: &[(&str, &str)] = &[
 pub static TOOLS: &[Tool] = &[
     Tool {
         name: "claude-code",
+        profiles: None,
+        user_projects: true,
+        parsed_by: None,
+        compressed: None,
         root: crate::claude_code::ROOT,
         locations: &[
             "*.meta.json",
@@ -79,6 +93,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "codex",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: Some("codex-compressed"),
         root: crate::codex::ROOT,
         locations: &[
             "sessions/**/rollout-*.jsonl.zst",
@@ -116,6 +134,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "gemini-cli",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".gemini",
@@ -145,6 +167,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "antigravity",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".gemini/antigravity",
@@ -162,6 +188,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "antigravity-cli",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".gemini/antigravity-cli",
@@ -180,6 +210,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "hermes",
+        profiles: Some("profiles"),
+        user_projects: false,
+        parsed_by: Some("hermes"),
+        compressed: None,
         root: HERMES_ROOT,
         locations: &[
             "state.db",
@@ -215,6 +249,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "grok-cli",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".grok",
@@ -240,6 +278,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "pi",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".pi/agent",
@@ -249,6 +291,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "llm",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".config/io.datasette.llm",
@@ -258,6 +304,10 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "antigravity-state",
+        profiles: None,
+        user_projects: false,
+        parsed_by: None,
+        compressed: None,
         root: Root {
             env: None,
             default: ".config/Antigravity/User",

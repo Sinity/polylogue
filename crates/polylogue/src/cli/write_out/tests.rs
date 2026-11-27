@@ -11,7 +11,7 @@ fn begin() -> serde_json::Value {
             "query": format!("query:{}", "a".repeat(64)),
             "query_text": "sessions",
             "ran_at": "2026-01-01T00:00:00Z",
-            "read_at": {"generation":"synthetic", "index":1, "archive":1},
+            "read_position": {"index_instance":"synthetic", "index":1, "archive":1},
             "freshness": {
                 "local": polylogue_model::freshness::ReadCompleteness::empty(),
                 "sinex": {
@@ -222,7 +222,9 @@ fn streamed_line_with_failed_delivery_exits_nonzero() {
     assert_eq!(
         stream_line(
             root.path(),
-            &["sessions", "read", "--to", "clipboard"],
+            // An attachment's bytes are one text reply, which a directory
+            // cannot take.
+            &["sessions", "read", "--to", "out/"],
             &[("steps", steps.clone()), ("answer", steps)],
         )
         .unwrap(),

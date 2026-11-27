@@ -351,12 +351,6 @@ impl Paths {
             .join("git-roots")
             .join(format!("{}.json", &key.to_hex()[..32]))
     }
-    pub fn completion_catalog(&self, archive: &Path) -> PathBuf {
-        self.cache
-            .join("polylogue")
-            .join(crate::runtime_dir::archive_key(archive))
-            .join("catalog")
-    }
 }
 #[derive(Clone)]
 pub struct HttpConfig {

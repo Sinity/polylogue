@@ -54,8 +54,8 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
         query: format!("query:{}", "a".repeat(64)),
         query_text: "sessions".into(),
         ran_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
-        read_at: polylogue_model::ChangePosition {
-            generation: "synthetic".into(),
+        read_position: polylogue_model::ChangePosition {
+            index_instance: "synthetic".into(),
             index: 1,
             archive: 1,
         },
@@ -465,10 +465,10 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| row["what"] == "inherited session content")
+        .filter(|row| row["item"] == "inherited session content")
         .collect();
     assert_eq!(
         inherited,
-        [&json!({"what": "inherited session content", "reason": issue})]
+        [&json!({"item": "inherited session content", "reason": issue})]
     );
 }

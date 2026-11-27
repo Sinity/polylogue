@@ -1,5 +1,7 @@
 // Release inputs and browser-specific manifest transformations. Registration
 // remains in the committed manifest; packaging never changes source files.
+import { createHash, createPublicKey } from "node:crypto";
+
 export const FIREFOX_GECKO_ID = "polylogue-browser-capture@sinity.dev";
 export const runtimeFiles = Object.freeze([
   "manifest.json",
@@ -24,10 +26,19 @@ export function browserVersion(raw) {
   return version;
 }
 
-export function browserManifest(source, rawVersion, browser) {
+export function chromeExtensionId(key) {
+  const bytes = Buffer.from(key, "base64");
+  createPublicKey({ key: bytes, format: "der", type: "spki" });
+  return createHash("sha256").update(bytes).digest("hex").slice(0, 32)
+    .replace(/./g, (digit) => String.fromCharCode(97 + parseInt(digit, 16)));
+}
+
+export function browserManifest(source, rawVersion, browser, revision) {
   const manifest = structuredClone(source);
   manifest.version = browserVersion(rawVersion);
+  if (revision) manifest.version_name = revision;
   if (browser === "firefox") {
+    delete manifest.key;
     if (manifest.background?.service_worker) {
       manifest.background.scripts = [manifest.background.service_worker];
     }

@@ -16,6 +16,7 @@ pub(super) fn arguments(
     Ok(crate::protocol::complete::Arguments {
         text: request.argument.value,
         position,
+        ..Default::default()
     })
 }
 

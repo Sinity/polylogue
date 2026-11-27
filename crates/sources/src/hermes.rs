@@ -64,7 +64,8 @@ fn unknown_time_event(
     }
 }
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     if observer::recognize(path, head)
         || verification::recognize(path)
         || trajectory::recognize(path, head)
@@ -601,7 +602,7 @@ impl ExportParser for Database {
                     sink.out.links.push(Link {
                         kind,
                         copies_prefix: false,
-                        how: None,
+                        reason: None,
                         parent: parent_id,
                         child: id.clone(),
                         branch_point,

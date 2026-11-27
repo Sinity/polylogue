@@ -11,7 +11,7 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 7;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
@@ -21,7 +21,7 @@ pub struct ReadSnapshot {
     pub query: String,
     pub query_text: String,
     pub ran_at: Timestamp,
-    pub read_at: ChangePosition,
+    pub read_position: ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
     pub enabled_alternates: Vec<String>,
     pub author: Author,
@@ -41,7 +41,7 @@ pub struct Manifest {
     pub query: String,
     pub query_text: String,
     pub ran_at: Timestamp,
-    pub read_at: ChangePosition,
+    pub read_position: ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
     pub counts: Counts,
     pub flags: Flags,
@@ -488,7 +488,7 @@ impl Manifest {
             query: snapshot.query,
             query_text: snapshot.query_text,
             ran_at: snapshot.ran_at,
-            read_at: snapshot.read_at,
+            read_position: snapshot.read_position,
             freshness: snapshot.freshness,
             enabled_alternates: snapshot.enabled_alternates,
             author: snapshot.author,
@@ -518,7 +518,9 @@ impl Manifest {
         {
             return Err(BundleError::InvalidQuery);
         }
-        if self.read_at.generation.is_empty() || self.read_at.index < 0 || self.read_at.archive < 0
+        if self.read_position.index_instance.is_empty()
+            || self.read_position.index < 0
+            || self.read_position.archive < 0
         {
             return Err(BundleError::InvalidPosition);
         }

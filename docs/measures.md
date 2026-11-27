@@ -160,7 +160,7 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Operator interventions | row marks and events; sums | row, read | extracted |
 | Service interruptions | `api_error` events | row, read | extracted |
 | Cost of a failure | per fail-then-pass pair | read | exact |
-| Commit and pull-request links | `commit_link`, `pr_link`; `commit:`, `pr:` | session | extracted |
+| Commit and pull-request links | `commit_link`, `pull_request_link`; `commit:`, `pr:` | session | extracted |
 | Landed work | landed and not landed commits | read | exact |
 | Delegations | per `spawn` link | read | exact |
 | Live state | rank, waiting state, open call, task, peers | read | exact |

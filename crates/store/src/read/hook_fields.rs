@@ -9,16 +9,16 @@ use rusqlite::params;
 
 row! {
     /// An injection field a reading of a message version declared, on the
-    /// block at `block_ordinal`, and that reading's layout.
+    /// block at `source_block_position`, and that reading's layout.
     struct DeclaredField {
-        block_ordinal: String,
+        source_block_position: String,
         field: Json<StatedHookField>,
         layout: Vec<u8>,
     }
     statements {
-        const OF_VERSION = "SELECT DISTINCT f.block_ordinal, f.field, r.layout FROM message_parse r
+        const OF_VERSION = "SELECT DISTINCT f.source_block_position, f.field, r.layout FROM message_parse r
             JOIN message_injection_field f ON f.input_pk=r.input_pk AND f.chain=r.chain AND f.message_id=r.message_id
-            WHERE r.message_id=?1 AND r.hash=?2 ORDER BY length(f.block_ordinal), f.block_ordinal, f.field";
+            WHERE r.message_id=?1 AND r.hash=?2 ORDER BY length(f.source_block_position), f.source_block_position, f.field";
     }
 }
 
@@ -37,7 +37,7 @@ impl Reader<'_> {
         let mut grouped = std::collections::BTreeMap::<u64, Vec<StatedHookField>>::new();
         let mut block_selection = None;
         for DeclaredField {
-            block_ordinal: ordinal,
+            source_block_position: ordinal,
             field: Json(field),
             layout,
         } in declared

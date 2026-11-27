@@ -5,11 +5,11 @@ const source = await readFile(new URL("../live.js", import.meta.url), "utf8");
 let serial = 0;
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
 const sseFrame = data => "event: " + (data.type === "change" ? "record" : data.type) + "\ndata: " + JSON.stringify(data) + "\n\n";
-const begin = { type: "begin", replacement: false, generation_changed: false };
+const begin = { type: "begin", replacement: false, index_instance_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(sseFrame(begin) + sseFrame(change) + sseFrame(complete(position)));
-const currentPage = (next = null) => Response.json({ outcome: "ok", value: { kind: "listing", reply: { rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next } }, notes: [], next: [] });
+const currentPage = (next = null) => Response.json({ outcome: "ok", value: { kind: "listing", reply: { rows: [{ ref: "session:current" }], read_position: { cursor: "synthetic:0:0", index_instance: "synthetic" }, next } }, notes: [], next: [] });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
   const timers = new Map(), intervals = new Map(), events = new Map();
@@ -51,7 +51,7 @@ test("joining reads every current page without resetting the shared position", a
   const stopA = env.watchChanges({ query: "changes where kind:session",}); await flush();
   const stopB = env.watchChanges({ query: "changes where kind:session", page: page => pages.push(page), begin: line => beginnings.push(line), complete: line => completions.push(line) }); await flush();
   assert.equal(pages.length, 2);
-  assert.equal(beginnings[0].generation, "synthetic");
+  assert.equal(beginnings[0].index_instance, "synthetic");
   assert.equal(completions[0].count, 2);
   assert.equal(requests.filter(url => url.startsWith("/api/v1/rows")).length, 4);
   const feeds = requests.filter(url => url.startsWith("/api/v1/dev/feed"));
@@ -84,10 +84,10 @@ test("expired authentication stops requests", async t => {
   assert.equal(calls, 1); assert.equal(env.timers.size, 0); assert.equal(env.intervals.size, 0);
   assert.match(errors[0], /Reopen with polylogue web/); stop();
 });
-test("a generation change reaches views before replacement references", async t => {
+test("an index instance change reaches views before replacement references", async t => {
   const seen = [];
-  const env = await environment(t, async url => url.startsWith("/api/v1/rows") ? currentPage() : new Response(sseFrame({ ...begin, replacement: true, generation_changed: true }) + sseFrame(change) + sseFrame(complete("new:1:0"))));
-  const stop = env.watchChanges({ query: "changes where kind:session", begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
+  const env = await environment(t, async url => url.startsWith("/api/v1/rows") ? currentPage() : new Response(sseFrame({ ...begin, replacement: true, index_instance_changed: true }) + sseFrame(change) + sseFrame(complete("new:1:0"))));
+  const stop = env.watchChanges({ query: "changes where kind:session", begin: line => seen.push(line.index_instance_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
   await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });
 
