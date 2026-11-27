@@ -498,12 +498,13 @@ fn tool_span_replays_the_original_result_block() {
     let requested = reference("span:tool:claude-code:s#t1#u16=1-3");
     let text_of = |source: &SpanSource<'_, '_>| {
         let mut selected = String::new();
-        source
+        let flow = source
             .visit_text(|piece| {
                 selected.push_str(piece);
                 Ok(ControlFlow::Continue(()))
             })
             .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
         selected
     };
     let bound = {
