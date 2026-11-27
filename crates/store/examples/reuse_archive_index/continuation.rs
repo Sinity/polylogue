@@ -63,6 +63,8 @@ struct Segment {
     through: u64,
 }
 
+type DatabaseCopy = fn(&Path, &Path) -> Result<(), Error>;
+
 pub(super) struct Pending {
     source: Pinned,
     lock: Pinned,
@@ -71,6 +73,7 @@ pub(super) struct Pending {
     segments: Vec<(String, Segment)>,
     candidate: PathBuf,
     staging: tempfile::TempDir,
+    copy_database: DatabaseCopy,
     identity: ArchiveId,
     pub(super) index_at: u64,
     pub(super) checked_at: u64,
@@ -78,6 +81,15 @@ pub(super) struct Pending {
 
 impl Pending {
     pub(super) fn prepare(earlier: &Path, source: &Path, candidate: &Path) -> Result<Self, Error> {
+        Self::prepare_using(earlier, source, candidate, reflink_database)
+    }
+
+    pub(super) fn prepare_using(
+        earlier: &Path,
+        source: &Path,
+        candidate: &Path,
+        copy_database: DatabaseCopy,
+    ) -> Result<Self, Error> {
         let parent = candidate
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -111,6 +123,13 @@ impl Pending {
         let identity = archive_id(&old)?;
         checked_index(earlier, identity.clone(), index_at)?;
         let staging = tempfile::tempdir_in(&parent)?;
+        // Check the actual files and destination before asking the operator
+        // to stop. These copies may include in-flight writes and are discarded.
+        {
+            let probe = tempfile::tempdir_in(staging.path())?;
+            copy_database(&record.path, &probe.path().join("archive.db"))?;
+            copy_database(&vectors.path, &probe.path().join("embeddings.db"))?;
+        }
         fs::create_dir(staging.path().join("segments"))?;
         let (checked_at, mut segments) = {
             attach(&old, &live.archive_db())?;
@@ -184,6 +203,7 @@ impl Pending {
             segments,
             candidate,
             staging,
+            copy_database,
             identity,
             index_at,
             checked_at,
@@ -232,8 +252,8 @@ impl Pending {
         }
         // The vector store commits independently of the record counter. Copy
         // its final database and WAL even when the record position is unchanged.
-        copy_database(&self.record.path, &stage.join("archive.db"))?;
-        copy_database(&self.vectors.path, &stage.join("embeddings.db"))?;
+        (self.copy_database)(&self.record.path, &stage.join("archive.db"))?;
+        (self.copy_database)(&self.vectors.path, &stage.join("embeddings.db"))?;
         copy_file(
             &self.source.path.join("meta.json"),
             &stage.join("meta.json"),

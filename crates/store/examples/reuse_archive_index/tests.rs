@@ -285,9 +285,16 @@ fn continues_one_native_source_after_preparing_the_checked_cut() {
     home.append("warm.jsonl", &claude_user("two", "warm", "warm harbor"));
     read_sources(&home, true);
     let candidate = home.dir.path().join("candidate");
+    // Use the same protocol on hosts whose test scratch supports reflinks.
+    let probe = home.dir.path().join("probe.db");
+    let strategy = if reflink_database(&home.root.join("archive.db"), &probe).is_ok() {
+        reflink_database
+    } else {
+        copy_database
+    };
     let pending = {
         let _running = lock(&home.root).unwrap();
-        continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap()
+        continuation::Pending::prepare_using(&earlier, &home.root, &candidate, strategy).unwrap()
     };
     assert!(pending.checked_at > pending.index_at);
     assert!(!candidate.exists());
@@ -359,7 +366,23 @@ fn continuation_refuses_a_replaced_branch_or_regressed_record() {
     read_sources(&home, true);
     let earlier = fork(&mut home, "source");
     let candidate = home.dir.path().join("candidate");
-    let pending = continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap();
+    let prepare = || {
+        continuation::Pending::prepare_using(&earlier, &home.root, &candidate, copy_database)
+            .unwrap()
+    };
+    let pending = prepare();
+    {
+        let _running = lock(&home.root).unwrap();
+        assert!(
+            pending
+                .finish()
+                .unwrap_err()
+                .to_string()
+                .contains("source writer lock")
+        );
+        assert!(!candidate.exists());
+    }
+    let pending = prepare();
 
     let segment = home.root.join("segments/current.hb");
     let old_segment = home.root.join("segments/old.hb");
@@ -374,7 +397,7 @@ fn continuation_refuses_a_replaced_branch_or_regressed_record() {
     );
     assert!(!candidate.exists());
 
-    let pending = continuation::Pending::prepare(&earlier, &home.root, &candidate).unwrap();
+    let pending = prepare();
     let (conn, position) = open_archive(&Archive::at(&home.root)).unwrap();
     drop(conn);
     let conn = Connection::open(home.root.join("archive.db")).unwrap();

@@ -385,7 +385,19 @@ fn install_index(
 }
 
 fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
-    copy_file(from, to)?;
+    copy_database_with(from, to, copy_file)
+}
+
+fn reflink_database(from: &Path, to: &Path) -> Result<(), Error> {
+    copy_database_with(from, to, |from, to| copy_file_with(from, to, "always"))
+}
+
+fn copy_database_with(
+    from: &Path,
+    to: &Path,
+    copy: impl Fn(&Path, &Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    copy(from, to)?;
     let sidecar = |file: &Path, suffix: &str| -> PathBuf {
         let mut name = OsString::from(file);
         name.push(suffix);
@@ -393,7 +405,7 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
     };
     let wal = sidecar(from, "-wal");
     if wal.try_exists()? {
-        copy_file(&wal, &sidecar(to, "-wal"))?;
+        copy(&wal, &sidecar(to, "-wal"))?;
     }
     if sidecar(from, "-journal").try_exists()? {
         return Err(format!("{} has a rollback journal", from.display()).into());
@@ -402,6 +414,10 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<(), Error> {
+    copy_file_with(from, to, "auto")
+}
+
+fn copy_file_with(from: &Path, to: &Path, reflink: &str) -> Result<(), Error> {
     // Btrfs clones only when the files agree on whether writes use copy-on-write.
     // A new file normally inherits the directory's flag, which can differ from
     // a native archive's database or WAL.
@@ -417,14 +433,14 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), Error> {
     }
     // SQLite writes only into the staged copy.
     if !std::process::Command::new("cp")
-        .arg("--reflink=auto")
+        .arg(format!("--reflink={reflink}"))
         .arg("--")
         .arg(from)
         .arg(to)
         .status()?
         .success()
     {
-        return Err(format!("could not copy {}", from.display()).into());
+        return Err(format!("could not copy {} with --reflink={reflink}", from.display()).into());
     }
     Ok(())
 }
