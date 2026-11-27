@@ -31,17 +31,18 @@ fn send_many_reaches_running_only() {
         1,
         2,
     );
-    let report = crate::test_answers::ok(
-        Call::new(
-            "rows",
-            json!({
-                "references": ["session:claude-code:s1", "session:claude-code:s2"],
-                "steps": [{"verb": "send", "text": "read the 'clock' file"}],
-            }),
-        )
-        .id("group-send")
-        .answer(&d.daemon),
-    );
+    let answer = Call::new(
+        "rows",
+        json!({
+            "references": ["session:claude-code:s1", "session:claude-code:s2"],
+            "steps": [{"verb": "send", "text": "read the 'clock' file"}],
+        }),
+    )
+    .id("group-send")
+    .answer(&d.daemon);
+    assert_eq!(answer.exit_code(), 5);
+    let (report, missing) = crate::test_answers::degraded(answer);
+    assert_eq!(missing, ["message to claude-code:s2"]);
     let sent = &report["reply"]["steps"][0]["outcome"];
     assert_eq!(sent["status"], "done", "{report}");
     assert_eq!(
@@ -60,6 +61,7 @@ fn send_many_reaches_running_only() {
         sent["reply"]["reply"]["skipped"],
         json!([{
             "session": "claude-code:s2",
+            "reason": {"kind": "session_not_running", "state": "ended"},
             "line": format!("polylogue claude-code:s2 send {}", polylogue_render::shell_quote("read the 'clock' file")),
         }])
     );

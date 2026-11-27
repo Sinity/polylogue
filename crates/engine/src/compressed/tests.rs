@@ -533,7 +533,7 @@ fn every_input_identity_contains_its_machine_or_is_its_content_hash() {
                 "{}",
                 origin.name
             ),
-            InputIdentity::ProviderId => {
+            InputIdentity::ProviderId(_) => {
                 let one = InputIdentity::provider_named("codex:rollout:session", "machine-one");
                 let two = InputIdentity::provider_named("codex:rollout:session", "machine-two");
                 assert_ne!(one, two, "{}", origin.name);

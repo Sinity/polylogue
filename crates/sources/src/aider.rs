@@ -17,7 +17,8 @@ pub const ORIGIN: &str = "aider";
 pub const HISTORY: &str = ".aider.llm.history";
 pub const COMPANION: &str = ".aider.chat.history.md";
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.file_name().is_some_and(|name| name == HISTORY) && head.starts_with(b"TO LLM ")
 }
 pub fn open(path: &Path) -> Option<Parse> {

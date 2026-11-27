@@ -146,7 +146,9 @@ fn held_origin() -> &'static OriginSpec {
     let claude_code = polylogue_sources::origin::by_name("claude-code").unwrap();
     Box::leak(Box::new(OriginSpec {
         name: claude_code.name,
-        harness_prefixes: claude_code.harness_prefixes,
+        import: polylogue_sources::origin::Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         modules: claude_code.modules,
         support: Support::Parsed,
         arrival: Arrival::Live,

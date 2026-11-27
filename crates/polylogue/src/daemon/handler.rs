@@ -139,6 +139,8 @@ pub(crate) struct Call<'a> {
     /// The request's one read limit.
     pub limit: &'a ReadLimit,
     pub lane: Lane,
+    /// The archive position a preceding write needs the next reader to see.
+    pub after_write: Option<polylogue_store::archive::writer::Position>,
     /// Where the request's events go; its final answer is the return value.
     pub output: &'a dyn Events,
     /// The query the request runs, which a deadline refusal narrows.
@@ -156,14 +158,18 @@ impl Call<'_> {
     /// reads, and only under its cancellation once a write was handed over
     /// or for a write, so a committed result is read back whatever the time.
     pub fn reader(&self) -> Result<polylogue_store::Reader<'_>, Failure> {
-        let reader = match ReadLimit::current() {
-            Some(limit) => self.daemon.reads.checkout(self.lane, &limit),
-            None => self.daemon.reads.checkout(
+        let reads = &self.daemon.reads;
+        let limit = ReadLimit::current()
+            .unwrap_or_else(|| ReadLimit::without_deadline(self.limit.cancellation.clone()));
+        Ok(match self.after_write {
+            Some(position) => reads.checkout_after(
+                super::service::writer(self.daemon)?,
+                position,
                 self.lane,
-                &ReadLimit::without_deadline(self.limit.cancellation.clone()),
-            ),
-        };
-        Ok(reader?)
+                &limit,
+            )?,
+            None => reads.checkout(self.lane, &limit)?,
+        })
     }
 
     /// Ends the read phase before a write is handed to the writer: a read
@@ -630,6 +636,7 @@ fn respond<O: Operation>(
         budget: request.budget_tokens,
         limit: &limit,
         lane: policy.lane,
+        after_write: None,
         output: &guarded,
         query: &query,
     };
@@ -648,7 +655,12 @@ fn respond<O: Operation>(
         },
     );
     if let Some(failure) = guarded.stopped.take() {
-        answer = failure.answer();
+        answer = match limit.check() {
+            Err(error) => {
+                super::execution::stopped_read(&error, row.name, query.borrow().as_deref(), &limit)
+            }
+            Ok(()) => failure.answer(),
+        };
     }
     if let Outcome::Error(failure) = &mut answer.outcome {
         // A cursor that no longer names its place suggests the same request

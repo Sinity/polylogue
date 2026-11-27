@@ -256,13 +256,14 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::RowNumbersOffTerminal => FailureKind::BadRequest,
         Code::Ambiguous => FailureKind::Ambiguous,
         Code::StaleCursor => FailureKind::StaleCursor,
-        Code::NotBuilt
-        | Code::NotYetAvailable
+        Code::NotBuilt => FailureKind::NotBuilt,
+        Code::NotYetAvailable
         | Code::IndexBuilding
         | Code::PrimaryContextMissing
         | Code::PrimaryContextPending
         | Code::PrimaryContextStale => FailureKind::NotYetAvailable,
-        Code::Refused
+        Code::ModelCallsOff
+        | Code::Refused
         | Code::OperatorRequired
         | Code::EmbeddingsOff
         | Code::Confirm
@@ -293,10 +294,7 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         Code::DeadlineExceeded | Code::Busy => FailureKind::Timeout,
         Code::Internal => FailureKind::Internal,
         Code::Cancelled => FailureKind::Cancelled,
-        Code::Empty
-        | Code::ModelCallsOff
-        | Code::Degraded
-        | Code::Demo
+        Code::Demo
         | Code::AttachmentOutput
         | Code::ReaderUnavailable
         | Code::Schema
@@ -328,6 +326,9 @@ pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Fail
 pub fn failure(code: polylogue_model::Code, message: impl Into<String>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
     failure.code = Some(code.as_str().to_owned());
+    if code == polylogue_model::Code::Cancelled {
+        failure.retryable = true;
+    }
     failure
 }
 
@@ -466,7 +467,7 @@ pub fn read<T>(value: T, freshness: &polylogue_model::freshness::ReadFreshness) 
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
                 value,
-                missing: freshness.notes().into_iter().map(str::to_owned).collect(),
+                missing: freshness.notes(),
             },
             envelope: command_surface::Envelope {
                 next: vec![],

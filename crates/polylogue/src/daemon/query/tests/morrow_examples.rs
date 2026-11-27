@@ -162,6 +162,10 @@ fn compare(
 ) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
+            if number == "33" {
+                assert_eq!(f.code(), want["code"].as_str().unwrap());
+                assert_eq!(f.message, want["message"].as_str().unwrap());
+            }
             if number == "35" {
                 let detail =
                     super::query_failure_detail(f, query_language::ErrorKind::UnknownField, 0);

@@ -5,8 +5,10 @@
 use crate::ConnExt as _;
 use crate::archive::Archive;
 use crate::archive::index_build::Reads;
+use crate::archive::writer::Position;
 use crate::blobs::FileFacts;
 use crate::row::{Json, MessagePk, Rows as _, SessionPk, Statement, row};
+use crate::writer::WriterSender;
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
@@ -707,6 +709,22 @@ impl ReadPool {
     /// refuses to avoid deadlock.
     pub fn checkout(&self, lane: Lane, limit: &limit::ReadLimit) -> Result<Reader<'_>> {
         self.acquire(lane, Some(limit.clone()))
+    }
+
+    /// Waits for the index before taking a connection or opening a snapshot.
+    pub fn checkout_after(
+        &self,
+        writer: &WriterSender,
+        position: Position,
+        lane: Lane,
+        limit: &limit::ReadLimit,
+    ) -> Result<Reader<'_>> {
+        if writer.followed_position() < position {
+            self.index_path()?;
+            limit::ReadLimit::set_stage("waiting for the index");
+            writer.followed(position, Some(limit))?;
+        }
+        self.checkout(lane, limit)
     }
 
     /// A reader for work outside a request (the loop, workers): the ordinary

@@ -11,10 +11,12 @@
 
 use super::{open_source, tables_of};
 use crate::ResultExt as _;
+use crate::row::{Rows as _, row};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -56,6 +58,73 @@ const BY_MESSAGE: [&str; 5] = [
     "content_hash",
     "embedded_at_ms",
 ];
+
+row! {
+    struct ApplicationId {
+        application_id: i64,
+    }
+    statements {
+        const READ = "PRAGMA application_id";
+    }
+}
+
+row! {
+    struct UserVersion {
+        user_version: i64,
+    }
+    statements {
+        const READ = "PRAGMA user_version";
+    }
+}
+
+row! {
+    struct AddressedVector {
+        embedding_input_hash: Vec<u8>,
+        model: String,
+        dimension: i64,
+        embedded_at_ms: Option<i64>,
+        request_text: Option<String>,
+    }
+    statements {
+        const PREPARED = "SELECT embedding_input_hash, model, dimension, embedded_at_ms, request_text FROM message_embeddings_meta";
+        const ORIGINAL = "SELECT embedding_input_hash, model, dimension, embedded_at_ms, NULL AS request_text FROM message_embeddings_meta";
+    }
+}
+
+row! {
+    struct OriginCount {
+        origin: String,
+        count: i64,
+    }
+    statements {
+        const ALL = "SELECT substr(message_id, 1, instr(message_id, ':') - 1) AS origin, count(*) AS count
+             FROM message_embeddings_meta GROUP BY 1";
+    }
+}
+
+row! {
+    struct VectorSlot {
+        id: String,
+        chunk_id: i64,
+        chunk_offset: i64,
+    }
+    statements {
+        const ALL = "SELECT r.id, r.chunk_id, r.chunk_offset FROM message_embeddings_rowids r
+             WHERE r.chunk_id IS NOT NULL ORDER BY r.chunk_id, r.chunk_offset";
+    }
+}
+
+row! {
+    struct VectorChunk {
+        validity: Vec<u8>,
+        vectors: Vec<u8>,
+    }
+    statements {
+        const OF_ID = "SELECT c.validity, v.vectors FROM message_embeddings_chunks c
+             JOIN message_embeddings_vector_chunks00 v ON v.rowid = c.chunk_id
+             WHERE c.chunk_id = ?1";
+    }
+}
 
 /// Python Polylogue's document request address. The caller supplies NFC text;
 /// prepared sources validate that normalization before accepting its vectors.
@@ -102,8 +171,8 @@ impl VectorStore {
             }
             .into());
         };
-        let application: i64 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let application = conn.one(&ApplicationId::READ, [])?.application_id;
+        let version = conn.one(&UserVersion::READ, [])?.user_version;
         let prepared = application == 0x504c5650;
         if prepared
             && (version != 1
@@ -134,17 +203,20 @@ impl VectorStore {
                 "a store by message names no addresses",
             ));
         }
-        let mut statement = self.conn.prepare(if self.prepared {
-            "SELECT embedding_input_hash, model, dimension, embedded_at_ms, request_text FROM message_embeddings_meta"
+        let statement = if self.prepared {
+            AddressedVector::PREPARED
         } else {
-            "SELECT embedding_input_hash, model, dimension, embedded_at_ms, NULL FROM message_embeddings_meta"
-        })?;
-        let rows = statement.query_map([], |r| {
-            <(Vec<u8>, String, i64, Option<i64>, Option<String>)>::try_from(r)
-        })?;
+            AddressedVector::ORIGINAL
+        };
         let mut out = Vec::new();
-        for row in rows {
-            let (address, model, dims, embedded_at, request) = row?;
+        let _ = self.conn.each(&statement, [], |row| {
+            let AddressedVector {
+                embedding_input_hash: address,
+                model,
+                dimension: dims,
+                embedded_at_ms: embedded_at,
+                request_text: request,
+            } = row;
             let address: [u8; 32] = address
                 .try_into()
                 .or_stored("a vector address is not 32 bytes")?;
@@ -176,18 +248,19 @@ impl VectorStore {
                 embedded_at,
                 normalized_hash,
             });
-        }
+            Ok(ControlFlow::Continue(()))
+        })?;
         Ok(out)
     }
 
     /// Vectors per Python Polylogue origin in a store by message.
     pub fn by_message_counts(&self) -> Result<BTreeMap<String, u64>> {
-        let mut statement = self.conn.prepare(
-            "SELECT substr(message_id, 1, instr(message_id, ':') - 1), count(*)
-             FROM message_embeddings_meta GROUP BY 1",
-        )?;
-        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        Ok(self
+            .conn
+            .all(&OriginCount::ALL, [])?
+            .into_iter()
+            .map(|row| (row.origin, row.count as u64))
+            .collect())
     }
 
     /// Calls `visit` with each stored vector's key (the address in hex, or
@@ -199,29 +272,20 @@ impl VectorStore {
         mut visit: impl FnMut(&str, &[u8]) -> Result<()>,
     ) -> Result<()> {
         let width = dims * 4;
-        let mut rows = self.conn.prepare(
-            "SELECT r.id, r.chunk_id, r.chunk_offset FROM message_embeddings_rowids r
-             WHERE r.chunk_id IS NOT NULL ORDER BY r.chunk_id, r.chunk_offset",
-        )?;
-        let mut chunk_of = self.conn.prepare(
-            "SELECT c.validity, v.vectors FROM message_embeddings_chunks c
-             JOIN message_embeddings_vector_chunks00 v ON v.rowid = c.chunk_id
-             WHERE c.chunk_id = ?1",
-        )?;
-        let mut current: Option<(i64, Vec<u8>, Vec<u8>)> = None;
-        let mut rows = rows.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let chunk: i64 = row.get(1)?;
-            let offset = usize::try_from(row.get::<_, i64>(2)?).map_err(|_| {
+        let mut current: Option<(i64, VectorChunk)> = None;
+        let _ = self.conn.each(&VectorSlot::ALL, [], |row| {
+            let VectorSlot {
+                id,
+                chunk_id: chunk,
+                chunk_offset,
+            } = row;
+            let offset = usize::try_from(chunk_offset).map_err(|_| {
                 StoreError::stored_data(format!("vector {id} has a negative offset"))
             })?;
-            if current.as_ref().is_none_or(|(held, _, _)| *held != chunk) {
-                let (validity, vectors) =
-                    chunk_of.query_row([chunk], |r| Ok((r.get(0)?, r.get(1)?)))?;
-                current = Some((chunk, validity, vectors));
+            if current.as_ref().is_none_or(|(held, _)| *held != chunk) {
+                current = Some((chunk, self.conn.one(&VectorChunk::OF_ID, [chunk])?));
             }
-            let (_, validity, vectors) = current.as_ref().expect("chunk read");
+            let (_, VectorChunk { validity, vectors }) = current.as_ref().expect("chunk read");
             let valid = validity
                 .get(offset / 8)
                 .is_some_and(|byte| byte & (1 << (offset % 8)) != 0);
@@ -234,9 +298,23 @@ impl VectorStore {
                     )));
                 }
             }
-        }
+            Ok(ControlFlow::Continue(()))
+        })?;
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn declared_rows(
+    addressed: &mut crate::row::Check<'_>,
+    by_message: &mut crate::row::Check<'_>,
+) {
+    addressed.row::<ApplicationId>();
+    addressed.row::<UserVersion>();
+    addressed.row::<AddressedVector>();
+    addressed.row::<VectorSlot>();
+    addressed.row::<VectorChunk>();
+    by_message.row::<OriginCount>();
 }
 
 #[cfg(test)]

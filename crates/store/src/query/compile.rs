@@ -92,6 +92,8 @@ pub struct WhyClause {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Near {
     pub text: String,
+    /// Every semantic selection also has a text relevance ranking.
+    pub text_ranked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

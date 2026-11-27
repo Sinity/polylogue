@@ -161,11 +161,11 @@ fn listings_and_read_pages_name_an_unparsed_file() {
             );
             assert!(
                 details
-                    .contains("<li>some stored inputs have no recorded reading declaration</li>"),
+                    .contains("<li>1 synthetic-unregistered input has no recorded reading declaration; status counts them, and no query lists stored inputs yet</li>"),
                 "{path}: {details}"
             );
             assert!(
-                details.contains("<li>some stored inputs have not been parsed</li>"),
+                details.contains("<li>1 claude-code input has not been parsed yet; status counts them, and no query lists stored inputs yet</li>"),
                 "{path}: {details}"
             );
         }

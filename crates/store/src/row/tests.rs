@@ -54,6 +54,43 @@ fn every_declared_statement_prepares_and_names_its_struct_fields() {
     crate::blobs::declared_rows(&mut check);
     crate::session_bundle::declared_rows(&mut check);
     crate::verify::declared_rows(&mut check);
+    crate::assets::declared_rows(&mut check);
+    crate::tool_databases::declared_rows(&mut check);
+
+    let embeddings = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::ensure_embeddings(&embeddings).unwrap();
+    let mut embedding_check = Check {
+        conn: &embeddings,
+        checked: 0,
+        failures: Vec::new(),
+    };
+    crate::vectors::declared_rows(&mut check, &mut embedding_check);
+
+    use crate::python_polylogue::fixture::{
+        ADDRESSED_META_SQL, BY_MESSAGE_META_SQL, VECTOR_BACKING_SQL,
+    };
+    let addressed = rusqlite::Connection::open_in_memory().unwrap();
+    addressed.execute_batch(VECTOR_BACKING_SQL).unwrap();
+    addressed.execute_batch(ADDRESSED_META_SQL).unwrap();
+    addressed
+        .execute_batch("ALTER TABLE message_embeddings_meta ADD COLUMN request_text TEXT")
+        .unwrap();
+    let by_message = rusqlite::Connection::open_in_memory().unwrap();
+    by_message.execute_batch(BY_MESSAGE_META_SQL).unwrap();
+    let mut addressed_check = Check {
+        conn: &addressed,
+        checked: 0,
+        failures: Vec::new(),
+    };
+    let mut by_message_check = Check {
+        conn: &by_message,
+        checked: 0,
+        failures: Vec::new(),
+    };
+    crate::python_polylogue::vectors::declared_rows(&mut addressed_check, &mut by_message_check);
+    check.failures.extend(embedding_check.failures);
+    check.failures.extend(addressed_check.failures);
+    check.failures.extend(by_message_check.failures);
     assert!(check.failures.is_empty(), "{:#?}", check.failures);
     assert!(check.checked > 2);
 }

@@ -184,15 +184,22 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
     for n in 0..125 {
         let child = format!("related-{n}");
         let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
-            &format!("u-{child}"),
+            &format!("copy-{child}"),
             &child,
-            "synthetic related prompt",
+            "look at <script>alert(1)</script> & the parser",
         ))
         .unwrap();
         record["forkedFrom"] = serde_json::json!({"sessionId":"s1","messageUuid":"u1"});
         std::fs::write(
             r.w.home.join(format!(".claude/projects/-p/{child}.jsonl")),
-            format!("{record}\n"),
+            format!(
+                "{record}\n{}",
+                polylogue_testkit::claude_user(
+                    &format!("u-{child}"),
+                    &child,
+                    "synthetic related prompt"
+                )
+            ),
         )
         .unwrap();
     }
@@ -321,15 +328,18 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
 fn inheritance_is_an_explicit_shared_read_option() {
     let r = reader();
     let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
-        "child-prompt",
+        "child-copy",
         "child",
-        "synthetic child only",
+        "look at <script>alert(1)</script> & the parser",
     ))
     .unwrap();
     record["forkedFrom"] = serde_json::json!({"sessionId":"s1","messageUuid":"u1"});
     std::fs::write(
         r.w.home.join(".claude/projects/-p/child.jsonl"),
-        format!("{record}\n"),
+        format!(
+            "{record}\n{}",
+            polylogue_testkit::claude_user("child-prompt", "child", "synthetic child only")
+        ),
     )
     .unwrap();
     r.w.wait_for(|data| data["store"]["messages"] == 2);
@@ -435,7 +445,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
         s["store"]["sessions_physical"]
             .as_u64()
             .is_some_and(|n| n >= 2)
-            && s["busy"] == false
+            && s["caught_up"] == true
     });
     rt().block_on(async {
         let mut cursor = None;

@@ -802,6 +802,7 @@ mod stored_text;
 mod search_snippets;
 
 mod hook_errors;
+mod live_acts;
 
 mod grok_export;
 
@@ -816,6 +817,7 @@ mod hermes_events;
 
 #[cfg(target_os = "linux")]
 mod attachments;
+mod import_outcomes;
 
 #[cfg(target_os = "linux")]
 mod read_bench;
@@ -1004,14 +1006,16 @@ fn verb_alone_refused_off_terminal_with_lines() {
         .expect("a verb without a choice is refused off terminal");
     assert_eq!(output.status.code(), Some(i32::from(answer.exit_code())));
     assert_eq!(failure.code.as_deref(), Some("ambiguous"));
-    let hint = failure.hint.as_deref().unwrap();
-    assert!(
-        hint.lines().any(|line| line == "polylogue latest read"),
-        "{hint}"
-    );
-    assert!(
-        hint.lines().any(|line| line == "polylogue SESSION read"),
-        "{hint}"
+    let mut candidates = failure.candidates().to_vec();
+    candidates.sort();
+    assert_eq!(
+        candidates,
+        [
+            "polylogue SESSION read",
+            "polylogue latest read",
+            "polylogue session:claude-code:s1 read",
+            "polylogue session:claude-code:s2 read"
+        ]
     );
     let output = cli(&env, &["--json", "sessions | sort by id", "pick", "read"]);
     let answer: command_surface::Answer<serde_json::Value> =
@@ -1019,8 +1023,11 @@ fn verb_alone_refused_off_terminal_with_lines() {
     let failure = answer.failure().expect("a picker needs a terminal");
     assert_eq!(failure.code.as_deref(), Some("ambiguous"));
     assert_eq!(
-        failure.hint.as_deref().unwrap().trim(),
-        "polylogue session:claude-code:s1 read\npolylogue session:claude-code:s2 read"
+        failure.candidates(),
+        [
+            "polylogue session:claude-code:s1 read",
+            "polylogue session:claude-code:s2 read"
+        ]
     );
 }
 
@@ -1763,4 +1770,61 @@ fn resume_without_rows_uses_unfinished_here_and_explicit_targets_still_work() {
         .unwrap();
     assert!(would.contains("claude-code:closed"), "{explicit}");
     assert!(would.contains("--resume"), "{explicit}");
+}
+
+#[test]
+fn grammar_and_feed_failures_show_the_correction_and_exit_two() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(&env, &["read", "claude-code:ID"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "polylogue: not_a_verb: \"claude-code:ID\" is not a verb; read takes no words\n",
+            "polylogue: try: polylogue claude-code:ID read\n"
+        )
+    );
+    let output = cli(&env, &["dev", "feed", "--after", "bogus"]);
+    assert_eq!(output.status.code(), Some(2));
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let failure = answer.failure().unwrap();
+    assert_eq!(failure.code.as_deref(), Some("bad_value"));
+    assert_eq!(failure.kind, command_surface::FailureKind::BadValue);
+    assert_eq!(
+        failure.message,
+        "after takes a position INDEX_INSTANCE:INDEX:ARCHIVE"
+    );
+}
+
+#[test]
+fn streamed_read_deadline_prints_its_hint_and_next_command() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(
+        &env,
+        &[
+            "session:claude-code:s1",
+            "read",
+            "--follow",
+            "--deadline",
+            "200",
+            "--request-id",
+            "follow-deadline",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(7));
+    let text = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        text.lines()
+            .find(|line| line.starts_with("polylogue: hint:")),
+        Some("polylogue: hint: rerun with `--deadline none`, or narrow to one session")
+    );
+    let next = text
+        .lines()
+        .find_map(|line| line.strip_prefix("polylogue: complete without a deadline: "))
+        .unwrap();
+    assert_eq!(
+        next,
+        "polylogue --why=false --all=false --dry-run=false --explain=false --request-id follow-deadline --deadline none -- session:claude-code:s1 read --follow"
+    );
 }

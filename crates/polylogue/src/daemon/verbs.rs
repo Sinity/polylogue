@@ -167,6 +167,7 @@ pub(crate) enum RowRule {
 pub(crate) struct StepDone {
     pub answer: Answer<StepAnswer>,
     pub undo: Vec<String>,
+    pub position: Option<polylogue_store::archive::writer::Position>,
 }
 
 impl StepDone {
@@ -197,6 +198,7 @@ impl From<Answer<StepAnswer>> for StepDone {
         Self {
             answer,
             undo: Vec::new(),
+            position: None,
         }
     }
 }

@@ -6,13 +6,19 @@
 //! create one.
 use super::{AssetSource, AttachmentState, ObservedMember};
 use crate::ConnExt as _;
+use crate::row::{Rows as _, row};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, MessageId, attachment_binding::AttachmentBinding, bundle::MessageRecord,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io::Read, ops::Range, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    io::Read,
+    ops::{ControlFlow, Range},
+    sync::Arc,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -284,6 +290,87 @@ fn source_prefix(conn: &Connection) -> Result<&'static str> {
     })
 }
 
+macro_rules! pinned_extents {
+    ($prefix:literal) => {
+        concat!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
+            FROM ", $prefix, "extent e LEFT JOIN ", $prefix, "blob b ON b.hash=e.blob
+            WHERE e.input=?1 AND e.chain=?2 AND (e.offset<?3 OR (?3=0 AND e.offset=0)) ORDER BY e.offset")
+    };
+}
+
+row! {
+    struct PinnedExtent {
+        offset: i64,
+        length: i64,
+        blob: Vec<u8>,
+        blob_offset: i64,
+        size: Option<i64>,
+    }
+    statements {
+        const ARCHIVE = pinned_extents!("");
+        const INDEX = pinned_extents!("source_");
+    }
+}
+
+macro_rules! member_observation {
+    ($prefix:literal, $columns:literal) => {
+        concat!(
+            "SELECT ",
+            $columns,
+            " FROM ",
+            $prefix,
+            "observation o
+            LEFT JOIN ",
+            $prefix,
+            "revision r ON r.input=o.input AND r.number=o.revision
+            WHERE o.id=?1 AND o.input=?2"
+        )
+    };
+}
+
+row! {
+    struct MemberObservation {
+        chain: Option<i64>,
+        length: Option<i64>,
+        details_json: Option<String>,
+    }
+    statements {
+        const ARCHIVE = member_observation!("", "coalesce(o.chain,r.chain) AS chain,coalesce(o.length,r.length) AS length,o.details_json");
+        const INDEX = member_observation!("source_", "coalesce(o.chain,r.chain) AS chain,coalesce(o.length,r.length) AS length,o.details_json");
+    }
+}
+
+row! {
+    struct MemberDetails {
+        chain: Option<i64>,
+        details_json: Option<String>,
+    }
+    statements {
+        const ARCHIVE = member_observation!("", "coalesce(o.chain,r.chain) AS chain,o.details_json");
+        const INDEX = member_observation!("source_", "coalesce(o.chain,r.chain) AS chain,o.details_json");
+    }
+}
+
+row! {
+    struct ImportMemberKey {
+        import_id: String,
+        input: String,
+        member: String,
+    }
+    statements {
+        const OF_OBSERVATION = "SELECT import_id,input,member FROM import_member WHERE observation=?1";
+    }
+}
+
+row! {
+    struct MemberObservationId {
+        observation: String,
+    }
+    statements {
+        const OF_IMPORT_INPUT = "SELECT observation FROM import_member WHERE input=?1 AND import_id=?2 ORDER BY observation";
+    }
+}
+
 /// The recorded endpoint is required; a later revision never selects a
 /// different chain or silently extends the validated member's bytes.
 fn pinned_source(
@@ -304,20 +391,25 @@ fn pinned_source(
     if !exists {
         return Ok(None);
     }
-    let mut statement = conn.prepare(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM {prefix}extent e LEFT JOIN {prefix}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 AND (e.offset<?3 OR (?3=0 AND e.offset=0)) ORDER BY e.offset"))?;
-    let mut rows = statement.query(params![input, chain, size_sql])?;
+    let extents = if prefix.is_empty() {
+        PinnedExtent::ARCHIVE
+    } else {
+        PinnedExtent::INDEX
+    };
     let mut end = 0i64;
     let mut count = 0usize;
     let mut blob = None;
     let mut digest = blake3::Hasher::new();
     digest.update(&chain.to_le_bytes());
     digest.update(&size.to_le_bytes());
-    while let Some(row) = rows.next()? {
-        let offset: i64 = row.get(0)?;
-        let length: i64 = row.get(1)?;
-        let hash: Vec<u8> = row.get(2)?;
-        let blob_offset: i64 = row.get(3)?;
-        let stored: Option<i64> = row.get(4)?;
+    let read = conn.each(&extents, params![input, chain, size_sql], |row| {
+        let PinnedExtent {
+            offset,
+            length,
+            blob: hash,
+            blob_offset,
+            size: stored,
+        } = row;
         if offset != end
             || length < 0
             || blob_offset < 0
@@ -326,7 +418,7 @@ fn pinned_source(
             })
             || offset.checked_add(length).is_none_or(|at| at > size_sql)
         {
-            return Ok(None);
+            return Ok(ControlFlow::Break(()));
         }
         let hash = BlobHash(
             hash.try_into()
@@ -350,8 +442,9 @@ fn pinned_source(
         } else {
             None
         };
-    }
-    if end != size_sql || (count == 0 && size_sql != 0) {
+        Ok(ControlFlow::Continue(()))
+    })?;
+    if read.is_break() || end != size_sql || (count == 0 && size_sql != 0) {
         return Ok(None);
     }
     Ok(Some(AssetSource {
@@ -367,8 +460,17 @@ fn observed_pin(
     prefix: &str,
     source: &ObservedMember,
 ) -> Result<Option<(i64, u64)>> {
-    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = conn.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![source.observation,source.input], |row| <(_, _, _)>::try_from(row)).optional()?;
-    let Some((Some(chain), Some(length), Some(details))) = row else {
+    let statement = if prefix.is_empty() {
+        MemberObservation::ARCHIVE
+    } else {
+        MemberObservation::INDEX
+    };
+    let Some(MemberObservation {
+        chain: Some(chain),
+        length: Some(length),
+        details_json: Some(details),
+    }) = conn.maybe(&statement, params![source.observation, source.input])?
+    else {
         return Ok(None);
     };
     let details: serde_json::Value = serde_json::from_str(&details)?;
@@ -422,17 +524,15 @@ fn check_member_is_current(
     prefix: &str,
     byte_match: &ValidatedMember,
 ) -> Result<bool> {
-    let recorded: Option<(String, String, String)> = index
-        .query_row(
-            "SELECT import_id,input,member FROM import_member WHERE observation=?1",
-            [&byte_match.observation],
-            |row| <(_, _, _)>::try_from(row),
-        )
-        .optional()?;
-    let Some((namespace, input, member)) = recorded else {
+    let Some(ImportMemberKey {
+        import_id,
+        input,
+        member,
+    }) = index.maybe(&ImportMemberKey::OF_OBSERVATION, [&byte_match.observation])?
+    else {
         return Ok(false);
     };
-    if namespace != byte_match.member.import_id
+    if import_id != byte_match.member.import_id
         || input != byte_match.member.input
         || member != byte_match.member.member
     {
@@ -440,8 +540,20 @@ fn check_member_is_current(
     }
     // The source observation already stores authorship. Match the
     // membership keys here without replacing its recorded attribution.
-    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![byte_match.observation,byte_match.member.input], |row| <(_, _, _)>::try_from(row)).optional()?;
-    let Some((Some(chain), Some(length), Some(details))) = row else {
+    let statement = if prefix.is_empty() {
+        MemberObservation::ARCHIVE
+    } else {
+        MemberObservation::INDEX
+    };
+    let Some(MemberObservation {
+        chain: Some(chain),
+        length: Some(length),
+        details_json: Some(details),
+    }) = catalog.maybe(
+        &statement,
+        params![byte_match.observation, byte_match.member.input],
+    )?
+    else {
         return Ok(false);
     };
     let details: serde_json::Value = serde_json::from_str(&details)?;
@@ -480,30 +592,39 @@ fn source_context(
     if !exists {
         return Ok(false);
     }
-    let mut statement = index.prepare("SELECT observation FROM import_member WHERE input=?1 AND import_id=?2 ORDER BY observation")?;
-    let ids = statement.query_map(params![context.input, context.import_id], |row| {
-        row.get::<_, String>(0)
-    })?;
-    for id in ids {
-        let id = id?;
-        let observed: Option<(Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![id,context.input], |row| <(_, _)>::try_from(row)).optional()?;
-        if let Some((Some(chain), Some(details))) = observed {
-            let details: serde_json::Value = serde_json::from_str(&details)?;
-            if chain == context.chain
-                && details
-                    .pointer("/import/version")
-                    .and_then(|value| value.as_u64())
-                    == Some(1)
-                && details
-                    .pointer("/import/import_id")
-                    .and_then(|value| value.as_str())
-                    == Some(context.import_id.as_str())
+    let statement = if prefix.is_empty() {
+        MemberDetails::ARCHIVE
+    } else {
+        MemberDetails::INDEX
+    };
+    let found = index.each(
+        &MemberObservationId::OF_IMPORT_INPUT,
+        params![context.input, context.import_id],
+        |row| {
+            let observed = catalog.maybe(&statement, params![row.observation, context.input])?;
+            if let Some(MemberDetails {
+                chain: Some(chain),
+                details_json: Some(details),
+            }) = observed
             {
-                return Ok(true);
+                let details: serde_json::Value = serde_json::from_str(&details)?;
+                if chain == context.chain
+                    && details
+                        .pointer("/import/version")
+                        .and_then(|value| value.as_u64())
+                        == Some(1)
+                    && details
+                        .pointer("/import/import_id")
+                        .and_then(|value| value.as_str())
+                        == Some(context.import_id.as_str())
+                {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
-        }
-    }
-    Ok(false)
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
+    Ok(found.is_break())
 }
 
 pub(super) fn asset_match(
@@ -558,6 +679,34 @@ fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Optio
     )
 }
 
+row! {
+    struct StoredBinding {
+        source_version: Vec<u8>,
+        input: String,
+        chain: i64,
+        import_id: String,
+        block: String,
+        attachment: String,
+        declared_input: String,
+        declared_chain: i64,
+        declared_import_id: String,
+        claim: Vec<u8>,
+        body: Vec<u8>,
+    }
+    statements {
+        const OF_MESSAGE = "SELECT b.source_version,b.input,b.chain,b.import_id,b.block,b.attachment,
+                b.declared_input,b.declared_chain,b.declared_import_id,b.claim,b.body
+         FROM attachment_binding b
+         WHERE b.message=?1 AND (?2 IS NULL OR b.source_version=?2)
+           AND (?3 IS NULL OR (b.block=?3 AND b.attachment=?4))
+           AND EXISTS(SELECT 1 FROM message m
+             JOIN message_parse s ON s.message_id=m.id AND s.hash=b.source_version AND s.chain=b.chain
+             JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input
+             WHERE m.id=b.message AND (?5=0 OR (s.input_pk=m.input_pk AND s.chain=m.source_chain)))
+         ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim";
+    }
+}
+
 fn stored_bindings(
     conn: &Connection,
     message: &MessageId,
@@ -568,67 +717,51 @@ fn stored_bindings(
     let block = slot.map(|(block, _)| block.to_string());
     let attachment = slot.map(|(_, attachment)| attachment.to_string());
     let version = source_version.as_ref().map(|version| version.0.as_slice());
-    let mut statement = conn.prepare(
-        "SELECT b.source_version,b.input,b.chain,b.import_id,b.block,b.attachment,
-                b.declared_input,b.declared_chain,b.declared_import_id,b.claim,b.body
-         FROM attachment_binding b
-         WHERE b.message=?1 AND (?2 IS NULL OR b.source_version=?2)
-           AND (?3 IS NULL OR (b.block=?3 AND b.attachment=?4))
-           AND EXISTS(SELECT 1 FROM message m
-             JOIN message_parse s ON s.message_id=m.id AND s.hash=b.source_version AND s.chain=b.chain
-             JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input
-             WHERE m.id=b.message AND (?5=0 OR (s.input_pk=m.input_pk AND s.chain=m.source_chain)))
-         ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim"
-    )?;
-    let mut rows = statement.query(params![
-        message.to_string(),
-        version,
-        block,
-        attachment,
-        shown_only
-    ])?;
     let mut records = Vec::new();
-    while let Some(row) = rows.next()? {
-        let version: Vec<u8> = row.get(0)?;
-        let encoded_claim: Vec<u8> = row.get(9)?;
-        let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
-        if serde_json::to_vec(&claim)? != encoded_claim {
-            return Err(crate::StoreError::stored_data(
-                "attachment binding key is not in canonical JSON form",
-            ));
-        }
-        if claim.block.to_string() != row.get::<_, String>(4)?
-            || claim.attachment.to_string() != row.get::<_, String>(5)?
-            || claim.namespace.input != row.get::<_, String>(6)?
-            || claim.namespace.chain != row.get::<_, i64>(7)?
-            || claim.namespace.import_id != row.get::<_, String>(8)?
-        {
-            return Err(crate::StoreError::stored_data(
-                "attachment binding key differs from its declared namespace or slot",
-            ));
-        }
-        let selection = BindingSelection {
-            context: BindingContext {
-                message: message.clone(),
-                source_version: BlobHash(version.try_into().map_err(|_| {
-                    crate::StoreError::stored_data("invalid binding source version")
-                })?),
-                input: row.get(1)?,
-                chain: row.get(2)?,
-                import_id: row.get(3)?,
-            },
-            claim,
-        };
-        let body: Vec<u8> = row.get(10)?;
-        let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
-        record.validate()?;
-        if record.selection() != selection {
-            return Err(crate::StoreError::stored_data(
-                "attachment binding key differs from its stored record",
-            ));
-        }
-        records.push(record);
-    }
+    let _ = conn.each(
+        &StoredBinding::OF_MESSAGE,
+        params![message.to_string(), version, block, attachment, shown_only],
+        |row| {
+            let encoded_claim = row.claim;
+            let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
+            if serde_json::to_vec(&claim)? != encoded_claim {
+                return Err(crate::StoreError::stored_data(
+                    "attachment binding key is not in canonical JSON form",
+                ));
+            }
+            if claim.block.to_string() != row.block
+                || claim.attachment.to_string() != row.attachment
+                || claim.namespace.input != row.declared_input
+                || claim.namespace.chain != row.declared_chain
+                || claim.namespace.import_id != row.declared_import_id
+            {
+                return Err(crate::StoreError::stored_data(
+                    "attachment binding key differs from its declared namespace or slot",
+                ));
+            }
+            let selection = BindingSelection {
+                context: BindingContext {
+                    message: message.clone(),
+                    source_version: BlobHash(row.source_version.try_into().map_err(|_| {
+                        crate::StoreError::stored_data("invalid binding source version")
+                    })?),
+                    input: row.input,
+                    chain: row.chain,
+                    import_id: row.import_id,
+                },
+                claim,
+            };
+            let record: AttachmentBindingRecord = crate::encoding::unpack_json(&row.body)?;
+            record.validate()?;
+            if record.selection() != selection {
+                return Err(crate::StoreError::stored_data(
+                    "attachment binding key differs from its stored record",
+                ));
+            }
+            records.push(record);
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
     Ok(records)
 }
 
@@ -865,6 +998,16 @@ impl<'pool> Reader<'pool> {
             AttachmentState::Unknown => AttachmentPin::Unknown,
         })
     }
+}
+
+#[cfg(test)]
+pub(super) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<PinnedExtent>();
+    check.row::<MemberObservation>();
+    check.row::<MemberDetails>();
+    check.row::<ImportMemberKey>();
+    check.row::<MemberObservationId>();
+    check.row::<StoredBinding>();
 }
 
 #[cfg(test)]

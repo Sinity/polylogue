@@ -26,7 +26,7 @@ The read-class `internal advisory` operation has a stricter preparation cap of 2
 
 ## Writes and deadlines
 
-Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
+Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a line each step has its own class and shares the original read deadline. After a write step, a reader waits for the index to take in that write before opening its snapshot. If the wait runs out, the line reports the read's timeout alongside the completed write.
 
 **A listing's count** runs after its page, on the request's own reader, until the deadline less the time the reply needs (a fifth of what is left, at most a second); a count that runs out answers the page with `count deferred` and the command that counts without a deadline.
 
@@ -38,7 +38,7 @@ A stopped read names the stage that ran out. A page or similarity stage suggests
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive replies keep their budgets on the reserved read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error |
+| busy with a first build or re-parse | interactive replies keep their budgets on the reserved read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error, each with its count and origin. Inputs that can be read no further (an origin with no parser, a file of no bytes, a failed or refused parse) do not make a reply degraded ([interfaces.md](interfaces.md#exit-codes)) |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
 | down | the local class works, and completion offers the grammar alone; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |

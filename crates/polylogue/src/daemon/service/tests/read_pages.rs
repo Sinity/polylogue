@@ -616,8 +616,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         "available child body",
     ))
     .unwrap();
-    record["forkedFrom"] =
-        serde_json::json!({"sessionId":"missing-parent", "messageUuid":"missing-anchor"});
+    record["resumeSessionId"] = serde_json::json!("missing-parent");
     std::fs::write(
         d.home.join(".claude/projects/-p/issue-child.jsonl"),
         format!("{record}\n"),
@@ -626,7 +625,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
     d.wait_for(|status| {
         status["store"]["messages"] == 2
             && status["store"]["search_pending"] == 0
-            && status["busy"] == false
+            && status["caught_up"] == true
     });
     let target = "session:claude-code:issue-child";
     let whole = page(&d.daemon, target, true, View::Transcript, 4000, None);
@@ -639,7 +638,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         .unwrap();
     assert!(boundary > 0);
     assert!(
-        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingParent { child, parent } }
+        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingBranchPoint { child, parent, branch_point: None } }
         if child.to_string() == "claude-code:issue-child" && parent.to_string() == "claude-code:missing-parent")
     );
     // Calibrate the payload cap through the public encoder and sole estimator,
@@ -722,12 +721,19 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
     let parent = "inherited -----BEGIN VENDOR PRIVATE KEY-----synthetic";
     let child = "still synthetic -----END VENDOR PRIVATE KEY----- visible λ🙂";
     let d = test_daemon::start(parent);
-    let mut record: serde_json::Value =
-        serde_json::from_str(&polylogue_testkit::claude_user("child-u1", "child", child)).unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+        "child-copy",
+        "child",
+        parent,
+    ))
+    .unwrap();
     record["forkedFrom"] = serde_json::json!({"sessionId":"s1", "messageUuid":"u1"});
     std::fs::write(
         d.home.join(".claude/projects/-p/child.jsonl"),
-        format!("{record}\n"),
+        format!(
+            "{record}\n{}",
+            polylogue_testkit::claude_user("child-u1", "child", child)
+        ),
     )
     .unwrap();
     d.wait_for(|status| {

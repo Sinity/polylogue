@@ -6,7 +6,10 @@
 //! plain style has the same layout without color, with ASCII bars.
 use crate::protocol::status::{Answer, Mode, Notices, Running};
 use command_surface::TextStyle;
-use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, IndexFreshness};
+use polylogue_model::chain::ChainStatusName;
+use polylogue_model::freshness::{
+    CompletenessDimension, CompletenessReason, CountedReason, IndexFreshness,
+};
 use polylogue_render::short_duration;
 use polylogue_render::terminal::escape as clean;
 use polylogue_store::archive::build_progress::CountUnit;
@@ -152,10 +155,10 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
 /// The reasons a reply is degraded and its notes, less the one the
 /// `INDEX` section says in full while an index is built.
 fn notes<'a>(status: &Answer, problems: &'a [String]) -> Vec<&'a String> {
-    let index_building = CompletenessReason::IndexBuilding.text();
+    let index_building = CountedReason::new(CompletenessReason::IndexBuilding).text();
     problems
         .iter()
-        .filter(|note| !(status.index_build.is_some() && note.as_str() == index_building))
+        .filter(|note| !(status.index_build.is_some() && **note == index_building))
         .collect()
 }
 
@@ -318,15 +321,28 @@ fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-/// The parse states as the view words them, in the order it lists them.
-const PARSE_STATES: [(&str, &str); 6] = [
-    ("parsing", "parsing"),
-    ("waiting", "waiting to grow"),
-    ("partial", "partly read"),
-    ("refused", "refused"),
-    ("failed", "failed"),
-    ("no_parser_yet", "without a parser"),
+/// The chain states other than `done`, in the order the view lists them.
+const PARSE_STATES: [ChainStatusName; 6] = [
+    ChainStatusName::Parsing,
+    ChainStatusName::Waiting,
+    ChainStatusName::Refused,
+    ChainStatusName::Failed,
+    ChainStatusName::NoParser,
+    ChainStatusName::Repeated,
 ];
+
+/// How the view words a count of chains in `state`.
+fn parse_state_words(state: ChainStatusName) -> &'static str {
+    match state {
+        ChainStatusName::Parsing => "parsing",
+        ChainStatusName::Waiting => "waiting to grow",
+        ChainStatusName::Refused => "refused",
+        ChainStatusName::Failed => "failed",
+        ChainStatusName::NoParser => "without a parser",
+        ChainStatusName::Repeated => "repeated",
+        ChainStatusName::Done => "read",
+    }
+}
 
 fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     let Some(store) = &status.store else {
@@ -345,11 +361,11 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
         let mut others: Vec<String> = PARSE_STATES
             .iter()
-            .filter_map(|(state, words)| {
+            .filter_map(|state| {
                 store
                     .parse_states
-                    .get(*state)
-                    .map(|n| format!("{} {words}", count(*n)))
+                    .get(state.as_str())
+                    .map(|n| format!("{} {}", count(*n), parse_state_words(*state)))
             })
             .collect();
         others.extend(
@@ -357,7 +373,7 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
                 .parse_states
                 .iter()
                 .filter(|(state, _)| {
-                    *state != "done" && !PARSE_STATES.iter().any(|(known, _)| known == state)
+                    *state != "done" && !PARSE_STATES.iter().any(|known| known.as_str() == *state)
                 })
                 .map(|(state, n)| format!("{} {}", count(*n), clean(state))),
         );
@@ -373,10 +389,10 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ("search", &local.search),
         ("Sinex stream", &local.confirmed_stream),
     ] {
-        let reasons = |reasons: &[polylogue_model::freshness::CompletenessReason]| {
+        let reasons = |reasons: &[CountedReason]| {
             reasons
                 .iter()
-                .map(|reason| reason.text())
+                .map(CountedReason::text)
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -399,6 +415,15 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
     }
     lines.push(words.join(" · "));
+    // A failed or refused parse is a standing problem, never lag.
+    if !local.failed_parses.is_empty() {
+        let failed: Vec<String> = local
+            .failed_parses
+            .iter()
+            .map(CountedReason::text)
+            .collect();
+        lines.push(failed.join(" · "));
+    }
     lines
 }
 
@@ -831,6 +856,18 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
     let mut lines = Vec::new();
     if !parts.is_empty() {
         lines.push(format!("{} awaiting a write", parts.join(" · ")));
+    }
+    for (failures, scope) in [
+        (pending.delivery_write_failures, "delivery writes"),
+        (pending.mailbox_failures, "mailbox operations"),
+        (pending.host_reattachment_failures, "host reattachments"),
+    ] {
+        if failures > 0 {
+            lines.push(view.error(&format!(
+                "{} failed {scope} since daemon start",
+                count(failures)
+            )));
+        }
     }
     if let Some(error) = &pending.last_error {
         lines.push(view.error(error));

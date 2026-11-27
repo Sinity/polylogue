@@ -1,6 +1,33 @@
 //! Output columns are a property of bound syntax, independent of a clock or SQL.
 use super::*;
 use query_language::catalog::{Catalog, Field, FieldKind, OutputSchema};
+// A daemon's origin choices validate queries; saved fields describe output types.
+fn output_field(info: &query_language::scope::FieldInfo) -> Field {
+    use query_language::scope::{FieldInfo, Origin, TypeRule};
+    fn origin_choices(info: &FieldInfo) -> bool {
+        match &info.origin {
+            Origin::Catalog { field, .. } => field.rsplit('.').next() == Some("origin"),
+            Origin::Group { input, .. } | Origin::Matched { input } => origin_choices(input),
+            Origin::Function {
+                arguments: inputs,
+                rule: TypeRule::Input(index),
+                ..
+            }
+            | Origin::Aggregate {
+                inputs,
+                rule: TypeRule::Input(index),
+                ..
+            } => inputs.get(*index).is_some_and(origin_choices),
+            _ => false,
+        }
+    }
+    let mut field = info.field.clone();
+    if origin_choices(info) {
+        field.values.clear();
+    }
+    field
+}
+
 fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError> {
     let unit = catalog
         .unit(unit)
@@ -29,10 +56,15 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
                     kind: super::source::column_kind(column.kind),
                     ..Field::default()
                 });
-            if let Some(kind) = crate::fields::lookup(product, column.name)
-                .and_then(|field| field.declaration().value_kind)
+            if let Some(declaration) =
+                crate::fields::lookup(product, column.name).map(|field| field.declaration())
             {
-                field.kind = super::source::column_kind(kind);
+                if let Some(kind) = declaration.value_kind {
+                    field.kind = super::source::column_kind(kind);
+                }
+                if declaration.origin_values {
+                    field.values.clear();
+                }
             }
             field
         })
@@ -120,18 +152,13 @@ pub(crate) fn bound_output_metadata(
                     columns
                         .iter()
                         .map(|name| {
-                            after
-                                .field(name)
-                                .map(|info| info.field.clone())
-                                .ok_or_else(|| {
-                                    QueryError::invalid(format!(
-                                        "bound output has no field {name:?}"
-                                    ))
-                                })
+                            after.field(name).map(output_field).ok_or_else(|| {
+                                QueryError::invalid(format!("bound output has no field {name:?}"))
+                            })
                         })
                         .collect::<Result<_, _>>()?
                 } else {
-                    after.fields.iter().map(|info| info.field.clone()).collect()
+                    after.fields.iter().map(output_field).collect()
                 };
                 match &stage.kind {
                     TransformKind::Group { .. } | TransformKind::Aggregate { .. } => {
@@ -197,7 +224,7 @@ pub(crate) fn bound_output_metadata(
                     match_units: None,
                     unit: None,
                     fields: names
-                        .filter_map(|name| after.field(&name).map(|info| info.field.clone()))
+                        .filter_map(|name| after.field(&name).map(output_field))
                         .collect(),
                     main_time: None,
                 };
@@ -213,18 +240,18 @@ pub(crate) fn bound_output_metadata(
                 for field in inner.fields {
                     let name = format!("match.{}", field.name);
                     if let Some(info) = after.field(&name) {
-                        schema.fields.push(info.field.clone());
+                        schema.fields.push(output_field(info));
                     }
                 }
                 if let Some(info) = after.field(query_language::catalog::MATCH_DISTANCE) {
-                    schema.fields.push(info.field.clone());
+                    schema.fields.push(output_field(info));
                 }
             }
             TransformKind::Diff { .. } => {
                 let after = &typing.transforms[index].after;
                 for name in ["change", "old_rank", "new_rank"] {
                     if let Some(info) = after.field(name) {
-                        schema.fields.push(info.field.clone());
+                        schema.fields.push(output_field(info));
                     }
                 }
             }
@@ -263,7 +290,7 @@ pub(crate) fn relation_scope(
         .transforms
         .last()
         .map_or(&typing.source, |stage| &stage.after);
-    let mut fields: Vec<Field> = scope.fields.iter().map(|info| info.field.clone()).collect();
+    let mut fields: Vec<Field> = scope.fields.iter().map(output_field).collect();
     // Extra product columns come from the same field selection.
     for field in &produced.fields {
         if !fields.iter().any(|known| known.name == field.name) {

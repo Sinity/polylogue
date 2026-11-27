@@ -60,7 +60,9 @@ impl Operation for Line {
         Ok(Policy {
             access: rows.access(),
             changes_archive,
-            bound: if streams(rows) {
+            // A waiting listing is bounded by its wait, like a stream by
+            // its caller: the default read deadline would end it early.
+            bound: if streams(rows) || rows.wait.is_some() {
                 Bound::CallerOnly
             } else if changes_archive {
                 Bound::UntilHandOver
@@ -742,8 +744,7 @@ impl Stream<'_> {
     ) -> Result<StepDone, Failure> {
         if read.follow {
             let target = verbs::read::target(selection)?;
-            let marks =
-                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            let marks = super::follow::run(&call.call, self.context, &target, None, self.output)?;
             return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
         let answer = verbs::read::stream(
@@ -775,6 +776,7 @@ fn execute_steps(
     let mut envelope = Envelope::default();
     let mut outcome = Outcome::Empty(());
     let mut failed = false;
+    let mut after_write = None;
     for (index, step) in steps.into_iter().enumerate() {
         let verb = step.verb();
         if failed {
@@ -786,7 +788,8 @@ fn execute_steps(
             continue;
         }
         let request_id = step_request(call.request_id, index);
-        let step_call = StepCall::new(call, &request_id);
+        let mut step_call = StepCall::new(call, &request_id);
+        step_call.call.after_write = after_write;
         let work = || {
             if let Some(limit) = limit {
                 limit.check()?;
@@ -810,7 +813,12 @@ fn execute_steps(
         let reported = match result {
             Ok(done) => {
                 verbs::merge_outcome(&mut outcome, done.outcome());
-                let StepDone { answer, undo } = done;
+                let StepDone {
+                    answer,
+                    undo,
+                    position,
+                } = done;
+                after_write = after_write.max(position);
                 envelope.notes.extend(answer.envelope.notes);
                 if !answer.envelope.next.is_empty() {
                     envelope.next = answer.envelope.next;
@@ -838,7 +846,10 @@ fn execute_steps(
             request_id: Some(request_id),
             outcome: reported,
         });
-        if let Some(stream) = &mut stream {
+        if !failed
+            && limit.is_none_or(|limit| limit.check().is_ok())
+            && let Some(stream) = &mut stream
+        {
             stream.reports(selection, &mut reports, &mut envelope)?;
         }
     }
@@ -909,6 +920,33 @@ fn rows_page(
     .map(|found| LineAnswer::Listing(Box::new(found))))
 }
 
+/// Whether a waiting listing waits on after this answer: it matched no
+/// rows, and either the index is up to date or it is catching up for
+/// reasons the daemon ends by itself, which may bring the rows. Rows, a
+/// failed part and a reason waiting does not end answer at once.
+fn keeps_waiting(answer: &Answer<LineAnswer>) -> bool {
+    match &answer.outcome {
+        command_surface::Outcome::Empty(_) => true,
+        command_surface::Outcome::Degraded {
+            value: LineAnswer::Listing(found),
+            ..
+        } => {
+            let crate::protocol::query::Answer::Rows(rows) = &**found else {
+                return false;
+            };
+            rows.rows.is_empty()
+                && rows.next.is_none()
+                && rows.incomplete.is_empty()
+                && rows
+                    .read_position
+                    .freshness
+                    .as_ref()
+                    .is_some_and(polylogue_model::freshness::ReadFreshness::catching_up)
+        }
+        _ => false,
+    }
+}
+
 /// The selection alone: its rows, a page at a time.
 fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
     let query = Selection {
@@ -950,18 +988,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             limit.check()?;
         }
         let answer = rows_page(call, &rows, &query, true)?;
-        // A listing waits for rows: an answer with none keeps waiting, also
-        // when it is degraded because the index is behind its archive.
-        let no_rows = match &answer.outcome {
-            command_surface::Outcome::Empty(_) => true,
-            command_surface::Outcome::Degraded { value, .. } => matches!(
-                value,
-                LineAnswer::Listing(found)
-                    if matches!(&**found, crate::protocol::query::Answer::Rows(rows) if rows.rows.is_empty())
-            ),
-            _ => false,
-        };
-        if !no_rows {
+        if !keeps_waiting(&answer) {
             return Ok(answer);
         }
         let left = until.saturating_duration_since(Instant::now());

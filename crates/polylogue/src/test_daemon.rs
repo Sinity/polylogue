@@ -111,14 +111,30 @@ pub(crate) fn start_with_sources_and_workers(
         workers,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
         None,
-        (seed, messages),
+        (seed, Some(messages)),
+    )
+}
+
+/// A daemon over the Morrow example's main set and the files `extra`
+/// writes into the same home, once it has caught up.
+pub(crate) fn start_over_morrow(extra: &dyn Fn(&Path)) -> TestDaemon {
+    let seed = |home: &Path| {
+        polylogue_testkit::Morrow::lay_out_in(polylogue_testkit::Set::Main, home);
+        extra(home);
+    };
+    start_with_clock_and_workers(
+        "small session",
+        DEFAULT_WORKERS,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+        None,
+        (&seed, None),
     )
 }
 
 /// Writes sources into the home before the daemon starts, and how many
-/// messages they hold.
-type Seed<'a> = (&'a dyn Fn(&Path), u64);
-const NO_SEED: Seed<'static> = (&|_| {}, 0);
+/// messages they hold; `None`: the start waits for the daemon to catch up.
+type Seed<'a> = (&'a dyn Fn(&Path), Option<u64>);
+const NO_SEED: Seed<'static> = (&|_| {}, Some(0));
 
 pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
     start_with_clock_and_workers(text, DEFAULT_WORKERS, clock, None, NO_SEED)
@@ -171,8 +187,11 @@ fn start_with_clock_and_workers(
         runtime,
     };
     daemon.wait_for(|data| {
-        data["store"]["messages"].as_u64() == Some(1 + seed.1)
-            && data["store"]["search_pending"].as_u64() == Some(0)
+        data["store"]["search_pending"].as_u64() == Some(0)
+            && match seed.1 {
+                Some(messages) => data["store"]["messages"].as_u64() == Some(1 + messages),
+                None => data["caught_up"] == true,
+            }
     });
     daemon.wait_for_signal_checkpoint();
     daemon
@@ -200,7 +219,7 @@ impl TestDaemon {
         }
         // Checked after `ok`: an idle loop seen now has finished any pass
         // that wrote what `ok` saw.
-        while status()["busy"] != false {
+        while status()["caught_up"] != true {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -512,6 +531,7 @@ impl CallParts {
             budget: self.budget,
             limit: &self.limit,
             lane: crate::daemon::handler::Lane::Ordinary,
+            after_write: None,
             output: &self.events,
             query: &self.query,
         }

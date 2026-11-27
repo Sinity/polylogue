@@ -162,9 +162,9 @@ A **delivery** records each time prepared content is handed to a session or a pe
 | Outcome | Meaning |
 |---|---|
 | `prepared` | no send attempted yet |
-| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, the harness command exited 0 |
-| `failed(<first stderr line>)` | a handed-over run that then exited unsuccessfully, recorded after `delivered` |
-| `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
+| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, or the headless harness process started with it |
+| `failed` | a handed-over run that then failed, recorded after `delivered` with the exit status and the end of standard error when the process exited unsuccessfully |
+| `not_sent:<reason>` | `timeout`, `empty`, `failed` with the cause, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 
 **A delivery acknowledges a handing over.** A harness may store a tool result outside its inline output, apply its own output cap, or later compact the context. The `delivered` outcome alone does not show that the whole text remains in the model's current context. The [context view](transcripts.md#the-context-view) reconstructs what the captured harness records show, and a caller can read any passage again.

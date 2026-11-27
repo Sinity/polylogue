@@ -51,18 +51,8 @@ fn send(
     output: &mut impl Write,
     timeout: Option<std::time::Duration>,
 ) -> io::Result<u8> {
-    let previous = request
-        .arguments
-        .str("after")
-        .map(|s| {
-            ChangePosition::parse(s)
-                .map(|p| p.to_string())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "the change position is invalid")
-                })
-        })
-        .transpose()?;
-    consume(output, previous.as_deref(), |callback| {
+    let previous = request.arguments.str("after");
+    consume(output, previous, |callback| {
         crate::client::call_streaming(archive, request, timeout, callback)
     })
 }
