@@ -1,5 +1,10 @@
 use super::*;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 #[test]
 fn a_lookup_document_becomes_one_row() {
     let doc = br#"{"path":"/work/repo","remote":"https://github.com/o/r.git","root_commits":["abc123"],"read_at":"2026-10-19T00:00:00Z"}"#;

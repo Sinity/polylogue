@@ -455,4 +455,5 @@ fn package_import_respects_a_bounded_descriptor_window() {
     );
 }
 
+mod declarations;
 mod projects;

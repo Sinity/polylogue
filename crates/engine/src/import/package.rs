@@ -102,21 +102,16 @@ fn expand(
     let mut magic = [0; 512];
     let n = file.read(&mut magic)?;
     file.rewind()?;
-    let container = magic[..n].starts_with(ZIP_MAGIC)
-        || path
-            .extension()
-            .is_some_and(|e| e == "zip" || e == "tar" || e == "tgz")
-        || path.to_string_lossy().ends_with(".tar.gz")
-        || path.to_string_lossy().ends_with(".tar.zst");
+    let container = Container::of(&path, &magic[..n])?;
     let index = out.len();
     let hash = bytes.hash();
-    if container && seen.ancestors.contains(&hash) {
+    if container.is_some() && seen.ancestors.contains(&hash) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("container {} contains its own bytes", path.display()),
         ));
     }
-    if container && !seen.expanded.insert(hash) {
+    if container.is_some() && !seen.expanded.insert(hash) {
         // The same container at another path: its members are already staged.
         out.push(Member {
             path,
@@ -130,7 +125,7 @@ fn expand(
         });
         return Ok(());
     }
-    if !container {
+    let Some(container) = container else {
         out.push(Member {
             path,
             bytes,
@@ -142,9 +137,9 @@ fn expand(
             refusal: None,
         });
         return Ok(());
-    }
+    };
     let mut children = Vec::new();
-    if magic[..n].starts_with(ZIP_MAGIC) || path.extension().is_some_and(|e| e == "zip") {
+    if let Container::Zip = container {
         let mut zip = zip::ZipArchive::new(&mut file).map_err(std::io::Error::other)?;
         let mut declared = 0u64;
         for i in 0..zip.len() {
@@ -178,12 +173,10 @@ fn expand(
             children.push((name, i as u64, decoded, Some(display)));
         }
     } else {
-        let decoded: Box<dyn Read + '_> = if magic[..n].starts_with(&[0x1f, 0x8b]) {
-            Box::new(flate2::read::MultiGzDecoder::new(&mut file))
-        } else if magic[..n].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-            Box::new(zstd::stream::read::Decoder::new(&mut file)?)
-        } else {
-            Box::new(&mut file)
+        let decoded: Box<dyn Read + '_> = match container {
+            Container::Gzip => Box::new(flate2::read::MultiGzDecoder::new(&mut file)),
+            Container::Zstd => Box::new(zstd::stream::read::Decoder::new(&mut file)?),
+            Container::Zip | Container::Tar => Box::new(&mut file),
         };
         let mut tar = tar::Archive::new(decoded);
         for (i, entry) in tar.entries()?.enumerate() {
@@ -219,15 +212,7 @@ fn expand(
         member_path_bytes: None,
         refusal: None,
     });
-    let kind = if magic[..n].starts_with(ZIP_MAGIC) {
-        "zip"
-    } else if magic[..n].starts_with(&[0x1f, 0x8b]) {
-        "tar+gzip"
-    } else if magic[..n].starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        "tar+zstd"
-    } else {
-        "tar"
-    };
+    let kind = container.kind();
     seen.ancestors.push(hash);
     for (name, i, member, display) in children {
         let child = out.len();
@@ -250,19 +235,58 @@ fn expand(
     Ok(())
 }
 
-fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()> {
-    #[derive(Default)]
-    struct Package {
-        chatgpt: bool,
-        claude: bool,
-        recognized: bool,
-        conversations: bool,
-        chatgpt_account_file: bool,
-        claude_accounts_file: bool,
-        aider_llm: bool,
-        aider_md: bool,
-        takeout: bool,
+/// What a container is, from its first bytes; its name only says that it
+/// is meant to be one.
+#[derive(Clone, Copy)]
+enum Container {
+    Zip,
+    Tar,
+    Gzip,
+    Zstd,
+}
+
+impl Container {
+    /// `None` for a file that is no container. A file named as a ZIP
+    /// archive whose bytes are not one is refused rather than read as
+    /// something else.
+    fn of(path: &Path, magic: &[u8]) -> std::io::Result<Option<Container>> {
+        if magic.starts_with(ZIP_MAGIC) {
+            return Ok(Some(Container::Zip));
+        }
+        let name = path.to_string_lossy();
+        if path.extension().is_some_and(|e| e == "zip") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{name} is named as a ZIP archive and does not start like one"),
+            ));
+        }
+        let tar = path.extension().is_some_and(|e| e == "tar" || e == "tgz")
+            || name.ends_with(".tar.gz")
+            || name.ends_with(".tar.zst");
+        Ok(tar.then(|| {
+            if magic.starts_with(&[0x1f, 0x8b]) {
+                Container::Gzip
+            } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+                Container::Zstd
+            } else {
+                Container::Tar
+            }
+        }))
     }
+
+    /// The kind recorded on each member.
+    fn kind(self) -> &'static str {
+        match self {
+            Container::Zip => "zip",
+            Container::Tar => "tar",
+            Container::Gzip => "tar+gzip",
+            Container::Zstd => "tar+zstd",
+        }
+    }
+}
+
+fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()> {
+    use polylogue_sources::origin::{Others, Package};
     let mut package_roots = Vec::new();
     for member in members.iter_mut().filter(|member| !member.container) {
         member.origin = super::recognition::declared(
@@ -277,17 +301,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
                 "origin {name} is not an importable origin or does not recognize this file"
             ));
         }
-        let name = member
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        if (name.starts_with("conversations") && name.ends_with(".json"))
-            || matches!(
-                name,
-                "prod-grok-backend.json" | "codex.json" | polylogue_sources::aider::HISTORY
-            )
-        {
+        if Package::root_name(file_name(&member.path)) {
             package_roots.push((
                 member.parent.map(|parent| parent.0),
                 member.path.parent().unwrap_or(Path::new("")).to_path_buf(),
@@ -296,7 +310,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         let mut prefix = PathBuf::new();
         for part in member.path.components() {
             prefix.push(part);
-            if part.as_os_str() == "Takeout" {
+            if part.as_os_str() == Package::TAKEOUT {
                 package_roots.push((member.parent.map(|parent| parent.0), prefix));
                 break;
             }
@@ -315,120 +329,67 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
             (parent, root)
         })
         .collect();
-    let mut packages = std::collections::BTreeMap::<(Option<usize>, PathBuf), Package>::new();
+    // Each group of members under one root: what each is on its own, and
+    // whether one of them makes the others members kept with it.
+    #[derive(Default)]
+    struct Group<'a> {
+        members: Vec<(&'a str, Option<&'static OriginSpec>)>,
+        recognized: bool,
+    }
+    let mut groups = std::collections::BTreeMap::<&(Option<usize>, PathBuf), Group>::new();
     for (member, key) in members
         .iter()
         .zip(&keys)
         .filter(|(member, _)| !member.container)
     {
-        let package = packages.entry(key.clone()).or_default();
-        package.recognized |= member.origin.is_some_and(|origin| {
-            origin.name != "claude-ai" || !super::recognition::claude_project_path(&member.path)
-        });
-        package.takeout |= key.1.file_name().is_some_and(|name| name == "Takeout");
-        let name = member
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        package.chatgpt_account_file |= name == "user.json";
-        package.claude_accounts_file |= name == "users.json";
-        package.aider_llm |= name == polylogue_sources::aider::HISTORY;
-        package.aider_md |= name == polylogue_sources::aider::COMPANION;
-        if name.starts_with("conversations") && name.ends_with(".json") {
-            package.conversations = true;
-            package.chatgpt |= member.origin.is_some_and(|origin| origin.name == "chatgpt");
-            package.claude |= member
-                .origin
-                .is_some_and(|origin| origin.name == "claude-ai");
-        }
+        let group = groups.entry(key).or_default();
+        group.members.push((file_name(&member.path), member.origin));
+        group.recognized |= member
+            .origin
+            .is_some_and(|origin| (origin.import.holds_package)(&member.path));
     }
-    for package in packages.values_mut() {
-        package.chatgpt |= package.conversations && package.chatgpt_account_file;
-        package.claude |= package.conversations && package.claude_accounts_file;
-        if package.chatgpt && package.claude {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "export package declares conflicting ChatGPT and claude.ai structures",
-            ));
-        }
+    let mut packages = std::collections::BTreeMap::new();
+    for (key, group) in &groups {
+        let package = Package::of(&key.1, &group.members)
+            .map_err(|reason| std::io::Error::new(std::io::ErrorKind::InvalidData, reason))?;
+        packages.insert(*key, (package, group.recognized));
     }
-    for (member, key) in members.iter_mut().zip(keys) {
+    let kept = polylogue_sources::origin::by_name(KEPT);
+    let mut routes = Vec::with_capacity(members.len());
+    for (member, key) in members.iter().zip(&keys) {
         if member.container {
-            member.origin = None;
+            routes.push(None);
             continue;
         }
-        let package = packages.get(&key).expect("classified package");
+        let (package, recognized) = packages[key];
+        let alone = member.origin;
         let path = member.path.to_string_lossy();
-        let name = member
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let route = if package.takeout {
-            if path.contains("My Activity/Gemini Apps/") {
-                Some(if name == "MyActivity.html" {
-                    "gemini-app"
-                } else {
-                    KEPT
-                })
-            } else if path.contains("Drive/Google AI Studio/") {
-                Some(
-                    if member
-                        .origin
-                        .is_some_and(|origin| origin.name == "ai-studio")
-                    {
-                        "ai-studio"
-                    } else {
-                        KEPT
-                    },
-                )
-            } else if path.contains("Gemini/") || path.contains("NotebookLM/") {
-                Some(KEPT)
-            } else {
-                None
-            }
-        } else if package.claude {
-            Some(
-                if name == "conversations.json"
-                    || matches!(name, "memories.json" | "projects.json")
-                    || path.contains("/projects/")
-                {
-                    "claude-ai"
-                } else if path.contains("/design_chats/")
-                    && member
-                        .origin
-                        .is_some_and(|origin| origin.name == "claude-design")
-                {
-                    "claude-design"
-                } else {
-                    KEPT
-                },
-            )
-        } else if package.chatgpt {
-            Some(
-                if name.starts_with("conversations") && name.ends_with(".json") {
-                    "chatgpt"
-                } else if name == "codex.json" {
-                    "codex-cloud"
-                } else {
-                    KEPT
-                },
-            )
-        } else if package.aider_llm
-            && package.aider_md
-            && matches!(
-                name,
-                polylogue_sources::aider::HISTORY | polylogue_sources::aider::COMPANION
-            )
-        {
-            Some("aider")
-        } else if member.origin.is_none() && package.recognized {
-            Some(KEPT)
+        let name = file_name(&member.path);
+        let generic = if alone.is_none() && recognized {
+            kept
         } else {
-            member.origin.map(|origin| origin.name)
+            alone
         };
-        member.origin = route.and_then(polylogue_sources::origin::by_name);
+        let route = match package {
+            Some(package) => ORIGINS
+                .iter()
+                .find(|origin| {
+                    origin.import.member.as_ref().is_some_and(|rule| {
+                        rule.package == package
+                            && (rule.is)(&path, name, alone.is_some_and(|a| a.name == origin.name))
+                    })
+                })
+                .or(match package.others(&path) {
+                    Others::Kept => kept,
+                    Others::Refused => None,
+                    Others::Alone => generic,
+                }),
+            None => generic,
+        };
+        routes.push(route);
+    }
+    for (member, route) in members.iter_mut().zip(routes) {
+        member.origin = route;
     }
     for index in (0..members.len())
         .rev()
@@ -453,6 +414,12 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         }
     }
     Ok(())
+}
+
+fn file_name(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
 }
 
 #[cfg(test)]

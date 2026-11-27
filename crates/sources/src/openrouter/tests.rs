@@ -4,6 +4,11 @@ fn parse(bytes: &[u8]) -> crate::Step {
 }
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn room(messages: Json) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "version": "orpg.2.0", "title": "Nix help",

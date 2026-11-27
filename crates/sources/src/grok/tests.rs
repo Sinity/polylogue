@@ -1,6 +1,11 @@
 use super::*;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 /// The step as its chain's reading names it: content-named messages settled.
 fn parse(value: Json) -> Step {
     let mut parser = open(Path::new("renamed.json")).unwrap();
@@ -222,18 +227,36 @@ fn malformed_and_unknown_fields_are_not_read_and_invent_no_facts() {
     );
 }
 
+/// The account export is its one file, `prod-grok-backend.json`
+/// (docs/capture.md, Import); read whole, its `conversations` array decides,
+/// whatever comes before it. Another name is not the export.
 #[test]
-fn detection_is_content_based_across_filenames_and_rejects_cli_history() {
+fn the_export_is_its_file_holding_a_conversations_array() {
     let bytes = serde_json::to_vec(&json!({"conversations":[conversation()]})).unwrap();
     let head = &bytes[..bytes.len().min(64)];
     assert!(recognize(Path::new("prod-grok-backend.json"), head));
-    assert!(recognize(Path::new("renamed.json"), head));
-    let metadata_first = br#"{"account":"unread metadata before the conversation signature"#;
-    assert!(recognize(
+    assert!(!recognize(Path::new("renamed.json"), head));
+    let metadata_first = format!(
+        "{{\"account\":\"{}\",\"conversations\":[]}}",
+        "metadata before the conversations ".repeat(4)
+    );
+    let shape = crate::document::Shape::read(metadata_first.as_bytes()).unwrap();
+    let whole = crate::document::Head {
+        bytes: &metadata_first.as_bytes()[..64],
+        shape: Some(&shape),
+    };
+    assert!(super::recognize(
         Path::new("prod-grok-backend.json"),
-        metadata_first
+        &whole
     ));
-    assert!(!recognize(Path::new("renamed.json"), metadata_first));
+    let not_array = crate::document::Shape::read(&br#"{"conversations":{}}"#[..]).unwrap();
+    assert!(!super::recognize(
+        Path::new("prod-grok-backend.json"),
+        &crate::document::Head {
+            bytes: br#"{"conversations":{}}"#,
+            shape: Some(&not_array),
+        }
+    ));
     assert!(!recognize(
         Path::new("chat_history.jsonl"),
         br#"{"type":"user","content":"hello"}"#

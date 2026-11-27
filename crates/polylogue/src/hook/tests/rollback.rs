@@ -140,7 +140,7 @@ fn this_builds_reader_takes_every_rollback_fixture_line() {
     use polylogue_sources::hook_spool::{HookSpool, ParserState, recognize};
     assert!(recognize(
         Path::new("/home/op/.local/state/polylogue/hooks/4242.ndjson"),
-        LINES.as_bytes()
+        &polylogue_sources::document::Head::new(LINES.as_bytes())
     ));
     let step = polylogue_sources::parse::run(
         &HookSpool::default(),

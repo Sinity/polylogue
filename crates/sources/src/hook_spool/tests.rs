@@ -2,6 +2,11 @@ use super::*;
 use crate::parse::run;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn lines(records: &[Json]) -> Vec<u8> {
     let mut out = Vec::new();
     for r in records {
