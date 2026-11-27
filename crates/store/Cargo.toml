@@ -45,6 +45,10 @@ polylogue-testkit.workspace = true
 name = "archive_format_7"
 test = true
 
+[[example]]
+name = "reuse_archive_index"
+test = true
+
 [lints]
 workspace = true
 
