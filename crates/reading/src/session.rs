@@ -25,6 +25,7 @@ mod compose;
 mod cut;
 mod entries;
 mod lay_out;
+mod range;
 mod window;
 use compose::Composed;
 use entries::ShownEntries;
@@ -191,6 +192,7 @@ impl Reading {
             };
         let mut composed = compose::compose(reader, &scope, options)?;
         let mut accepted = bind::bind_seen(reader, request, operation, &composed)?;
+        range::trim_end(reader, &mut accepted, operation, &scope, &mut composed)?;
         let bound = if options.view == View::Context && options.annotation_at().is_some() {
             bind::bind_context(reader, &accepted, &mut composed)?
         } else {
