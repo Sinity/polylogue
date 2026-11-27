@@ -120,7 +120,7 @@ impl Reader<'_> {
                 reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
                 candidates: rows
                     .into_iter()
-                    .map(|row: CallSource| format!("block:{}#{}", row.message, row.ordinal))
+                    .map(|row: CallSource| format!("message:{}", row.message))
                     .collect(),
             });
         }
