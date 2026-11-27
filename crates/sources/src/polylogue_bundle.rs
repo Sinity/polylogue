@@ -52,7 +52,8 @@ pub fn manifest(reader: impl std::io::Read) -> Result<Manifest, String> {
         Some(Err(error)) => Err(error.to_string()),
     }
 }
-pub fn recognize(_: &Path, head: &[u8]) -> bool {
+pub fn recognize(_: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     use serde::de::{IgnoredAny, MapAccess, Visitor};
     struct Header<'a>(&'a mut bool, &'a mut bool);
     struct Data<'a>(&'a mut bool);

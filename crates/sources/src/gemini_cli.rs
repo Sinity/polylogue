@@ -39,7 +39,8 @@ fn in_chats_dir(path: &Path) -> bool {
             == Some("chats")
 }
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     in_chats_dir(path) && first_byte(head) == Some(b'{') && first_key(head) == Some("sessionId")
 }
 

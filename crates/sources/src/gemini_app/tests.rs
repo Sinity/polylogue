@@ -1,5 +1,10 @@
 use super::*;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn cell(body: &str, app: Option<&str>) -> String {
     let caption = match app {
         Some(id) => format!(

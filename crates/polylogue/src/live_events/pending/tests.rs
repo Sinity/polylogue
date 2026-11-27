@@ -196,7 +196,10 @@ fn instance_spool_uses_the_payload_boot_identity() {
         .unwrap();
     let path = pending.path(&spool, "different-filename-boot");
     let bytes = std::fs::read(&path).unwrap();
-    assert!(polylogue_sources::hook_spool::recognize(&path, &bytes));
+    assert!(polylogue_sources::hook_spool::recognize(
+        &path,
+        &polylogue_sources::document::Head::new(&bytes)
+    ));
     let parser = polylogue_sources::hook_spool::open(&path).unwrap();
     let (step, _) = parser.step(None, &bytes, 0).unwrap();
     assert_eq!(step.output.events.len(), 1);

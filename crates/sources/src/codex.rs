@@ -59,7 +59,71 @@ pub const LOCATIONS: &[&str] = &[
 
 pub use header::{recorded_directory, rollout_id};
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+/// The images a rollout's records attach by local path, and the working
+/// directory a relative path resolves against.
+pub const LOCAL_REFERENCES: crate::origin::LocalReferences = crate::origin::LocalReferences {
+    directory: recorded_directory,
+    each: local_references,
+};
+
+/// Each local file a record refers to: `local_images` entries, typed
+/// `local_image` items and `file://` image URLs, anywhere in the record.
+fn local_references(
+    value: &Json,
+    emit: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match value {
+        Json::Object(o) => {
+            if let Some(images) = value.array("local_images") {
+                for image in images {
+                    // A typed entry is emitted once by the recursion below.
+                    let path = image.as_str().or_else(|| {
+                        image
+                            .str("path")
+                            .filter(|_| image.str("type") != Some("local_image"))
+                    });
+                    if let Some(path) = path {
+                        emit(path)?;
+                    }
+                }
+            }
+            if value.str("type") == Some("local_image")
+                && let Some(path) = value.str("path")
+            {
+                emit(path)?;
+            }
+            if matches!(value.str("type"), Some("input_image" | "image"))
+                && let Some(path) = o
+                    .get("image_url")
+                    .or_else(|| o.get("url"))
+                    .and_then(Json::as_str)
+                    .filter(|p| p.starts_with("file://"))
+            {
+                emit(path)?;
+            }
+            for value in o.values() {
+                local_references(value, emit)?;
+            }
+        }
+        Json::Array(values) => {
+            for value in values {
+                local_references(value, emit)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A rollout is named by the session its first record states
+/// (`codex:rollout:<session id>`), wherever Codex moves or compresses it.
+pub const ROLLOUT_ID: crate::origin::ProviderId = crate::origin::ProviderId {
+    named: |path| matches!(File::from_path(path), Some(File::Rollout { .. })),
+    read: |reader| Ok(rollout_id(reader)?.map(|id| format!("codex:rollout:{id}"))),
+};
+
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     File::from_path(path).is_some() && crate::document::starts_object_lines(head)
 }
 

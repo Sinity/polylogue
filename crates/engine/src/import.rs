@@ -235,14 +235,15 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut executed = BTreeSet::new();
-        // Retain the raw group before feeding independent line streams to the
-        // pool. Repeated inputs or paths need the preceding parse checkpoint.
-        // Other formats keep their authored and document execution order.
+        // Retain the raw group before feeding independent line streams (any
+        // input its origin reads line by line) to the pool. Repeated inputs
+        // or paths need the preceding parse checkpoint. Other formats keep
+        // their authored and document execution order.
         const LINE_PLANS: usize = 128;
         let mut lines: Vec<Plan> = Vec::with_capacity(LINE_PLANS);
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
-            let batch_lines = matches!(origin.name, "hook-spool" | "codex" | "claude-code")
-                && matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
+            let batch_lines =
+                matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
             if !batch_lines
                 || outcome.is_err()
                 || lines.len() == LINE_PLANS

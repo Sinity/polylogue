@@ -2,6 +2,16 @@ use super::*;
 use crate::parse::run_document;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize_design(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize_design(path, &crate::document::Head::new(head))
+}
+
 fn conv(messages: Vec<Json>) -> Json {
     json!({"uuid": "c1", "name": "Named", "summary": "", "created_at": "2026-01-01T00:00:00Z",
            "updated_at": "2026-01-01T00:10:00Z", "account": {"uuid": "acc"},
@@ -202,8 +212,14 @@ fn recognizers_tell_the_exports_apart() {
     let p = Path::new("/x.zip!/conversations.json");
     assert!(recognize(p, claude));
     assert!(!recognize(p, chatgpt));
-    assert!(!crate::chatgpt::recognize(p, claude));
-    assert!(crate::chatgpt::recognize(p, chatgpt));
+    assert!(!crate::chatgpt::recognize(
+        p,
+        &crate::document::Head::new(claude)
+    ));
+    assert!(crate::chatgpt::recognize(
+        p,
+        &crate::document::Head::new(chatgpt)
+    ));
     let d = Path::new("/x.zip!/design_chats/05c0.json");
     assert!(recognize_design(d, b"{\"uuid\": \"05c0\""));
     assert!(!recognize_design(
