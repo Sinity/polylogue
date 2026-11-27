@@ -210,18 +210,31 @@ impl TestDaemon {
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
-        let status = || {
-            crate::protocol::into_value(call(&self.daemon, "status", serde_json::json!({})))
-                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
+        let wait_for_status = |matches: &dyn Fn(&serde_json::Value) -> bool| {
+            loop {
+                match crate::protocol::into_value(call(
+                    &self.daemon,
+                    "status",
+                    serde_json::json!({}),
+                )) {
+                    Ok(status) if matches(&status) => return,
+                    Ok(_) => (),
+                    Err(failure)
+                        if failure.retryable
+                            && failure.code.as_deref()
+                                == Some(polylogue_model::Code::DeadlineExceeded.as_str()) =>
+                    {
+                        ()
+                    }
+                    Err(failure) => panic!("status failed: {failure:?}"),
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         };
-        while !ok(&status()) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_status(&ok);
         // Checked after `ok`: an idle loop seen now has finished any pass
         // that wrote what `ok` saw.
-        while status()["caught_up"] != true {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_status(&|status| status["caught_up"] == true);
     }
 
     /// Waits until the signals worker's first evaluation has committed its
