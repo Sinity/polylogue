@@ -18,7 +18,7 @@ The live-event writers retain failed appends with their original observation tim
 
 | State | Rule | Shown with it |
 |---|---|---|
-| `ended` | a `SessionEnd`, a `HostedEnded`, or the root process gone after a `Stop` | the event or process line. For a hosted stdio agent, `HostedEnded` and the live view show the exit status and up to the last 12 lines of standard error from its last 16 KiB |
+| `ended` | a `SessionEnd`, a `HostedEnded`, or the root process gone after a `Stop` | the event or process line. For a hosted stdio agent, `HostedEnded` and the live view show the exit status and up to the last 12 lines of standard error from its last 16 KiB, even if the agent wrote no transcript |
 | `stale` | root process gone with no `SessionEnd` (killed, crashed, rebooted); or, with no process events, no hook events for 15 minutes. A day after its latest event a stale session is `ended`: the live table holds sessions with a live root or an event in the last day | "process gone at T, no end event" |
 | `waiting` | waiting on the operator: a `PermissionRequest` or a permission or elicitation notification with nothing after it; an `AskUserQuestion` or `ExitPlanMode` call open; a `Stop` whose turn ended with a question (`ending: question`); the registry says `blocked` | what it waits for, since when |
 | `working` | a turn in progress: a prompt, a tool call or a subagent after the last stop; or the registry says `busy` | the open tool or last event |

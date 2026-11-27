@@ -119,19 +119,8 @@ printf '%s\n' '{"type":"result"}'
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     let started = json(&started);
     let hosted = started["session"].as_str().unwrap();
-    let host_reference = format!("session:{hosted}");
     wait_status(&env, |status| status["store"]["sessions"] == 2);
-    let out = cli(
-        &env,
-        &[
-            "--json",
-            "--all",
-            "session:claude-code:s1",
-            &host_reference,
-            "send",
-            "continue",
-        ],
-    );
+    let out = cli(&env, &["--json", "--all", "sessions", "send", "continue"]);
     assert_eq!(out.status.code(), Some(5), "{out:?}");
     let value = json(&out);
     let report = step(&value);
@@ -172,12 +161,20 @@ while IFS= read -r line; do
 done
 "#,
     );
-    let started = cli(&env, &["--json", "start", "Begin", "--in", "gemini-cli"]);
+    let started = cli(
+        &env,
+        &[
+            "--json",
+            "start",
+            "Begin",
+            "--in",
+            "gemini-cli",
+            "--cwd",
+            root.path().to_str().unwrap(),
+        ],
+    );
     assert_eq!(started.status.code(), Some(0), "{started:?}");
     assert_eq!(json(&started)["session"], "gemini-cli:morrow");
-    wait_status(&env, |_| {
-        query_rows(&cli(&env, &["--json", "sessions where live:waiting"]))["count"] == 1
-    });
     let answer = cli(
         &env,
         &["--json", "session:gemini-cli:morrow", "answer", "allow"],

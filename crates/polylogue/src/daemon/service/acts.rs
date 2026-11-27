@@ -795,17 +795,13 @@ pub(crate) fn answer(
     standing: bool,
 ) -> Result<Answer<Answered>, Failure> {
     let now = now(d);
-    let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
+    let Some((state, facts, cwd)) = session_state(d, session, now)? else {
         return Ok(error(
             polylogue_model::Code::NotFound,
             format!("no session {session}"),
         ));
     };
-    let chosen = match channel(
-        Act::Answer,
-        state.view.state,
-        &probe(&d.acts, session, &state.facts),
-    ) {
+    let chosen = match channel(Act::Answer, state, &probe(&d.acts, session, &facts)) {
         Ok(chosen) => chosen,
         Err(refusal) => {
             return Ok(error(
@@ -829,7 +825,7 @@ pub(crate) fn answer(
             Value::Null,
         )
     } else {
-        let Some(pending) = state.facts.pending_request.clone() else {
+        let Some(pending) = facts.pending_request else {
             return Ok(error(
                 polylogue_model::Code::Refused,
                 "the session has no pending permission request to answer",
@@ -877,7 +873,7 @@ pub(crate) fn answer(
             recipient_id: Some(session.to_string()),
             sender: DeliverySender::Act,
             event: DeliveryEvent::Control,
-            cwd: state.cwd.clone(),
+            cwd,
             text: body.to_string(),
             refs: vec![reference.clone()],
             left_out: Vec::new(),
