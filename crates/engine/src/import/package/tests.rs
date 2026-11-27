@@ -75,9 +75,15 @@ fn nested_tar_and_compressed_tar_keep_originals_and_decoded_members() {
         .unwrap();
     let bytes = tar.into_inner().unwrap();
     let zst = zstd::stream::encode_all(bytes.as_slice(), 1).unwrap();
-    zip(&source, &[("export.tar.zst", &zst)]);
+    zip(
+        &source,
+        &[
+            ("bundle/file_example-import.tar.zst", &zst),
+            ("account/conversations.json", CHAT.as_bytes()),
+        ],
+    );
     let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
-    assert_eq!(members.len(), 3);
+    assert_eq!(members.len(), 4);
     assert_eq!(members[2].origin.unwrap().name, "chatgpt");
     assert_eq!(members[2].parent, Some((1, 0)));
 }
@@ -95,7 +101,8 @@ fn a_container_inside_its_own_bytes_is_refused() {
         ancestors: vec![bytes.hash()],
         ..Expansion::default()
     };
-    let error = expand(source, bytes, None, &archive, &mut seen, &mut Vec::new()).unwrap_err();
+    let pending = PendingMember::new(source, bytes).unwrap();
+    let error = expand(pending, &archive, None, &mut seen, &mut Vec::new()).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
