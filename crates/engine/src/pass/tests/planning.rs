@@ -582,13 +582,13 @@ fn a_later_rebuild_page_does_not_include_an_append_after_the_cut() {
         );
     }
     {
-        let (mut engine, _lock) = home.engine(4096);
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
         let report = engine.run_pass().unwrap();
         assert!(report.errors.is_empty(), "{report:?}");
     }
     polylogue_testkit::delete_index(&home.root);
 
-    let (mut engine, _lock) = home.engine(4096);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.reads_sources = false;
     let (session, path) = (0..n)
         .map(|i| {
