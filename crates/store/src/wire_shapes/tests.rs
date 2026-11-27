@@ -126,7 +126,7 @@ fn an_incomplete_append_advances_wire_length_and_keeps_past_completion() {
     store(&mut incremental, source(1, 1, 15, 2), &pending);
     store(&mut rebuilt, source(1, 1, 15, 1), &complete);
 
-    let report = |conn| read(conn, Scope::current(None)).unwrap();
+    let report = |conn: &Connection| read(conn, Scope::current(None)).unwrap();
     let before = report(&incremental);
     for observed in [&before, &report(&rebuilt)] {
         let coverage = &observed.coverage[0];
