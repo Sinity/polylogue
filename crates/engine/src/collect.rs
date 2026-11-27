@@ -54,6 +54,7 @@ pub struct Scan {
     pub unreadable: Vec<PathBuf>,
     pub coverage: Vec<Coverage>,
     pub roots: Vec<RootCoverage>,
+    pub errors: Vec<polylogue_model::Failure>,
 }
 
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
@@ -304,20 +305,14 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         unreadable: Vec::new(),
         coverage: Vec::new(),
         roots: Vec::new(),
+        errors: Vec::new(),
     };
     let mut rows = BTreeMap::new();
     for (root, tool) in areas {
         let mut files = Vec::new();
         let before = scan.unreadable.len();
         let mut status = Accessibility::Accessible;
-        all_files(
-            &root,
-            &root,
-            &roots,
-            &mut files,
-            &mut scan.unreadable,
-            &mut status,
-        );
+        all_files(&root, &root, &roots, &mut files, &mut scan, &mut status);
         for (path, meta) in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
             let ignored = meta
@@ -481,7 +476,7 @@ fn all_files(
     path: &Path,
     roots: &std::collections::BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, fs::Metadata)>,
-    unreadable: &mut Vec<PathBuf>,
+    scan: &mut Scan,
     status: &mut Accessibility,
 ) {
     if path != root && roots.contains(path) {
@@ -500,14 +495,47 @@ fn all_files(
         };
     }
     match metadata {
-        Ok(meta) if meta.is_dir() => {
-            for child in entries(path, unreadable) {
-                all_files(root, &child, roots, files, unreadable, status);
+        Ok(meta) if meta.is_dir() => match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => all_files(root, &entry.path(), roots, files, scan, status),
+                        Err(error) => {
+                            scan.unreadable.push(path.to_path_buf());
+                            scan.errors.push(
+                                polylogue_model::Failure::new(
+                                    format!("source root {}", root.display()),
+                                    &crate::EngineError::from(error),
+                                )
+                                .doing(&path.display().to_string()),
+                            );
+                        }
+                    }
+                }
             }
-        }
+            Err(error) => {
+                scan.unreadable.push(path.to_path_buf());
+                scan.errors.push(
+                    polylogue_model::Failure::new(
+                        format!("source root {}", root.display()),
+                        &crate::EngineError::from(error),
+                    )
+                    .doing(&path.display().to_string()),
+                );
+            }
+        },
         Ok(meta) => files.push((path.to_path_buf(), meta)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => unreadable.push(path.to_path_buf()),
+        Err(error) => {
+            scan.unreadable.push(path.to_path_buf());
+            scan.errors.push(
+                polylogue_model::Failure::new(
+                    format!("source root {}", root.display()),
+                    &crate::EngineError::from(error),
+                )
+                .doing(&path.display().to_string()),
+            );
+        }
     }
 }
 

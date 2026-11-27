@@ -199,7 +199,7 @@ fn serving(mut command: Command) -> Daemon {
 /// written file) waits here first. While `ready` does not hold for a
 /// caught-up status, the change the test made has not reached the daemon
 /// yet, and the next wait is for a status that caught up after a later
-/// change (`--after`): each answer follows something the daemon did, and
+/// change (`--after-changes`): each answer follows something the daemon did, and
 /// nothing is polled.
 pub(super) fn wait_status(
     env: &crate::Fixture,
@@ -212,7 +212,7 @@ pub(super) fn wait_status(
         // instead of turning it into a timeout.
         let mut args = vec!["--deadline", "none", "--json", "status", "--wait", &wait];
         if let Some(after) = &after {
-            args.extend(["--after", after]);
+            args.extend(["--after-changes", after]);
         }
         let out = cli(env, &args);
         let answer: command_surface::Answer<serde_json::Value> =
@@ -1617,8 +1617,8 @@ fn saved_query_retry_and_printed_undo_keep_immutable_results() {
     assert_eq!(report["saved"]["id"], "save-cli-1.1");
     assert_eq!(report["saved"]["revision"], 1);
     assert_eq!(report["watch"]["id"], "save-cli-1.2");
-    assert_eq!(report["kept"]["result"], "result:save-cli-1");
-    assert_eq!(report["kept"]["rows"], 1);
+    assert_eq!(report["saved_rows"]["result"], "result:save-cli-1");
+    assert_eq!(report["saved_rows"]["rows"], 1);
     let undo = step["outcome"]["undo"].as_array().unwrap();
     assert_eq!(undo.len(), 1, "{first}");
     let retry = cli(&env, &args);

@@ -1,7 +1,6 @@
 //! What fails is written to the log once, when it starts, and once more when
 //! it clears; not on every pass while it lasts (docs/operations.md, the
-//! log). A pass's failures otherwise live only in `status`, where the next
-//! pass replaces them.
+//! log). Status carries the conditions until a pass sees them clear.
 use polylogue_model::{Cause, Code, Failure};
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -15,7 +14,7 @@ type Condition = (String, Cause, Code);
 pub(crate) struct FailureLog {
     /// Conditions logged and not yet seen to clear, with whether each was
     /// a whole turn's failure.
-    failing: BTreeMap<Condition, bool>,
+    failing: BTreeMap<Condition, (bool, Failure)>,
 }
 
 /// What a pass looked at, which decides what of the failing it can clear.
@@ -32,6 +31,13 @@ pub(crate) struct Looked<'a> {
 }
 
 impl FailureLog {
+    pub(crate) fn errors(&self) -> Vec<Failure> {
+        self.failing
+            .values()
+            .map(|(_, failure)| failure.clone())
+            .collect()
+    }
+
     /// Logs the failures a pass ended with that are not already failing, and
     /// the clearing of failing conditions the pass looked at and did not
     /// meet again. A failure of one file or step is a warning; a whole
@@ -49,8 +55,9 @@ impl FailureLog {
             .iter()
             .map(|path| path.display().to_string())
             .collect();
-        self.failing.retain(|condition, turn| {
-            if now.contains_key(condition) {
+        self.failing.retain(|condition, (turn, failure)| {
+            if let Some(current) = now.get(condition) {
+                *failure = (*current).clone();
                 return true;
             }
             let cleared = if *turn {
@@ -90,7 +97,7 @@ impl FailureLog {
                     failure.code.as_str()
                 );
             }
-            self.failing.insert(condition, turn);
+            self.failing.insert(condition, (turn, failure.clone()));
         }
     }
 }

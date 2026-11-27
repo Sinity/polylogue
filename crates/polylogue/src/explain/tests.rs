@@ -133,7 +133,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "tool_calls | union (outcome:error)".into(),
         "sessions | tool_calls | union (outcome:error)".into(),
         "query:mine".into(),
-        kept.kept.result.clone(),
+        kept.saved_rows.result.clone(),
     ] {
         let result =
             crate::test_answers::ok(as_caller(explain(Some(&expression))).answer(&w.daemon));

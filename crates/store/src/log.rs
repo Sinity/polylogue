@@ -1,5 +1,5 @@
 //! The daemon's log: each record goes to standard error as a journal line
-//! with its priority (`<4>polylogue: text`), and the last [`KEPT`] records
+//! with its priority (`<4>polylogue: text`), and up to [`KEPT`] event records
 //! stay in memory so `status` can show what the daemon said recently.
 //!
 //! It lives in the store because the store is the lowest crate whose code
@@ -62,7 +62,17 @@ pub(crate) struct Recent {
 impl Recent {
     pub(crate) fn push(&mut self, record: Record) {
         if self.records.len() == KEPT {
-            self.records.pop_front();
+            if let Some(at) = self
+                .records
+                .iter()
+                .position(|record| record.priority == Priority::Info)
+            {
+                self.records.remove(at);
+            } else if record.priority == Priority::Info {
+                return;
+            } else {
+                self.records.pop_front();
+            }
         }
         self.records.push_back(record);
     }

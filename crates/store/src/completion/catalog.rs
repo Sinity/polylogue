@@ -303,7 +303,7 @@ impl CatalogWriter {
             let cached_catalog: String = writer
                 .conn
                 .scalar("SELECT value FROM metadata WHERE key='catalog'", [])?;
-            let incompatible = if position.generation != current.position.generation {
+            let incompatible = if position.index_instance != current.position.index_instance {
                 Some("index generation changed")
             } else if position.index < 0 || position.archive < 0 {
                 Some("negative stored position")

@@ -12,64 +12,66 @@ use std::time::Duration;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 fn host(w: &TestDaemon) -> Arc<BrowserHost> {
-    Arc::new(BrowserHost::at(&w.config, &w.daemon.archive, &w.daemon.config.paths).unwrap())
+    Arc::new(BrowserHost::at(&w.config, &w.daemon.archive).unwrap())
 }
 
 struct Answer {
     status: u16,
-    headers: Value,
-    body: Vec<u8>,
-    frames: Vec<Value>,
+    data: Value,
 }
-
 impl Answer {
     fn json(&self) -> Value {
-        serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+        self.data.clone()
     }
 }
-
-/// One exchange as the extension's `exchange` (`background/host.js`) makes it.
-fn exchange(host: &Arc<BrowserHost>, method: &str, path: &str, body: &[u8]) -> Answer {
+fn exchange(host: &Arc<BrowserHost>, message: Value) -> Answer {
     let mut input = Vec::new();
-    write_frame(
-        &mut input,
-        &json!({ "type": "request", "version": 1, "method": method, "path": path,
-                 "headers": {"content-type": "application/json"} }),
-    )
-    .unwrap();
-    for (i, chunk) in body.chunks(64 * 1024).enumerate() {
-        write_frame(
-            &mut input,
-            &json!({ "type": "body", "sequence": i, "data": B64.encode(chunk) }),
-        )
-        .unwrap();
-    }
-    write_frame(&mut input, &json!({ "type": "body_end" })).unwrap();
-    for _ in 0..64 {
-        write_frame(&mut input, &json!({ "type": "response_next" })).unwrap();
-    }
+    super::native::write_message(&mut input, &message).unwrap();
     let mut out = Vec::new();
     serve(Arc::clone(host), &mut input.as_slice(), &mut out).unwrap();
-    let mut frames = Vec::new();
-    let mut reader = out.as_slice();
-    while let Some(f) = read_frame(&mut reader).unwrap() {
-        frames.push(f);
+    let frame = read_frame(&mut out.as_slice()).unwrap().unwrap();
+    assert_eq!(frame["version"], 2);
+    assert_eq!(frame["type"], "answer");
+    let answer: command_surface::Answer<Value> =
+        serde_json::from_value(frame["answer"].clone()).unwrap();
+    match crate::protocol::into_value(answer) {
+        Ok(data) => Answer { status: 200, data },
+        Err(error) => Answer {
+            status: error.kind.http_status().unwrap_or(503),
+            data: json!({"error":error.code,"message":error.message,"reason":error.reason()}),
+        },
     }
-    let response = frames
-        .iter()
-        .find(|f| f["type"] == "response")
-        .cloned()
-        .unwrap_or_else(|| panic!("no response frame: {frames:?}"));
-    let mut body = Vec::new();
-    for f in frames.iter().filter(|f| f["type"] == "response_body") {
-        body.extend(B64.decode(f["data"].as_str().unwrap()).unwrap());
-    }
-    Answer {
-        status: response["status"].as_u64().unwrap() as u16,
-        headers: response["headers"].clone(),
-        body,
-        frames,
-    }
+}
+fn call(host: &Arc<BrowserHost>, operation: &str, arguments: Value) -> Answer {
+    exchange(
+        host,
+        json!({"version":2,"type":"call","operation":operation,
+        "arguments":arguments,"request_id":uuid::Uuid::now_v7().to_string()}),
+    )
+}
+fn store_capture(host: &Arc<BrowserHost>, bytes: &[u8]) -> Answer {
+    exchange(
+        host,
+        json!({"version":2,"type":"capture","capture":std::str::from_utf8(bytes).unwrap()}),
+    )
+}
+fn capture_files(host: &Arc<BrowserHost>, bytes: &[u8]) -> Answer {
+    call(
+        host,
+        "internal capture-files",
+        json!({"capture":std::str::from_utf8(bytes).unwrap()}),
+    )
+}
+fn save_note(host: &Arc<BrowserHost>, bytes: &[u8]) -> Answer {
+    let note: Value = serde_json::from_slice(bytes).unwrap();
+    let mut args = note["source"].clone();
+    args["body"] = note["body"].clone();
+    args["quote"] = note["quote"].clone();
+    exchange(
+        host,
+        json!({"version":2,"type":"call","operation":"internal selection-note",
+        "arguments":args,"request_id":note["request_id"]}),
+    )
 }
 
 fn capture(provider_session: &str, text: &str) -> Vec<u8> {
@@ -102,28 +104,29 @@ fn until(mut answer: impl FnMut() -> Value, done: impl Fn(&Value) -> bool) -> Va
 }
 
 fn conversations(host: &Arc<BrowserHost>, ids: &[&str]) -> Value {
-    let body = json!({"provider": "chatgpt", "ids": ids}).to_string();
-    exchange(host, "POST", "/v1/conversations", body.as_bytes()).json()
+    call(
+        host,
+        "internal conversations",
+        json!({"provider": "chatgpt", "ids": ids}),
+    )
+    .json()
 }
 
 #[test]
 fn a_capture_is_stored_durably_and_archived_by_the_loop() {
     let w = test_daemon::start("x");
     let host = host(&w);
-    let status = exchange(&host, "GET", "/v1/status", b"");
+    let status = call(&host, "set", json!({"key":"browser.actions"}));
     assert_eq!(status.status, 200);
-    assert_eq!(status.frames[0]["type"], "response");
-    assert_eq!(status.json()["daemon"], "running");
-    assert_eq!(status.json()["chat_actions"], false);
+    assert_eq!(status.json()["value"]["type"], "boolean");
+    assert_eq!(status.json()["value"]["value"], false);
 
-    // A body over one 64 KiB frame arrives whole, acknowledged piece by piece.
+    // A large logical message arrives whole.
     let text = "captured in the browser ".repeat(5000);
     let bytes = capture("conv-1", &text);
     assert!(bytes.len() > 64 * 1024);
-    let a = exchange(&host, "POST", "/v1/captures", &bytes);
+    let a = store_capture(&host, &bytes);
     assert_eq!(a.status, 200, "{:?}", a.json());
-    let acks = a.frames.iter().filter(|f| f["type"] == "body_ack").count();
-    assert_eq!(acks, bytes.len().div_ceil(64 * 1024));
     let stored = a.json();
     assert_eq!(stored["new"], true);
     assert_eq!(stored["conversation"], "conv-1");
@@ -136,14 +139,14 @@ fn a_capture_is_stored_durably_and_archived_by_the_loop() {
     assert!(log.starts_with(w.home.join(".local/state/polylogue/browser-capture")));
     // The same bytes again, as an extension resending what it still holds
     // after a restart, change nothing.
-    let again = exchange(&host, "POST", "/v1/captures", &bytes);
+    let again = store_capture(&host, &bytes);
     assert_eq!(again.json()["new"], false);
     assert_eq!(std::fs::read(&log).unwrap(), on_disk);
 
     // The daemon's loop reads the spool; the conversation's state follows.
     let state = until(
         || conversations(&host, &["conv-1", "never"]),
-        |v| v["conversations"][0]["state"] == "archived",
+        |v| v["conversations"][0]["messages"].is_number(),
     );
     let row = &state["conversations"][0];
     assert_eq!(row["session"], "chatgpt:conv-1");
@@ -153,7 +156,7 @@ fn a_capture_is_stored_durably_and_archived_by_the_loop() {
         .unwrap()
         .as_millisecond();
     assert_eq!(row["last_captured_at"], captured_at);
-    assert_eq!(state["conversations"][1]["state"], "missing");
+    assert_eq!(state["conversations"][1]["messages"], Value::Null);
 }
 
 /// Settings that read only a home under `dir`.
@@ -167,85 +170,7 @@ fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
 fn host_without_daemon(dir: &std::path::Path) -> Arc<BrowserHost> {
     let archive = polylogue_store::Archive::at(&dir.join("archive"));
     let config = config_at(dir);
-    let deployment = crate::config::Config::for_test(&config, &archive.root);
-    Arc::new(BrowserHost::at(&config, &archive, &deployment.paths).unwrap())
-}
-
-#[test]
-fn without_the_daemon_a_capture_is_stored_and_the_index_is_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = host_without_daemon(dir.path());
-    let a = exchange(&host, "POST", "/v1/captures", &capture("conv-2", "hi"));
-    assert_eq!(a.status, 200);
-    let state = conversations(&host, &["conv-2", "never"]);
-    assert_eq!(state["daemon"], "no_answer");
-    assert_eq!(state["conversations"][0]["state"], "spooled");
-    assert_eq!(state["conversations"][0]["messages"], Value::Null);
-    assert_eq!(state["conversations"][1]["state"], "unknown");
-    assert_eq!(
-        exchange(&host, "GET", "/v1/status", b"").json()["daemon"],
-        "no_answer"
-    );
-    let jobs = exchange(&host, "GET", "/v1/import_job", b"");
-    assert_eq!(jobs.status, 503);
-    assert_eq!(jobs.json()["error"], "daemon_required");
-    assert_eq!(
-        jobs.json()["reason"],
-        json!({"name": "daemon_did_not_answer", "fields": {}})
-    );
-}
-
-#[test]
-fn malformed_exchanges_are_refused_with_an_error_frame() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = host_without_daemon(dir.path());
-    let run = |frames: &[Value]| {
-        let mut input = Vec::new();
-        for f in frames {
-            write_frame(&mut input, f).unwrap();
-        }
-        let mut out = Vec::new();
-        serve(Arc::clone(&host), &mut input.as_slice(), &mut out).unwrap();
-        read_frame(&mut out.as_slice()).unwrap()
-    };
-    assert_eq!(
-        run(&[json!({"type": "body"})]).unwrap()["error"],
-        "native_request_invalid"
-    );
-    assert_eq!(
-        run(&[json!({"type": "request", "version": 1, "method": "GET", "path": "/api/v1/status"})])
-            .unwrap()["error"],
-        "native_route_forbidden"
-    );
-    // A body frame out of sequence.
-    assert_eq!(
-        run(&[
-            json!({"type": "request", "version": 1, "method": "POST", "path": "/v1/captures"}),
-            json!({"type": "body", "sequence": 3, "data": ""}),
-        ])
-        .unwrap()["error"],
-        "native_request_frame_invalid"
-    );
-    // A spool entry that is a symlink is not followed.
-    let log = host.capture_log("chatgpt", "conv-3");
-    let target = dir.path().join("elsewhere");
-    std::fs::write(&target, b"untouched").unwrap();
-    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(&target, &log).unwrap();
-    let a = exchange(&host, "POST", "/v1/captures", &capture("conv-3", "x"));
-    assert_eq!(a.status, 500);
-    assert_eq!(a.json()["error"], "io");
-    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
-    // Not a capture.
-    let a = exchange(&host, "POST", "/v1/captures", b"[1]");
-    assert_eq!(
-        (
-            a.status,
-            a.json()["error"].clone(),
-            a.json()["reason"]["name"].clone()
-        ),
-        (400, json!("bad_request"), json!("capture_not_json"))
-    );
+    Arc::new(BrowserHost::at(&config, &archive).unwrap())
 }
 
 fn chat_request(conversation: Option<&str>, submit: bool) -> actions::ChatRequest {
@@ -319,13 +244,10 @@ fn send(
 }
 
 fn report(host: &Arc<BrowserHost>, id: &str, by: &str, outcome: &str) -> Answer {
-    exchange(
+    call(
         host,
-        "POST",
-        &format!("/v1/chat-actions/{id}/report"),
-        json!({"by": by, "outcome": outcome, "phase": outcome})
-            .to_string()
-            .as_bytes(),
+        "internal chat report",
+        json!({"id":id,"update":json!({"by": by, "outcome": outcome, "phase": outcome})}),
     )
 }
 
@@ -334,7 +256,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let w = test_daemon::start("x");
     let host = host(&w);
     let claim = |by: &str| {
-        let answer = exchange(&host, "GET", &format!("/v1/chat-actions?by={by}"), b"");
+        let answer = call(&host, "internal chat claim", json!({"by":by}));
         assert_eq!(answer.status, 200, "claim by {by}");
         answer.json()
     };
@@ -345,7 +267,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     );
     w.set("browser.actions", "on");
     assert_eq!(
-        exchange(&host, "GET", "/v1/status", b"").json()["chat_actions"],
+        call(&host, "set", json!({"key":"browser.actions"})).json()["value"]["value"],
         true
     );
     let file = actions::ChatFile {
@@ -364,17 +286,16 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(got["action"]["status"], "claimed");
     assert_eq!(got["action"]["model"], "GPT X");
     let attachment = &got["action"]["attachments"][0];
-    let bytes = exchange(
+    let bytes = call(
         &host,
-        "GET",
-        &format!(
-            "/v1/chat-actions/{a_id}/attachments/{}",
-            attachment["id"].as_str().unwrap()
-        ),
-        b"",
+        "internal chat attachment",
+        json!({"id":a_id,"attachment":attachment["id"]}),
     );
-    assert_eq!(bytes.body, b"attached bytes");
-    assert_eq!(bytes.headers["content-type"], "text/plain");
+    assert_eq!(
+        B64.decode(bytes.json()["bytes"].as_str().unwrap()).unwrap(),
+        b"attached bytes"
+    );
+    assert_eq!(bytes.json()["media_type"], "text/plain");
     // One action out at a time.
     let b = send(&w, "k2", chat_request(None, false), vec![]).unwrap();
     let b_id = b["id"].as_str().unwrap().to_owned();
@@ -393,27 +314,34 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(held["status"], "awaiting_approval");
     let held_id = held["id"].as_str().unwrap().to_owned();
     // The popup lists what waits for the operator from the unit `chat_actions`.
-    let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
-    assert_eq!(listed["actions"].as_array().unwrap().len(), 1, "{listed}");
-    assert_eq!(listed["actions"][0]["id"], held_id.as_str());
-    assert_eq!(listed["actions"][0]["state"], "awaiting_approval");
-    assert_eq!(listed["actions"][0]["conversation"], "conv-9");
+    let listed = call(
+        &host,
+        "rows",
+        json!({"selection":"chat_actions where state:awaiting_approval"}),
+    )
+    .json();
+    assert_eq!(
+        listed["reply"]["rows"].as_array().unwrap().len(),
+        1,
+        "{listed}"
+    );
+    assert_eq!(listed["reply"]["rows"][0]["id"], held_id.as_str());
+    assert_eq!(listed["reply"]["rows"][0]["state"], "awaiting_approval");
+    assert_eq!(listed["reply"]["rows"][0]["conversation"], "conv-9");
     assert_eq!(report(&host, &b_id, "tab-b", "failed").status, 200);
     assert_eq!(claim("tab-a")["action"], Value::Null);
-    let approve = exchange(
+    let approve = call(
         &host,
-        "POST",
-        &format!("/v1/chat-actions/{held_id}/answer"),
-        br#"{"value":"allow"}"#,
+        "internal chat answer",
+        json!({"id":held_id,"value":"allow"}),
     );
     assert_eq!(approve.status, 200);
     assert_eq!(approve.json()["action"]["status"], "queued");
     // The first answer wins; a late one is refused with what won.
-    let late = exchange(
+    let late = call(
         &host,
-        "POST",
-        &format!("/v1/chat-actions/{held_id}/answer"),
-        br#"{"value":"deny"}"#,
+        "internal chat answer",
+        json!({"id":held_id,"value":"deny"}),
     );
     assert_eq!(late.status, 409, "{:?}", late.json());
     assert!(
@@ -432,18 +360,20 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(v["enabled"], false);
     w.set("browser.actions", "on");
     assert_eq!(claim("tab-a")["action"]["id"], held_id.as_str());
-    let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
-    assert_eq!(listed["actions"], json!([]));
+    let listed = call(
+        &host,
+        "rows",
+        json!({"selection":"chat_actions where state:awaiting_approval"}),
+    )
+    .json();
+    assert_eq!(listed["reply"]["rows"], json!([]));
 }
 
 fn import_job_report(host: &Arc<BrowserHost>, id: &str, by: &str, body: Value) -> Answer {
-    let mut body = body;
-    body["by"] = json!(by);
-    exchange(
+    call(
         host,
-        "POST",
-        &format!("/v1/import_job/{id}/report"),
-        body.to_string().as_bytes(),
+        "internal import report",
+        json!({"id":id,"by":by,"report":body}),
     )
 }
 
@@ -464,12 +394,7 @@ fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let id = data["job"]["id"].as_str().unwrap().to_owned();
     assert_eq!(data["job"]["status"], "waiting");
     let claim = |by: &str| {
-        let answer = exchange(
-            &host,
-            "POST",
-            "/v1/import_job/claim",
-            json!({"by": by}).to_string().as_bytes(),
-        );
+        let answer = call(&host, "internal import claim", json!({"by": by}));
         assert_eq!(answer.status, 200, "claim by {by}");
         answer.json()
     };
@@ -479,7 +404,7 @@ fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
 
     // The extension captures what the provider listed and reports.
     let bytes = capture("listed-1", "an older conversation");
-    assert_eq!(exchange(&host, "POST", "/v1/captures", &bytes).status, 200);
+    assert_eq!(store_capture(&host, &bytes).status, 200);
     let progress = json!({"kind": "progress", "position": "0:28",
         "counts": {"listed": 28, "captured": 1, "unchanged": 27, "failed": 0}});
     assert_eq!(
@@ -501,16 +426,16 @@ fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
         "counts": {"listed": 40, "captured": 2, "unchanged": 38, "failed": 0}});
     let done = import_job_report(&host, &id, "ext-1", finished);
     assert_eq!(done.json()["job"]["status"], "finished");
-    let listed = exchange(&host, "GET", "/v1/import_job", b"").json();
-    assert_eq!(listed["jobs"][0]["id"], id.as_str());
-    assert_eq!(listed["jobs"][0]["state"], "finished");
-    assert_eq!(listed["jobs"][0]["listed"], 40);
-    assert_eq!(listed["jobs"][0]["position"], "3:0");
-    assert_eq!(listed["jobs"][0]["claimed_by"], Value::Null);
+    let listed = call(&host, "rows", json!({"selection":"import_jobs"})).json();
+    assert_eq!(listed["reply"]["rows"][0]["id"], id.as_str());
+    assert_eq!(listed["reply"]["rows"][0]["state"], "finished");
+    assert_eq!(listed["reply"]["rows"][0]["listed"], 40);
+    assert_eq!(listed["reply"]["rows"][0]["position"], "3:0");
+    assert_eq!(listed["reply"]["rows"][0]["claimed_by"], Value::Null);
     // The conversation it captured is archived like any other capture.
     until(
         || conversations(&host, &["listed-1"]),
-        |v| v["conversations"][0]["state"] == "archived",
+        |v| v["conversations"][0]["messages"].is_number(),
     );
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
@@ -535,21 +460,13 @@ fn the_host_manifest_allows_only_the_named_extension() {
 
 #[test]
 fn reading_a_captures_files_uses_the_capture_parser_without_writing_the_spool() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = host_without_daemon(dir.path());
-    let answer = exchange(
-        &host,
-        "POST",
-        "/v1/captures/files",
-        &capture("files-session", "hello"),
-    );
+    let w = test_daemon::start("x");
+    let host = host(&w);
+    let answer = capture_files(&host, &capture("files-session", "hello"));
     assert_eq!(answer.status, 200, "{:?}", answer.json());
     assert_eq!(answer.json()["conversation"]["messages"], 1);
     assert_eq!(std::fs::read_dir(&host.spool).unwrap().count(), 0);
-    assert_eq!(
-        exchange(&host, "POST", "/v1/captures/files", b"{}").status,
-        422
-    );
+    assert_eq!(capture_files(&host, b"{}").status, 400);
 }
 
 /// law: capture-holds-conversation
@@ -564,33 +481,32 @@ fn a_capture_without_conversation_content_is_refused_and_not_spooled() {
         "provenance": {"captured_at": "2026-11-02T16:20:59Z", "source_url": "https://chatgpt.com/c/empty"},
         "session": {"provider": "chatgpt", "provider_session_id": "empty", "session_kind": "standard", "attachments": []}
     });
-    let a = exchange(&host, "POST", "/v1/captures", empty.to_string().as_bytes());
+    let a = store_capture(&host, empty.to_string().as_bytes());
     assert_eq!(a.status, 400);
     assert_eq!(a.json()["reason"]["name"], "capture_has_no_conversation");
     let mut empty_raw = empty.clone();
     empty_raw["raw_provider_payload"] = json!({});
-    let b = exchange(
-        &host,
-        "POST",
-        "/v1/captures",
-        empty_raw.to_string().as_bytes(),
-    );
+    let b = store_capture(&host, empty_raw.to_string().as_bytes());
     assert_eq!(b.json()["reason"]["name"], "capture_has_no_conversation");
     assert_eq!(
-        conversations(&host, &["empty"])["conversations"][0]["state"],
-        "unknown"
+        exchange(
+            &host,
+            json!({"version":2,"type":"spooled","provider":"chatgpt","ids":["empty"]})
+        )
+        .json()["spooled"],
+        json!([false])
     );
 }
 
 #[test]
-fn a_capture_larger_than_axums_default_body_limit_is_accepted() {
+fn a_large_capture_is_accepted() {
     let w = test_daemon::start("x");
     let host = host(&w);
     let bytes = capture("conv-large", &"a long conversation ".repeat(200_000));
     assert!(bytes.len() > 3 * 1024 * 1024);
-    let read = exchange(&host, "POST", "/v1/captures/files", &bytes);
+    let read = capture_files(&host, &bytes);
     assert_eq!(read.status, 200, "{:?}", read.json());
-    let sent = exchange(&host, "POST", "/v1/captures", &bytes);
+    let sent = store_capture(&host, &bytes);
     assert_eq!(sent.status, 200, "{:?}", sent.json());
     assert_eq!(sent.json()["new"], true);
 }
@@ -616,12 +532,19 @@ fn grok_file_blobs(
 ) -> Vec<Option<polylogue_model::BlobHash>> {
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
-        || {
-            match host.ask(
-            "rows",
-            serde_json::json!({"selection": format!("session:{session}"), "steps":[{"verb":"read", "format":"markdown"}]}),
+        || match crate::client::call(
+            &host.socket,
+            &crate::client::request(
+                "rows",
+                serde_json::json!({"selection": format!("session:{session}"), "steps":[{"verb":"read", "format":"markdown"}]}),
+                uuid::Uuid::now_v7().to_string(),
+            ),
         ) {
-            Some(answer) if answer.value().is_some_and(|value| value["reply"]["steps"][0]["outcome"]["status"] == "done") => {
+            Ok(answer)
+                if answer.value().is_some_and(|value| {
+                    value["reply"]["steps"][0]["outcome"]["status"] == "done"
+                }) =>
+            {
                 let page = crate::test_answers::read(answer);
                 let mut output = Vec::new();
                 polylogue_render::encode_document(
@@ -637,7 +560,6 @@ fn grok_file_blobs(
                 Value::String(String::from_utf8(output).unwrap())
             }
             _ => Value::Null,
-        }
         },
         |content| content.as_str().is_some_and(|t| t.contains(text)),
     );
@@ -663,19 +585,13 @@ fn grok_capture_with_fetched_file_bytes_reaches_an_archive_read() {
     let w = test_daemon::start("fixture");
     let host = host(&w);
     let body = serde_json::to_vec(&grok_capture()).unwrap();
-    let read = exchange(&host, "POST", "/v1/captures/files", &body);
+    let read = capture_files(&host, &body);
     assert_eq!(read.status, 200, "{:?}", read.json());
     assert_eq!(read.json()["files"][0]["id"], "raw-file");
     assert_eq!(read.json()["files"][0]["url"], "users/u/raw-file/content");
-    assert_eq!(read.json()["files"][0]["stored"], Value::Null);
     let mut capture = grok_capture();
     capture["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
-    let sent = exchange(
-        &host,
-        "POST",
-        "/v1/captures",
-        &serde_json::to_vec(&capture).unwrap(),
-    );
+    let sent = store_capture(&host, &serde_json::to_vec(&capture).unwrap());
     assert_eq!(sent.status, 200);
     let hash = polylogue_model::BlobHash::of(b"fetched file bytes");
     assert_eq!(
@@ -692,12 +608,7 @@ fn a_file_the_archive_holds_is_named_by_its_hash_instead_of_sent_again() {
     let host = host(&w);
     let mut first = grok_capture();
     first["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"fetched file bytes")}]);
-    let sent = exchange(
-        &host,
-        "POST",
-        "/v1/captures",
-        &serde_json::to_vec(&first).unwrap(),
-    );
+    let sent = store_capture(&host, &serde_json::to_vec(&first).unwrap());
     assert_eq!(sent.status, 200);
     let hash = polylogue_model::BlobHash::of(b"fetched file bytes");
     grok_file_blobs(&w, &host, "raw provider question");
@@ -705,45 +616,21 @@ fn a_file_the_archive_holds_is_named_by_its_hash_instead_of_sent_again() {
     let mut later = grok_capture();
     later["raw_provider_payload"]["responses"]["responses"][0]["message"] =
         json!("raw provider question, edited");
-    let read = exchange(
-        &host,
-        "POST",
-        "/v1/captures/files",
-        &serde_json::to_vec(&later).unwrap(),
-    );
+    let read = capture_files(&host, &serde_json::to_vec(&later).unwrap());
     assert_eq!(read.status, 200, "{:?}", read.json());
     assert_eq!(
-        read.json()["files"][0]["stored"],
-        json!({"blob": hash.to_string(), "size": 18})
+        call(
+            &host,
+            "internal stored-files",
+            json!({"provider":"grok","conversation":"grok-raw"})
+        )
+        .json()["files"][0],
+        json!({"id":"raw-file","blob": hash.to_string(), "size": 18})
     );
     later["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "blob": hash.to_string(), "size_bytes": 18}]);
-    let sent = exchange(
-        &host,
-        "POST",
-        "/v1/captures",
-        &serde_json::to_vec(&later).unwrap(),
-    );
+    let sent = store_capture(&host, &serde_json::to_vec(&later).unwrap());
     assert_eq!(sent.status, 200);
     assert_eq!(grok_file_blobs(&w, &host, "edited"), [Some(hash)]);
-}
-
-#[test]
-fn the_reader_address_uses_the_daemon_runtime_directory_and_listener() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = host_without_daemon(dir.path());
-    let response = exchange(&host, "GET", "/v1/reader", b"");
-    assert_eq!(response.status, 503);
-    assert_eq!(response.json()["error"], "reader_unavailable");
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    crate::web::access::write_access_files(&host.runtime_dir, "synthetic-browser-token", port)
-        .unwrap();
-    let response = exchange(&host, "GET", "/v1/reader", b"");
-    assert_eq!(response.status, 200);
-    assert_eq!(
-        response.json()["url"],
-        format!("http://127.0.0.1:{port}/auth#synthetic-browser-token")
-    );
 }
 
 #[test]
@@ -756,10 +643,14 @@ fn a_frame_claiming_more_than_arrives_fails_at_the_bytes_that_exist() {
     assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
     assert_eq!(error.to_string(), "frame ended after 3 of 4294967295 bytes");
     let mut whole = Vec::new();
-    write_frame(&mut whole, &json!({"type": "body_end"})).unwrap();
+    write_frame(
+        &mut whole,
+        &json!({"version":2,"type":"spooled","provider":"chatgpt","ids":[]}),
+    )
+    .unwrap();
     assert_eq!(
         read_frame(&mut whole.as_slice()).unwrap(),
-        Some(json!({"type": "body_end"}))
+        Some(json!({"version":2,"type":"spooled","provider":"chatgpt","ids":[]}))
     );
 }
 
@@ -782,19 +673,16 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
     let queued = send(&w, "late-capture", chat_request(None, true), vec![]).unwrap();
     let id = queued["id"].as_str().unwrap();
     assert_eq!(
-        exchange(&host, "GET", "/v1/chat-actions?by=tab-a", b"").json()["action"]["id"],
+        call(&host, "internal chat claim", json!({"by":"tab-a"})).json()["action"]["id"],
         id
     );
     for phase in ["sending", "claimed"] {
-        let response = exchange(
+        let response = call(
             &host,
-            "POST",
-            &format!("/v1/chat-actions/{id}/report"),
-            json!({
+            "internal chat report",
+            json!({"id":id,"update":json!({
                 "by":"tab-a", "outcome":"progress", "phase":phase,
-            })
-            .to_string()
-            .as_bytes(),
+            })}),
         );
         assert_eq!(response.status, 200, "{}", response.json());
     }
@@ -806,7 +694,7 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
     assert_eq!(action["phase"], "claimed");
     assert_eq!(action["claimed_by"], Value::Null);
     assert_eq!(
-        exchange(&host, "GET", "/v1/chat-actions?by=tab-b", b"").json()["action"],
+        call(&host, "internal chat claim", json!({"by":"tab-b"})).json()["action"],
         Value::Null
     );
     assert_eq!(report(&host, id, "tab-a", "progress").status, 409);
@@ -817,16 +705,13 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
         "submission_receipt_required"
     );
     let confirmation = |by| {
-        exchange(
+        call(
             &host,
-            "POST",
-            &format!("/v1/chat-actions/{id}/report"),
-            json!({
+            "internal chat report",
+            json!({"id":id,"update":json!({
                 "by":by, "outcome":"submitted", "phase":"submitted",
                 "receipt":{"conversation":"conversation-1", "turn":"captured-turn"},
-            })
-            .to_string()
-            .as_bytes(),
+            })}),
         )
     };
     assert_eq!(confirmation("tab-b").status, 409);
@@ -837,4 +722,25 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
         response.json()["action"]["receipt"]["turn"],
         "captured-turn"
     );
+}
+
+#[test]
+fn malformed_captures_and_spool_symlinks_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = host_without_daemon(dir.path());
+    let refused = store_capture(&host, b"[1]").json();
+    assert_eq!(
+        refused["reason"],
+        json!({"name":"capture_not_json","fields":{}})
+    );
+    let log = host.capture_log("chatgpt", "linked");
+    let target = dir.path().join("elsewhere");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &log).unwrap();
+    assert_eq!(
+        store_capture(&host, &capture("linked", "x")).json()["error"],
+        "io"
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
 }

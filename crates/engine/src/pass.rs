@@ -613,6 +613,7 @@ impl Engine {
             }) {
                 errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
+            errors.extend(scan.errors);
             (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
@@ -782,7 +783,7 @@ impl Engine {
             .collect();
         for path in unseen {
             let state = &self.inputs[&path];
-            if sources && state.facts.is_some() && !path.try_exists()? {
+            if sources && state.facts.is_some() && path.try_exists().is_ok_and(|exists| !exists) {
                 let batch = polylogue_store::Batch {
                     input: InputKey {
                         id: state.input_id.clone(),
@@ -1153,22 +1154,25 @@ impl Engine {
 
     /// The chain a file holds fewer bytes of, each equal to the stored byte
     /// at its place: its input's current chain when it is longer than the
-    /// file and begins with the file's bytes.
+    /// file and begins with the file's bytes (an empty file included).
     fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
         let st = &self.inputs[path];
         let reader = self.reads.reader()?;
         let Some(progress) = reader.latest_chain(&st.input_id)? else {
             return Ok(None);
         };
-        if now.size == 0 || progress.stored <= now.size || progress.stored < st.stored {
+        if progress.stored <= now.size || progress.stored < st.stored {
             return Ok(None);
         }
-        let intact = reader
-            .stored_chain(&st.input_id, progress.chain, now.size)
-            .ok()
-            .is_some_and(|chain| {
-                read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
-            });
+        // An emptied file holds no byte that differs: the chain seen back
+        // holding nothing, never a new, empty current chain.
+        let intact = now.size == 0
+            || reader
+                .stored_chain(&st.input_id, progress.chain, now.size)
+                .ok()
+                .is_some_and(|chain| {
+                    read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
+                });
         Ok(intact.then_some(progress.chain))
     }
 
@@ -2743,6 +2747,7 @@ impl Engine {
             );
             summary.passes += 1;
             summary.work.add(finished.clone());
+            finished.errors = self.failure_log.errors();
             status.update(|s| {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
@@ -2751,6 +2756,7 @@ impl Engine {
                     || s.last_pass.capture_pending
                     || finished.capture_pending
                     || !finished.errors.is_empty()
+                    || !s.last_pass.errors.is_empty()
                     || s.passes == 0
                 {
                     s.last_pass = finished;

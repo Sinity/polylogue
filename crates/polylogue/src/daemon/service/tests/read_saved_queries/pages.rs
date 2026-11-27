@@ -139,7 +139,7 @@ fn saved_history_pages_preserve_text_actions_rows_and_both_directions_after_rest
     let reader = d.daemon.reads.reader().unwrap();
     let seal = CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     };
     let mut cursor =
         PageCursor::open(old.arguments["steps"][0]["cursor"].as_str().unwrap(), &seal).unwrap();
@@ -254,7 +254,7 @@ fn a_saved_empty_selection_still_delivers_its_history() {
     );
     let page = read(&d.daemon, "query:focus");
     assert_eq!(history(&page).revisions.len(), 1);
-    assert_eq!(history(&page).kept.len(), 1);
+    assert_eq!(history(&page).saved_rows.len(), 1);
     assert!(data_items(&page).is_empty());
     assert!(page.document.footer.next.is_none());
 }

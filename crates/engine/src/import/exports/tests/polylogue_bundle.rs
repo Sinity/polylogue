@@ -4,15 +4,15 @@ fn authored_bundle() -> Vec<u8> {
     // Independent wire literals: the manifest's stated operator is unrelated
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":5,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
-        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
+        "format":"polylogue-bundle","version":6,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
+        "ran_at":"2026-01-01T00:00:00Z","read_position":{"index_instance":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
         "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":0},
         "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript"}},"enabled_alternates":[],"author":"operator"}});
     let session = json!({"record":"session","data":{"ref":"session:claude-code:bundle-session","commit":1,"session":{"id":"claude-code:bundle-session","kind":"main","cwd":[]}}});
     let authored = json!({"record":"authored","data":{"ref":"request:setting-request","commit":2,"prepared":{
         "request":{"id":"setting-request","machine":"exported-machine","at":"2026-01-01T00:00:00Z","authorship":{"author":"operator","via":"cli"},"write":{"write":"set_setting","key":"browser.actions","value":"on","machine":null}},
         "outcome":{"id":"setting-request","repeat":false,"pending":false},
-        "effect":{"annotations":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"alternates":{"alternates":[],"alternate_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"import_jobs":[]}}}});
+        "effect":{"annotations":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"alternates":{"alternates":[],"alternate_parts":[]},"saved_rows":[],"deliveries":[],"chats":[],"import_jobs":[]}}}});
     [manifest, session, authored]
         .into_iter()
         .flat_map(|record| {

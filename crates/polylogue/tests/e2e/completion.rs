@@ -19,7 +19,7 @@ fn seed(root: &Path, cache: &Path, model: &str) {
         &Metadata {
             archive: key,
             position: ChangePosition {
-                generation: "g".into(),
+                index_instance: "g".into(),
                 index: 1,
                 archive: 1,
             },

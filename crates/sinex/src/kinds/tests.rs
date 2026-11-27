@@ -156,23 +156,24 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 11,
+                | "polylogue.request_restore" => 12,
                 "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 9,
                 "polylogue.input_observation" => 8,
                 "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.background"
                 | "polylogue.repository" => 8,
-                "polylogue.query_run" => 10,
+                "polylogue.query_run" => 11,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 6,
-                "polylogue.annotation" | "polylogue.attachment_binding" => 2,
-                "polylogue.annotation_restore" | "polylogue.historical_restore" => 1,
-                "polylogue.query" => 3,
+                "polylogue.annotation" => 3,
+                "polylogue.attachment_binding" | "polylogue.annotation_restore" => 2,
+                "polylogue.historical_restore" => 1,
+                "polylogue.query" => 4,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 4,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 8,
-                "polylogue.line_save" | "polylogue.line_save_restore" => 5,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 9,
+                "polylogue.line_save" | "polylogue.line_save_restore" => 6,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
@@ -530,8 +531,22 @@ fn field_names_version_every_changed_declaration() {
 /// whose definition changed.
 #[test]
 fn read_options_version_every_changed_declaration() {
-    let previous: serde_json::Value =
+    let source15: serde_json::Value =
         serde_json::from_str(include_str!("tests/source15-kind-hashes.json")).unwrap();
+    let source16: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source16-kind-hashes.json")).unwrap();
+    assert_versioned_transition(&source15, &recorded_kinds(&source16), &[], &[]);
+}
+
+/// Source 17 names the keys of stored payloads for what they hold (query ID,
+/// read position, index instance, access, saved rows, a delivery event's
+/// outcome, a left-out item, a signal event's request position, a slot's
+/// position) and records a delivery's prepared read position, and raised
+/// every declaration whose definition changed.
+#[test]
+fn stored_keys_version_every_changed_declaration() {
+    let previous: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source16-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
         previous["source"]["version"].as_u64().unwrap() + 1

@@ -30,8 +30,8 @@ mod behind_index;
 mod completeness;
 pub use completeness::ReadingContract;
 mod captured;
-mod cursor_generation;
-pub use cursor_generation::open_cursor;
+mod cursor_index_instance;
+pub use cursor_index_instance::open_cursor;
 mod chain_state;
 mod hook_fields;
 mod import_counts;
@@ -129,14 +129,14 @@ fn version_commit(conn: &Connection, id: &str, hash: &[u8]) -> Result<Option<u64
 }
 
 row! {
-    /// Both write counters and the index generation.
+    /// Both write counters and the index instance.
     struct ChangePosition {
-        generation: String,
+        index_instance: String,
         index: i64,
         archive: i64,
     }
     statements {
-        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS generation,
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS index_instance,
             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
     }
@@ -1269,10 +1269,10 @@ impl Reader<'_> {
     ) -> std::result::Result<query_language::cursor::Continuation, crate::selection::SelectionError>
     {
         let seal = query_language::cursor::CursorSeal::new(self.cursor_key()?);
-        let generation = self.change_position()?.generation;
+        let index_instance = self.change_position()?.index_instance;
         Ok(open_cursor(
             &seal,
-            &generation,
+            &index_instance,
             cursor,
             question,
             resolve_zone,
@@ -1284,7 +1284,7 @@ impl Reader<'_> {
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         let position = self.conn()?.one(&ChangePosition::CURRENT, [])?;
         Ok(polylogue_model::ChangePosition {
-            generation: position.generation,
+            index_instance: position.index_instance,
             index: position.index,
             archive: position.archive,
         })

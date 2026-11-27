@@ -458,7 +458,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         // A first page records its run after answering. Finish the previous
         // reading before comparing the next reading's exact snapshot position.
         wait_for_runs(1);
-        let api_read_at = {
+        let api_read_position = {
             r.w.daemon
                 .reads
                 .reader()
@@ -467,9 +467,9 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 .unwrap()
         };
         let api = read_page(&r, "session:claude-code:s1", &[]).await;
-        assert_eq!(api.snapshot.read_at, api_read_at);
+        assert_eq!(api.snapshot.read_position, api_read_position);
         wait_for_runs(2);
-        let socket_read_at = {
+        let socket_read_position = {
             r.w.daemon
                 .reads
                 .reader()
@@ -481,7 +481,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
             serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","format":"json"}]})).answer(&r.web.daemon));
         assert_eq!(api.document.items, socket.document.items);
         assert_eq!(api.document.header, socket.document.header);
-        assert_eq!(socket.snapshot.read_at, socket_read_at);
+        assert_eq!(socket.snapshot.read_position, socket_read_position);
         let (status, _, page) = send_html(&r, "/s/claude-code%3Anope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(page.contains("not_found"));
@@ -1381,3 +1381,44 @@ fn status_vector_details_use_the_http_route_but_verification_is_cli_only() {
 }
 
 mod failure_pages;
+
+#[test]
+fn reader_address_operation_requires_a_running_web_listener() {
+    let daemon = test_daemon::start("Reader address fixture");
+    let ask = || {
+        serde_json::to_value(
+            crate::test_daemon::Call::new("internal reader-url", serde_json::json!({}))
+                .answer(&daemon.daemon),
+        )
+        .unwrap()
+    };
+    let refused = serde_json::json!({
+        "name": "reader_not_running", "fields": {}
+    });
+    let answer = ask();
+    assert_eq!(answer["outcome"], "error");
+    assert_eq!(answer["error"]["code"], "reader_unavailable");
+    assert_eq!(answer["error"]["reason"], refused);
+    assert_eq!(
+        answer["error"]["message"],
+        "the reader is not running; start it with `polylogue web`"
+    );
+
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    let directory = daemon
+        .daemon
+        .config
+        .paths
+        .runtime_dir(&daemon.daemon.archive.root);
+    let token = std::fs::read_to_string(directory.join("token")).unwrap();
+    let answer = ask();
+    assert_eq!(answer["outcome"], "ok");
+    assert_eq!(
+        answer["value"],
+        serde_json::json!({
+            "url": format!("http://127.0.0.1:{}/auth#{}", server.port, token)
+        })
+    );
+    server.shutdown().unwrap();
+    assert_eq!(ask()["error"]["reason"], refused);
+}

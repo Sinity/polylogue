@@ -505,7 +505,7 @@ impl crate::Reader<'_> {
         Ok(Some(SavedQueryRecord {
             name: name.into(),
             revisions,
-            kept,
+            saved_rows: kept,
             watch,
             dependents,
         }))

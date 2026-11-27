@@ -88,3 +88,12 @@ describe("the popup", () => {
     expect(window.document.getElementById("capture").disabled).toBe(false);
   });
 });
+
+it("shows the daemon's reader refusal sentence", async () => {
+  const message = "the reader is not running; start it with `polylogue web`";
+  const { window, text } = await open((request) => request.type === "polylogue.reader"
+    ? { error: "reader_unavailable", message } : state());
+  window.document.getElementById("reader").click();
+  await until(() => text("page-detail") === message, "the reader refusal");
+  expect(text("page-detail")).toBe(message);
+});

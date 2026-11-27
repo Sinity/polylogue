@@ -39,9 +39,11 @@ pub struct DeliveryRow {
     pub recipient_id: Option<String>,
     pub at: Timestamp,
     pub bytes: u64,
-    /// The archive write counter when it was prepared: notes newer than
-    /// this are the delta for the next brief.
+    /// The archive write counter of the transaction that wrote it.
     pub seq: i64,
+    /// The archive write counter of the read its content was prepared from;
+    /// absent for a delivery written before it was recorded.
+    pub prepared_position: Option<i64>,
     /// What happened to it, in order: delivered, failed, not_sent, used.
     pub events: Vec<String>,
 }
@@ -349,7 +351,8 @@ impl Reader<'_> {
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.outcome, ',') FROM
-                        (SELECT outcome FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
+                        (SELECT outcome FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e),
+                    d.prepared_position
                FROM source_delivery d {filter}
               ORDER BY d.commit_seq DESC"
         ))?;
@@ -366,6 +369,7 @@ impl Reader<'_> {
                     .get::<_, Option<String>>(7)?
                     .map(|s| s.split(',').map(str::to_owned).collect())
                     .unwrap_or_default(),
+                prepared_position: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

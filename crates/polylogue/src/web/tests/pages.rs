@@ -151,7 +151,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let frames = feed_frames(&body);
-        assert_eq!(frames[0]["generation_changed"], true);
+        assert_eq!(frames[0]["index_instance_changed"], true);
         assert_eq!(frames[0]["replacement"], true);
     });
 }
@@ -464,7 +464,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
             assert_eq!(status, StatusCode::OK, "{body}");
             let page: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert!(
-                page["read_at"]["cursor"]
+                page["read_position"]["cursor"]
                     .as_str()
                     .and_then(polylogue_model::ChangePosition::parse)
                     .is_some(),
