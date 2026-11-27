@@ -10,7 +10,7 @@ use polylogue_testkit::{
     ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
 };
 use proptest::prelude::*;
-use proptest::test_runner::FileFailurePersistence;
+use proptest::test_runner::{RngSeed, TestRunner};
 use std::fs;
 
 /// One version of the file: the first `length` lines of `branch`, the
@@ -242,21 +242,51 @@ fn an_incomplete_append_keeps_current_wire_coverage_equal_to_rebuild() {
     assert!(appended.is_empty(), "after an append: {appended}");
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 24,
-        failure_persistence: Some(Box::new(FileFailurePersistence::Off)),
+// A group builds two fixture indexes per case. Keep the same 24 cases
+// across independent test processes, each reproducible by its seed.
+fn check_generated_versions(seed: u64) {
+    let config = ProptestConfig {
+        cases: 4,
+        rng_seed: RngSeed::Fixed(seed),
+        failure_persistence: None,
         ..ProptestConfig::default()
-    })]
+    };
+    TestRunner::new(config)
+        .run(&prop::collection::vec(version(), 1..6), |versions| {
+            let (_, differ, appended) = updated_and_rebuilt(&versions);
+            prop_assert!(differ.is_empty(), "{}", differ);
+            prop_assert!(appended.is_empty(), "after an append: {}", appended);
+            Ok(())
+        })
+        .unwrap();
+}
 
-    /// Whatever versions repeat each other, incremental updates and a
-    /// rebuild give the same index tables.
-    #[test]
-    fn chains_stored_in_order_through_upkeep_equal_all_at_once(
-        versions in prop::collection::vec(version(), 1..6),
-    ) {
-        let (_, differ, appended) = updated_and_rebuilt(&versions);
-        prop_assert!(differ.is_empty(), "{}", differ);
-        prop_assert!(appended.is_empty(), "after an append: {}", appended);
-    }
+#[test]
+fn chains_stored_in_order_through_upkeep_equal_all_at_once() {
+    check_generated_versions(1);
+}
+
+#[test]
+fn chains_stored_in_order_from_seed_2() {
+    check_generated_versions(2);
+}
+
+#[test]
+fn chains_stored_in_order_from_seed_3() {
+    check_generated_versions(3);
+}
+
+#[test]
+fn chains_stored_in_order_from_seed_4() {
+    check_generated_versions(4);
+}
+
+#[test]
+fn chains_stored_in_order_from_seed_5() {
+    check_generated_versions(5);
+}
+
+#[test]
+fn chains_stored_in_order_from_seed_6() {
+    check_generated_versions(6);
 }
