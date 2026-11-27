@@ -148,9 +148,9 @@ pub(super) fn import_provider(
     provider: &str,
 ) -> Result<Answer<protocol::ImportJobAnswer>, Failure> {
     let (d, invocation) = (call.daemon, call.invocation);
-    if arguments.origin.is_some() || arguments.withdraw_missing || arguments.dry_run {
+    if arguments.origin.is_some() || arguments.dry_run {
         return Err(Failure::bad_request(
-            "--origin, --withdraw-missing and --dry-run read files; a provider import takes --since, --cancel and --wait",
+            "--origin and --dry-run read files; a provider import takes --since, --cancel and --wait",
         ));
     }
     if !arguments.cancel {

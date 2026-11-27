@@ -2,13 +2,14 @@
 //! attachment's bytes. Its next pages are `rows` calls carrying the same
 //! step with the next cursor, so a reading continues in the grammar it
 //! started in.
-use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use};
+use super::{Given, RowRule, Selection, StepCall, StepDone, Verb};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::daemon::service::Daemon;
 use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
+use crate::unbuilt;
 use command_surface::{Answer, Deadline, RunnableRequest};
 use polylogue_model::read::{Format, ReadBudget, ReadFooter, ReadPage, ReadyCall};
 use polylogue_model::{Reason, Reference};
@@ -130,21 +131,12 @@ pub(crate) fn target(selection: &Selection) -> Result<String, Failure> {
         .ok_or_else(|| Reason::ReadNeedsRows {}.into())
 }
 
-/// The step's document encoding; an option whose body is not built yet is
-/// refused.
+/// The step's document encoding, once its options are checked.
 fn check(step: &ReadStep) -> Result<Option<Format>, Failure> {
     let ReadStep {
         displayed: _,
         options,
-        until,
-        first,
-        last,
-        beside,
-        blind,
-        seed,
         follow: _,
-        until_idle,
-        align,
         format,
         budget: _,
         cursor: _,
@@ -154,23 +146,8 @@ fn check(step: &ReadStep) -> Result<Option<Format>, Failure> {
     if input.is_some() {
         return Err(Reason::InputNeedsAttachment {}.into());
     }
-    for (given, option) in [
-        (
-            options.from.as_deref().is_some_and(|from| from != "seen"),
-            "from",
-        ),
-        (until.is_some(), "until"),
-        (first.is_some(), "first"),
-        (last.is_some(), "last"),
-        (*beside, "beside"),
-        (*blind, "blind"),
-        (seed.is_some(), "seed"),
-        (*until_idle, "until-idle"),
-        (align.is_some(), "align"),
-    ] {
-        if given {
-            return Err(not_built("read", option));
-        }
+    if options.from.as_deref().is_some_and(|from| from != "seen") {
+        return Err(unbuilt::refusal("read", "--from a message or a time").into());
     }
     options
         .validate()
@@ -179,8 +156,10 @@ fn check(step: &ReadStep) -> Result<Option<Format>, Failure> {
         .as_deref()
         .map(|name| {
             Format::parse(name).ok_or_else(|| match name {
-                // Documented formats whose encoders are not built.
-                "citation" | "bytes" => not_built_use("read", &format!("--format {name}")),
+                "citation" => unbuilt::refusal("read", "--format citation").into(),
+                "bytes" => Failure::bad_value(
+                    "--format bytes reads an attachment's bytes: select attachment:MESSAGE#N",
+                ),
                 _ => Failure::refusal(Reason::UnknownReadFormat {
                     format: name.into(),
                 }),
