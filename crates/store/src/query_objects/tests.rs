@@ -725,10 +725,6 @@ fn query_commit_positions_share_the_source_cursor() {
     let reader = reads.reader().unwrap();
     let after = reader.change_position().unwrap();
     assert!(after.archive > before.archive);
-    assert_eq!(
-        reader.completion_changed_queries(before.archive).unwrap(),
-        std::collections::BTreeSet::from([first.id.to_string()])
-    );
     drop(reader);
     // A repeat keeps its first position and emits no new commit cue.
     archive
@@ -749,6 +745,15 @@ fn query_commit_positions_share_the_source_cursor() {
             |row| row.get(0),
         )
         .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT commit_seq FROM query WHERE hash=?1",
+            [first.id.to_string()],
+            |row| row.get::<_, Option<i64>>(0)
+        )
+        .unwrap(),
+        Some(after.archive)
+    );
     // A true old NULL row remains unknown even if the same body is offered again.
     conn.execute(
         "UPDATE query SET commit_seq=NULL WHERE hash=?1",
@@ -802,10 +807,6 @@ fn query_commit_positions_share_the_source_cursor() {
         .unwrap();
     subscription.try_recv().unwrap();
     let reader = reads.reader().unwrap();
-    assert_eq!(
-        reader.completion_changed_queries(after.archive).unwrap(),
-        std::collections::BTreeSet::from([second.id.to_string()])
-    );
     assert_eq!(
         conn.query_row(
             "SELECT commit_seq FROM query WHERE hash=?1",

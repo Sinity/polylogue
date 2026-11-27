@@ -286,16 +286,16 @@ request. With the queue running an owner does not land by hand.
 cycle takes the oldest ready ones, at most eight, and builds one staging
 commit on master's tip that adds each as a squash commit, computed with
 `git merge-tree` and `git commit-tree`; one that does not merge onto the
-staging commit is left out of this batch. It pushes the staging commit to the
-branch `land-queue` and dispatches the `check` workflow on exactly that
-commit (`rev`), which runs every test. When the run is green and master has
-not moved since, or moved only in packages the batch does not change, it
+staging commit is left out of this batch. Each dispatch gets its own
+`land-queue-<commit>-<suffix>` branch and passes that exact commit to the
+`check` workflow as `rev`. The queue uses the returned run URL if available,
+or looks for the run on that branch with that commit. When the run is green
+and master has not moved since, or moved only in packages the batch does not change, it
 squash-merges the members in order with `--match-head-commit` and says
 whether master's tree is then identical to the tree the staging commit
-predicts. If master moved in a package the batch changes, or a member got a
-new head or stopped being ready during the run, it builds a new staging
-commit and tests again. Master's protection requires `check` on the merged
-pull request's own head, not an up-to-date branch, so no head is rewritten.
+predicts. If master moved in a package the batch changes, it builds a new
+staging commit and tests again. Master's protection requires `check` on the
+merged pull request's own head, not an up-to-date branch, so no head is rewritten.
 
 A package is a directory with a `Cargo.toml`; another path counts as its
 top-level directory; the root manifest, `Cargo.lock`, `rust-toolchain.toml`,
@@ -304,9 +304,11 @@ Markdown counts as none. The comparison does not see a break across packages,
 such as a new caller in one crate of an API master removed from another;
 master's own run after the merge finds it.
 
-A red batch is split in half and the oldest half tested first; a green half
-merges, and the search goes on in the other half on the new master. A pull
-request red on its own has its failed jobs run once more: if they pass it
+After any staging check, a member that changed head or stopped being ready
+waits for the next cycle. The remaining members are tested again together.
+A red batch with unchanged members is split in half and the oldest half
+tested first. The queue checks the other half for changes before testing it.
+A pull request red on its own has its failed jobs run once more: if they pass it
 merges and the cycle prints the tests that failed the first time as "failed
 once, passed on rerun"; if they fail again the queue comments on it with the
 run, the failed jobs and tests and the master commit (and the pull requests
@@ -315,8 +317,10 @@ comment names. A new head or a branch update puts it back.
 
 The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
 flight (its run finishes unused); members already merged stay merged, and the
-rest are ready pull requests on the next cycle. The staging branch is deleted
-when a cycle ends. Each cycle prints what is not in the batch (check running,
+rest are ready pull requests on the next cycle. Each cycle removes only its
+own staging branches whose runs it confirmed as finished. An abandoned
+branch can be removed once its run has finished. Each cycle prints what is
+not in the batch (check running,
 red on its own head with the failed jobs, conflicting, waiting on review
 threads, sent back, held, draft), then the batch, the staging commit, the
 run, the result, what merged, what was left out and what was sent back. It
@@ -325,8 +329,11 @@ a minute. `--once` runs one cycle and exits 0 unless a pull request is red,
 conflicting or sent back; `--dry-run` prints the batch and its staging commit
 without pushing or merging.
 
-`dev/land <n>` lands one pull request by hand and refuses while the
-`land-queue` branch exists, so a hand merge does not move master under a
+`python3 dev/test-land.py` exercises the queue with a local Git remote and a
+simulated forge. It uses `jq` to evaluate the run lookup and result filters.
+
+`dev/land <n>` lands one pull request by hand and refuses while a
+`land-queue-*` branch exists, so a hand merge does not move master under a
 batch; `--now` merges anyway. It waits for the required check, polling once
 a minute, and compares the packages the pull request changes with those
 master changed since the base its check tested (the `check` job records it as
