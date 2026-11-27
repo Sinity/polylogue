@@ -344,6 +344,61 @@ fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() 
 }
 
 #[test]
+fn an_unrecognized_rollout_header_keeps_bytes_and_a_refusal_after_rebuild() {
+    use polylogue_model::chain::ChainState;
+
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut e, lock) = engine(&w, 64);
+    let bad = b"{\"type\":\"future_header\",\"payload\":{\"id\":\"unrecognized\"}}\n";
+    let body = [bad.as_slice(), rollout("late-header").as_bytes()].concat();
+    let plain = dir.join("rollout-unrecognized.jsonl");
+    let decoded_path = dir.join("rollout-unrecognized-compressed.jsonl");
+    let compressed = decoded_path.with_extension("jsonl.zst");
+    let encoded = zstd::stream::encode_all(&body[..], 1).unwrap();
+    std::fs::write(&plain, &body).unwrap();
+    std::fs::write(&compressed, &encoded).unwrap();
+    let ids = [plain, decoded_path]
+        .map(|path| format!("codex:unidentified-rollout:{}", e.location_id(&path)));
+    let verify = |e: &Engine| {
+        for id in &ids {
+            assert_eq!(captured(e, id), body);
+            let reader = e.reads.reader().unwrap();
+            let progress = reader.latest_chain(id).unwrap().unwrap();
+            let ChainState::Failed {
+                parsed_to, failure, ..
+            } = progress.state
+            else {
+                panic!("expected a refusal for {id}");
+            };
+            assert_eq!(parsed_to, 0);
+            assert_eq!(
+                failure,
+                polylogue_model::ChainFailure::refused(
+                    "first complete Codex rollout record does not name a session"
+                )
+            );
+        }
+        assert_eq!(
+            captured(e, blake3::hash(&encoded).to_hex().as_ref()),
+            encoded
+        );
+        assert_eq!(w.count("SELECT count(*) AS n FROM session"), 0);
+    };
+    assert_eq!(e.run_pass().unwrap().errors.len(), 2);
+    verify(&e);
+    assert!(e.run_pass().unwrap().errors.is_empty());
+
+    drop(e);
+    drop(lock);
+    std::fs::remove_file(w.root.join("index.db")).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    e.run_pass().unwrap();
+    verify(&e);
+}
+
+#[test]
 fn rollout_without_session_meta_grows_one_input() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
