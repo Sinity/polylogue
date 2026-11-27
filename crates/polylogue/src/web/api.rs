@@ -45,7 +45,7 @@ pub fn routes() -> Router<Arc<Web>> {
                     Ok((request, evidence)) => {
                         respond(&web, request, lifetime.caller(&evidence)).await
                     }
-                    Err(error) => refused(&web, error),
+                    Err(error) => refused(&web, error, unbuilt_in_body(c, &body)),
                 }
             },
         )
@@ -57,7 +57,7 @@ pub fn routes() -> Router<Arc<Web>> {
                     Ok(request) => {
                         respond(&web, request, lifetime.caller(&Default::default())).await
                     }
-                    Err(error) => refused(&web, error),
+                    Err(error) => refused(&web, error, unbuilt_in_query(c, &pairs)),
                 }
             },
         );
@@ -66,11 +66,34 @@ pub fn routes() -> Router<Arc<Web>> {
     router.layer(axum::extract::DefaultBodyLimit::disable())
 }
 
-fn refused(web: &Web, error: String) -> HttpResponse {
-    json_answer(
-        web,
-        crate::daemon::service::error(polylogue_model::Code::BadRequest, error),
-    )
+/// A refused request: `not_built` when it names an option on the list of
+/// what is designed and not built, else a bad request.
+fn refused(web: &Web, error: String, unbuilt: Option<command_surface::Failure>) -> HttpResponse {
+    match unbuilt {
+        Some(failure) => json_answer(web, command_surface::Answer::<Value>::error(failure)),
+        None => json_answer(
+            web,
+            crate::daemon::service::error(polylogue_model::Code::BadRequest, error),
+        ),
+    }
+}
+
+/// A listed option among a POST body's arguments.
+fn unbuilt_in_body(c: &Command, body: &str) -> Option<command_surface::Failure> {
+    let body: Value = serde_json::from_str(body).ok()?;
+    crate::unbuilt::in_arguments(c.name, body.get("arguments").unwrap_or(&body))
+}
+
+/// A listed option among a GET's query names, of the row or of its step.
+fn unbuilt_in_query(c: &Command, pairs: &[(String, String)]) -> Option<command_surface::Failure> {
+    let verb = pairs
+        .iter()
+        .find(|(name, _)| name == "steps")
+        .map(|(_, verb)| verb.as_str());
+    pairs.iter().find_map(|(name, _)| {
+        verb.and_then(|verb| crate::unbuilt::option(verb, name))
+            .or_else(|| crate::unbuilt::option(c.name, name))
+    })
 }
 
 /// A POST takes the shared request or the operation's arguments. The calling

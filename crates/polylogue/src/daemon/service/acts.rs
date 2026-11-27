@@ -74,18 +74,15 @@ impl Operation for StartSession {
         {
             return Ok(web_chat::start(call, provider, a)?.map(StartReply::WebChat));
         }
-        let pending = [
-            (a.submit, "--submit"),
-            (a.model.is_some(), "--model"),
-            (a.effort.is_some(), "--effort"),
-            (a.project.is_some(), "--project"),
-            (!a.attach.is_empty(), "--attach"),
+        let unbuilt = [
+            (a.submit, "--submit in a harness session"),
+            (a.model.is_some(), "--model in a harness session"),
+            (a.effort.is_some(), "--effort in a harness session"),
+            (a.project.is_some(), "--project in a harness session"),
+            (!a.attach.is_empty(), "--attach in a harness session"),
         ];
-        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("start {option} on a harness session is not built yet"),
-            ));
+        if let Some((_, use_)) = unbuilt.into_iter().find(|(used, _)| *used) {
+            return Err(crate::unbuilt::refusal("start", use_).into());
         }
         if a.harness.is_none() && a.role.is_none() {
             return Err(Reason::StartNeedsHarnessOrRole {}.into());

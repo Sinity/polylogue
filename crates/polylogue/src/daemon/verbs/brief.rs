@@ -2,7 +2,7 @@
 //! is the directory's brief, one session is that session's brief (to take
 //! it over), three or more named sessions are an index of them, and search
 //! words are what is already known about them.
-use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, not_built_use};
+use super::{Given, RowRule, Selection, StepCall, StepDone, Verb};
 use crate::brief::{Ask, BriefReply};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
@@ -71,7 +71,9 @@ impl Verb for Brief {
                 },
             )?,
             Form::Words(text) => words(text, step.cwd, for_session, &call)?,
-            Form::Other => return Err(not_built_use("brief", "over these rows")),
+            Form::Other => {
+                return Err(crate::unbuilt::refusal("brief", "of a page or other rows").into());
+            }
         };
         Ok(answer
             .map(|reply| StepAnswer::Brief(Box::new(reply)))
@@ -86,7 +88,9 @@ impl Verb for Brief {
                 format!("would brief an index of {} sessions", sessions.len())
             }
             Form::Words(query) => format!("would recall what is known about {query:?}"),
-            Form::Other => return Err(not_built_use("brief", "over these rows")),
+            Form::Other => {
+                return Err(crate::unbuilt::refusal("brief", "of a page or other rows").into());
+            }
         })
     }
 }
