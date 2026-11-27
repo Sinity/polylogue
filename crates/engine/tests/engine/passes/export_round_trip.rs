@@ -695,3 +695,35 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         );
     }
 }
+
+/// A copy ends at EOF even without a trailing newline. The same copy
+/// rebuilt from the archive must finish the record too.
+#[test]
+fn rebuilding_an_import_keeps_a_record_without_a_final_newline() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let file = w.dir.path().join("imported.jsonl");
+    let bytes = polylogue_testkit::claude_user("at-eof", "copy", "Last record");
+    fs::write(&file, bytes.trim_end_matches('\n')).unwrap();
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let report = engine
+            .import_with_options(
+                &[file],
+                &polylogue_engine::ImportOptions {
+                    origin: Some("claude-code".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    }
+    let messages = || w.count("SELECT count(*) AS n FROM message WHERE id='claude-code:at-eof'");
+    assert_eq!(messages(), 1);
+    polylogue_testkit::delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    assert_eq!(messages(), 1);
+}
