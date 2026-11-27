@@ -400,6 +400,12 @@ reasons! {
     /// A save the daemon did not answer: it may or may not have been written.
     SaveOutcomeUnknown "save_outcome_unknown" => DaemonRequired {}
         "the note may or may not be saved; retry it with the same ID";
+    ReaderNotRunning "reader_not_running" => ReaderUnavailable {}
+        "the reader is not running; start it with `polylogue web`";
+    NativeVersionMismatch "native_version_mismatch" => Refused { version: Option<u64> }
+        "the browser host needs version 2; reload the extension";
+    NativeMessageInvalid "native_message_invalid" => BadRequest { problem: String }
+        "the browser message is invalid: {problem}";
     CaptureNotJson "capture_not_json" => BadRequest {}
         "a capture is one JSON object";
     CaptureNamesNoConversation "capture_names_no_conversation" => BadRequest {}

@@ -105,3 +105,36 @@ fn a_shorter_equal_file_is_observed_back_and_starts_no_chain() {
         1
     );
 }
+
+/// A stored file emptied in place (truncated before it is written again)
+/// is its chain seen back holding nothing: no chain starts, and the session
+/// keeps its messages.
+#[test]
+fn an_emptied_file_is_observed_back_and_starts_no_chain() {
+    let first = claude_user("u1", "emptied", "stored body");
+    let home = ClaudeHome::new();
+    home.append("emptied.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let path = home.file("emptied.jsonl");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    engine.writer().flush_rows().unwrap();
+    assert_eq!(
+        home.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+        1
+    );
+    assert_eq!(
+        home.count(
+            "SELECT count(*) AS n FROM a.observation WHERE class = 'back' AND revision IS NULL
+               AND chain = 1 AND length = 0"
+        ),
+        1
+    );
+    assert_eq!(home.texts("emptied"), ["stored body"]);
+}

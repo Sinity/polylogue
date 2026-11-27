@@ -49,6 +49,11 @@ fn every_declared_statement_prepares_and_names_its_struct_fields() {
     crate::text_rows::declared_rows(&mut check);
     crate::archive::writer::agreement::declared_rows(&mut check);
     crate::summary::lines::declared_rows(&mut check);
+    crate::archive::writer::declared_after_rows(&mut check);
+    crate::archive::writer::captured::declared_rows(&mut check);
+    crate::blobs::declared_rows(&mut check);
+    crate::session_bundle::declared_rows(&mut check);
+    crate::verify::declared_rows(&mut check);
     assert!(check.failures.is_empty(), "{:#?}", check.failures);
     assert!(check.checked > 2);
 }

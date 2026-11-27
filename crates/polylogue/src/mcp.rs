@@ -185,7 +185,10 @@ fn format_answer(
                 Some(text) => text
                     .map(|text| format!("{text}{notes}"))
                     .map_err(|error| bad_request(&error)),
-                None => Ok(polylogue_render::terminal::json(value, true)),
+                None => Ok(polylogue_render::terminal::json(
+                    value,
+                    command.name != "status",
+                )),
             }
         }
     }

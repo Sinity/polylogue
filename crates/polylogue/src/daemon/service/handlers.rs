@@ -122,8 +122,8 @@ impl Operation for Status {
                 "--wait cannot be combined with --watch or --verify",
             ));
         }
-        if arguments.after.is_some() && arguments.wait.is_none() {
-            return Err(Failure::bad_request("--after needs --wait"));
+        if arguments.after_changes.is_some() && arguments.wait.is_none() {
+            return Err(Failure::bad_request("--after-changes needs --wait"));
         }
         if arguments.watch && (arguments.line || arguments.verify) {
             return Err(Failure::bad_request(
@@ -181,11 +181,16 @@ impl Operation for Status {
         let mut status = match &arguments.wait {
             Some(wait) => {
                 let wait = super::line::listing_wait(wait, call.caller.channel())?;
-                status::wait(call, wait, arguments.after, || {
-                    status::answer(call.daemon, vectors.clone(), arguments.log)
+                status::wait(call, wait, arguments.after_changes, || {
+                    status::answer(
+                        call.daemon,
+                        vectors.clone(),
+                        arguments.log,
+                        arguments.details,
+                    )
                 })?
             }
-            None => status::answer(call.daemon, vectors, arguments.log),
+            None => status::answer(call.daemon, vectors, arguments.log, arguments.details),
         };
         if arguments.verify
             && status
@@ -770,32 +775,21 @@ impl Operation for SelectionNote {
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
-        let input = crate::browser::notes::SelectionNote {
-            request_id: call.request_id.into(),
-            body: arguments.body,
-            quote: arguments.quote,
-            source: crate::browser::notes::Source {
-                provider: arguments.provider,
-                conversation_id: arguments.conversation_id,
-                message_id: arguments.message_id,
-                page_url: arguments.page_url,
-                selected_at: arguments.selected_at,
-            },
-        };
-        let (session, message_id) = input.references()?;
+        let input = arguments;
+        let (session, message_id) = input.references(call.request_id)?;
         let reader = call.reader()?;
         let message = polylogue_model::Reference::Message(message_id.clone());
         let intended = UserWrite::Assert {
             annotations: vec![input.annotation(session.clone(), message.clone())],
         };
         let selected_scope = reader.scope_token();
-        match repeated_request(&reader, &input.request_id, &intended, invocation) {
+        match repeated_request(&reader, call.request_id, &intended, invocation) {
             Ok(Some(previous)) => {
                 drop(reader);
                 return Ok(write_from_read(
                     d,
                     invocation,
-                    input.request_id,
+                    call.request_id.into(),
                     previous,
                     selected_scope,
                 ));
@@ -820,7 +814,7 @@ impl Operation for SelectionNote {
         Ok(write_from_read(
             d,
             invocation,
-            input.request_id,
+            call.request_id.into(),
             intended,
             selected_scope,
         ))

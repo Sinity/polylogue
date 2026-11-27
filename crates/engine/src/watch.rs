@@ -79,7 +79,13 @@ impl Roots {
     }
 
     pub fn take(&mut self) -> Changes {
-        let changes = std::mem::take(&mut *self.changes.locked());
+        let mut changes = std::mem::take(&mut *self.changes.locked());
+        // Root metadata changes need a fresh coverage scan, including
+        // permissions changing while no transcript changed.
+        changes.full |= changes
+            .paths
+            .iter()
+            .any(|path| self.active.contains_key(path));
         // A watched directory that was deleted loses its watch inside notify,
         // and a recreated one is not watched again unless the next refresh
         // watches it afresh.

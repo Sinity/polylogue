@@ -98,6 +98,9 @@ fn a_parser_panic_in_the_build_fails_the_chain_with_its_message() {
         [("failed".to_owned(), Some(reason.clone()))]
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert_eq!(pass.errors[0].cause, polylogue_model::Cause::Content);
+    assert_eq!(
+        (pass.errors[0].cause, pass.errors[0].code),
+        (polylogue_model::Cause::Bug, polylogue_model::Code::Internal)
+    );
     assert_eq!(pass.errors[0].message, reason);
 }

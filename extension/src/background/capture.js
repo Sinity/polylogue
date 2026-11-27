@@ -202,7 +202,7 @@ export class Capturer {
 
   /** The capture state of a conversation, as the host answers it. */
   async held(provider, conversation) {
-    return captureState.ofArchiveAnswer(provider, await this.host.conversations(provider, [conversation]))[0];
+    return captureState.ofArchiveAnswer(provider, await captureState.conversations(this.host, provider, [conversation]))[0];
   }
 
   /**
@@ -259,7 +259,7 @@ export class Capturer {
     if (raw) {
       let read;
       try {
-        read = await this.host.captureFiles(await captureBody(base));
+        read = await captureState.captureFiles(this.host, await captureBody(base));
       } catch (error) {
         // The raw conversation must reach the outbox even when the host
         // cannot list its files. Try discovery again on the next capture.
