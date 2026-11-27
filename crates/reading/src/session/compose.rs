@@ -689,14 +689,15 @@ pub(super) fn runs(
     reader: &Reader<'_>,
     composed: &Composed,
     options: &ReadOptions,
+    show_inherited: bool,
 ) -> Result<Runs, Error> {
-    if options.view != View::Context || composed.parts.is_empty() {
+    if options.view != View::Context || composed.parts.iter().all(|part| part.start == part.end) {
         return Ok(Runs {
             spans: composed
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(_, part)| options.inherited() || !part.inherited)
+                .filter(|(_, part)| show_inherited || !part.inherited)
                 .map(|(at, part)| (at, part.start, part.end))
                 .collect(),
             evicted: Vec::new(),

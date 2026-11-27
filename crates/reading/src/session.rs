@@ -191,8 +191,9 @@ impl Reading {
                 },
             };
         let mut composed = compose::compose(reader, &scope, options)?;
-        let mut accepted = bind::bind_seen(reader, request, operation, &composed)?;
-        range::trim_end(reader, &mut accepted, operation, &scope, &mut composed)?;
+        let mut accepted = request.clone();
+        let inherited_from = range::trim(reader, &mut accepted, operation, &scope, &mut composed)?;
+        let mut accepted = bind::bind_seen(reader, accepted, operation, &composed)?;
         let bound = if options.view == View::Context && options.annotation_at().is_some() {
             bind::bind_context(reader, &accepted, &mut composed)?
         } else {
@@ -200,13 +201,14 @@ impl Reading {
         };
         bind::trim_start(reader, &accepted, &mut composed)?;
         still_wanted()?;
-        let mut runs = compose::runs(reader, &composed, options)?;
+        let show_inherited = options.inherited() || inherited_from;
+        let mut runs = compose::runs(reader, &composed, options, show_inherited)?;
         let omission = window::apply(reader, &composed, &mut runs, &mut accepted, &scope.session)?;
         still_wanted()?;
         let read_session = reader
             .session(&scope.session)?
             .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
-        let inherited_messages = if !options.inherited() && options.view != View::Context {
+        let inherited_messages = if !show_inherited && options.view != View::Context {
             let mut total = 0;
             for (at, part) in composed.parts.iter().enumerate() {
                 if part.inherited {
