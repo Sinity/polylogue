@@ -94,12 +94,6 @@ pub(crate) fn line_page(
             crate::protocol::failure(polylogue_model::Code::BadValue, "unknown read format")
         })?;
     let result = match destination {
-        Some(Destination::Clipboard | Destination::Browser) => {
-            return Err(crate::protocol::failure(
-                polylogue_model::Code::NotBuilt,
-                "this destination is not built yet",
-            ));
-        }
         Some(Destination::File(_) | Destination::Dir(_)) => {
             return Err(crate::protocol::failure(
                 polylogue_model::Code::BadRequest,

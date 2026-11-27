@@ -6,3 +6,4 @@
 
 mod example_archive;
 mod generated;
+mod parents;
