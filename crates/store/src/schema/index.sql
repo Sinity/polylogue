@@ -1,5 +1,5 @@
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
--- INDEX_VERSION, generation, cursor_key (the generation's secret that seals read
+-- INDEX_VERSION, index_instance, cursor_key (the index's secret that seals read
 -- cursors), the write counter, building, facts_version,
 -- preamble_set, boot_id (the boot of this generation). A changed boot
 -- always starts a new generation, including after a clean shutdown.

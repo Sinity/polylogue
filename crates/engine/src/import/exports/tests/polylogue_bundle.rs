@@ -4,7 +4,7 @@ fn authored_bundle() -> Vec<u8> {
     // Independent wire literals: the manifest's stated operator is unrelated
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":6,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
+        "format":"polylogue-bundle","version":7,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
         "ran_at":"2026-01-01T00:00:00Z","read_position":{"index_instance":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
         "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":0},
         "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript"}},"enabled_alternates":[],"author":"operator"}});

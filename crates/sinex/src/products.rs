@@ -656,7 +656,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         match *product {
                             "message" => 11,
                             "request" | "restored_request" => 12,
-                            "session" | "link" | "parse_progress" => 9,
+                            "session" | "parse_progress" => 9,
+                            "link" => 10,
                             "input" => 8,
                             "document" | "event" | "background" | "repository" => 8,
                             "fragment" => 6,

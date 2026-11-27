@@ -99,7 +99,15 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
         rich_key,
         products::key(&contribution(strong, 75), 0).unwrap()
     );
-    for product in [rich, weak] {
+    let reference = contribution(
+        serde_json::from_value(json!({
+            "kind":"reference", "reason":"send", "parent":"claude-code:parent",
+            "child":"claude-code:recipient", "evidence":"send receipt"
+        }))
+        .unwrap(),
+        0,
+    );
+    for product in [rich, weak, reference] {
         let payload = products::payload(&product, 0).unwrap();
         let declaration = declarations("polylogue")
             .into_iter()
@@ -114,6 +122,7 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
         );
         if let Product::Link { facts, .. } = &product {
             assert_eq!(payload["branch_point"], json!(facts.branch_point));
+            assert_eq!(payload["reason"], json!(facts.reason));
         }
         assert_eq!(
             products::decode(
@@ -157,7 +166,8 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 12,
-                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 9,
+                "polylogue.session" | "polylogue.parse_progress" => 9,
+                "polylogue.link" => 10,
                 "polylogue.input_observation" => 8,
                 "polylogue.document"
                 | "polylogue.event"
@@ -545,8 +555,18 @@ fn read_options_version_every_changed_declaration() {
 /// every declaration whose definition changed.
 #[test]
 fn stored_keys_version_every_changed_declaration() {
-    let previous: serde_json::Value =
+    let source16: serde_json::Value =
         serde_json::from_str(include_str!("tests/source16-kind-hashes.json")).unwrap();
+    let source17: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
+    assert_versioned_transition(&source16, &recorded_kinds(&source17), &[], &[]);
+}
+
+/// Source 18 names why a reference link exists as its reason.
+#[test]
+fn link_reason_versions_its_declaration() {
+    let previous: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
         previous["source"]["version"].as_u64().unwrap() + 1
