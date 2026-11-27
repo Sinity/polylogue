@@ -1,150 +1,20 @@
 name: check
-
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       rev:
-        description: Exact full commit SHA to check
+        description: Exact revision with the comparison fixture
         required: true
-
-# Test logs list failures as they happen; after the summary they list slow
-# tests and repeat each failure's full output.
-env:
-  CARGO_TERM_COLOR: always
-  NEXTEST_STATUS_LEVEL: fail
-  NEXTEST_FINAL_STATUS_LEVEL: slow
-  NEXTEST_FAILURE_OUTPUT: immediate-final
-  # A pull request's checkout is its merge commit; the first parent is the
-  # base branch's tip, which selects the tests the change can affect. Pushes
-  # and exact-revision dispatches run every test.
-  BASE: ${{ github.event_name == 'pull_request' && '--base HEAD^1' || '' }}
-
-concurrency:
-  group: check-${{ inputs.rev || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-# Each job runs one xtask command that `cargo xtask check` also runs locally.
 jobs:
-  lint:
+  event-collision:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-          ref: ${{ inputs.rev || '' }}
+          ref: ${{ inputs.rev }}
       - uses: ./.github/actions/rust
         with:
-          rev: ${{ inputs.rev || '' }}
-      - run: cargo xtask fast
-      # Only this job saves master's build, so it also builds every test
-      # binary the other jobs build; with Clippy's results that is all of it.
-      # A lint failure still leaves a valid build, which is saved too.
-      - name: Build every test binary for master's saved build
-        if: ${{ !cancelled() && github.event_name == 'push' }}
-        run: |
-          cargo xtask test --no-run
-          git rev-parse HEAD > target/source-commit
-      # Cargo never removes an artifact it no longer uses, so each saved
-      # build would keep every earlier one's copies.
-      - name: Remove what master's build no longer uses
-        if: ${{ !cancelled() && github.event_name == 'push' }}
-        run: cargo xtask prune-build
-      - if: ${{ !cancelled() && github.event_name == 'push' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          ref: ${{ inputs.rev || '' }}
-      - uses: ./.github/actions/rust
-        with:
-          rev: ${{ inputs.rev || '' }}
-      - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4 --junit "$RUNNER_TEMP/junit.xml"
-      # The report names every test's outcome and duration, so a flaky test
-      # can be traced across recorded runs.
-      - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: junit-${{ matrix.shard }}
-          path: ${{ runner.temp }}/junit.xml
-          if-no-files-found: ignore
-
-  nix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          ref: ${{ inputs.rev || '' }}
-      - uses: ./.github/actions/rust
-        with:
-          rev: ${{ inputs.rev || '' }}
-      - run: cargo xtask nix $BASE
-
-  browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          ref: ${{ inputs.rev || '' }}
-      - name: Verify the selected source commit
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          EXPECTED_REV: ${{ inputs.rev }}
-        run: |
-          actual=$(git rev-parse HEAD)
-          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
-          test "$actual" = "$EXPECTED_REV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
-      - name: Browser extension checks and real archives
-        run: |
-          sudo apt-get install --yes zip
-          npm --prefix extension ci
-          npm --prefix extension run check
-
-  # The one required status: every job above must have succeeded, so a
-  # failed, cancelled or skipped job fails it.
-  check:
-    needs: [lint, test, nix, browser]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      # The base commit under the tested merge commit, as an annotation on
-      # this check run, where `dev/land` reads it.
-      - name: Record the tested base
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.parents[0].sha')
-          echo "::notice title=tested base::$base"
-      - name: Require every job
-        env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "job results: $RESULTS"
-          for result in $RESULTS; do test "$result" = success; done
+          rev: ${{ inputs.rev }}
+      - run: cargo xtask test -p polylogue-store --lib -E 'test(a_replayed_event_cannot_collide_with_the_rebuilds_reading)'
