@@ -1,5 +1,5 @@
 //! One-time operation: brings an `archive.db` of format 6 to the current
-//! format (9) in place, beside its segment log. Not part of the product; it is run on a
+//! format (10) in place, beside its segment log. Not part of the product; it is run on a
 //! reflinked copy first and once on the operator's archive, then deleted.
 //!
 //! `cargo run -p polylogue-store --example archive_format_7 -- <archive root>`

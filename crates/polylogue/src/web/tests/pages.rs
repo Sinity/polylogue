@@ -25,13 +25,17 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         assert_eq!(next.request.operation, "rows");
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert_eq!(body.matches("role=\"alert\"").count(), 0, "{body}");
+        assert_eq!(html_elements(&body, "<div class=\"archived-text\">", "</div>"),
+            ["<div class=\"archived-text\"><p>look at &lt;script&gt;alert(1)&lt;/script&gt; &amp; the parser</p>\n</div>"]);
         let path =
             polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
                 .unwrap();
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(!body.contains("history.back"));
+        let api = follow_read(&r, next).await;
+        assert_reader_items(&body, &api);
+        assert_reader_navigation(&body, &api);
     });
 }
 
@@ -374,6 +378,13 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
             .as_ref()
             .expect("long body continues");
         let second = follow_read(&r, next).await;
+        let next_path =
+            polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
+                .unwrap();
+        let (status, _, current_html) = send_html(&r, &next_path).await;
+        assert_eq!(status, StatusCode::OK, "{current_html}");
+        assert_reader_navigation(&current_html, &second);
+
         let previous = second
             .document
             .footer
@@ -387,7 +398,8 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
                 .unwrap();
         let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(!html.contains("history.back"));
+        assert_reader_items(&html, &restored);
+        assert_reader_navigation(&html, &restored);
     });
 }
 

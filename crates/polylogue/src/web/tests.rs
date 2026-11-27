@@ -61,6 +61,95 @@ fn setting_request(id: &str) -> String {
     .unwrap()
 }
 
+fn html_elements<'a>(html: &'a str, opening: &str, closing: &str) -> Vec<&'a str> {
+    let tag = closing
+        .strip_prefix("</")
+        .unwrap()
+        .strip_suffix('>')
+        .unwrap();
+    let tag_open = format!("<{tag}");
+    html.match_indices(opening)
+        .map(|(start, _)| {
+            // Read cards can nest sections inside an item.
+            let mut depth = 0;
+            let end = html[start..]
+                .match_indices('<')
+                .find_map(|(at, _)| {
+                    let rest = &html[start + at..];
+                    if rest.starts_with(&tag_open)
+                        && matches!(rest.as_bytes().get(tag_open.len()), Some(b' ' | b'>'))
+                    {
+                        depth += 1;
+                    } else if rest.starts_with(closing) {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(start + at + closing.len());
+                        }
+                    }
+                    None
+                })
+                .expect("element closes");
+            &html[start..end]
+        })
+        .collect()
+}
+
+fn session_hrefs(html: &str) -> Vec<&str> {
+    html.split("href=\"")
+        .skip(1)
+        .map(|value| value.split_once('"').unwrap().0)
+        .filter(|href| href.starts_with("/s/"))
+        .collect()
+}
+
+fn assert_reader_items(html: &str, page: &polylogue_model::read::ReadPage) {
+    assert_eq!(html.matches("role=\"alert\"").count(), 0, "{html}");
+    let zone =
+        jiff::tz::TimeZone::get(page.document.header.zone.as_deref().unwrap_or("UTC")).unwrap();
+    let expected = page
+        .document
+        .items
+        .iter()
+        .map(|item| {
+            polylogue_render::html::item(
+                item,
+                polylogue_render::html::DEFAULT_INLINE_IMAGE_BYTES,
+                &zone,
+                Some(crate::commands::declarations()),
+            )
+            .unwrap()
+            .into_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        html_elements(html, "<section class=\"read-item\"", "</section>"),
+        expected
+    );
+}
+
+fn assert_reader_navigation(html: &str, page: &polylogue_model::read::ReadPage) {
+    let mut expected = String::from("<nav class=\"paging\" aria-label=\"Content pages\">");
+    for (call, rel, label) in [
+        (&page.document.footer.previous, "prev", "Previous"),
+        (&page.document.footer.next, "next", "Next"),
+    ] {
+        if let Some(call) = call {
+            let url =
+                polylogue_render::ready::reader_url(crate::commands::declarations(), &call.request)
+                    .unwrap();
+            expected.push_str(&format!(
+                "<a href=\"{}\" rel=\"{rel}\">{label}</a>",
+                polylogue_render::html::escape(&url)
+            ));
+        }
+    }
+    expected.push_str("</nav>");
+    assert_eq!(
+        html_elements(html, "<nav class=\"paging\"", "</nav>"),
+        [expected.as_str(), expected.as_str()]
+    );
+}
+
 fn assert_copy_command(html: &str, command: &str) {
     assert!(html.contains("data-copy-forms="), "{html}");
     assert!(
@@ -423,7 +512,12 @@ fn search_renders_the_cli_answer_with_session_links() {
         let req = authed(get("/search?q=parser")).body(Body::empty()).unwrap();
         let (s, _, page) = send(&r, req).await;
         assert_eq!(s, StatusCode::OK, "{page}");
-        assert!(page.contains("<mark>"), "{page}");
+        assert_eq!(page.matches("role=\"alert\"").count(), 0, "{page}");
+        assert_eq!(session_hrefs(&page), ["/s/claude-code%3As1"]);
+        assert_eq!(
+            html_elements(&page, "<mark>", "</mark>"),
+            ["<mark>parser</mark>"]
+        );
         assert_copy_command(&page, "polylogue parser");
         // A query error shows its message with the failure status.
         let req = authed(get("/search?q=repo%3A%28"))
