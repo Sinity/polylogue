@@ -54,11 +54,11 @@ fn is_listing(path: &Path) -> bool {
 ///
 /// Read whole, a prompt is the object holding a `chunkedPrompt`.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     if head.shape.is_some()
         && !is_listing(path)
         && head.top() == Some(Kind::Object)
-        && head.holds("chunkedPrompt", Kind::Object)
+        && head.holds(ShapeKey::ChunkedPrompt, Kind::Object)
     {
         return true;
     }

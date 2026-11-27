@@ -32,13 +32,15 @@ use std::path::Path;
 pub const ORIGIN: &str = "otel-genai";
 
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     let ext = path.extension().and_then(|e| e.to_str());
     if !matches!(ext, Some("json" | "jsonl")) {
         return false;
     }
     match head.shape {
-        Some(_) => head.top() == Some(Kind::Object) && head.holds("resourceSpans", Kind::Array),
+        Some(_) => {
+            head.top() == Some(Kind::Object) && head.holds(ShapeKey::ResourceSpans, Kind::Array)
+        }
         // A JSONL trace is no one JSON value: its first line decides.
         None => {
             first_byte(head.bytes) == Some(b'{') && first_key(head.bytes) == Some("resourceSpans")

@@ -31,16 +31,16 @@ pub const ORIGIN: &str = "openrouter";
 /// Read whole, the room's shape decides whatever the file is named: a
 /// `version`, a `messages` object, and the room's `id` or `characters`.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     let named = path
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.starts_with("OpenRouter Chat") && n.ends_with(".json"));
     if head.shape.is_some() {
         return head.top() == Some(Kind::Object)
-            && head.has("version")
-            && head.holds("messages", Kind::Object)
-            && (named || head.has("id") || head.has("characters"));
+            && head.has(ShapeKey::Version)
+            && head.holds(ShapeKey::Messages, Kind::Object)
+            && (named || head.has(ShapeKey::Id) || head.has(ShapeKey::Characters));
     }
     let head = head.bytes;
     named && first_byte(head) == Some(b'{') && first_key(head) == Some("version")

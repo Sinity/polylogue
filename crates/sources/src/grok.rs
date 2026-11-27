@@ -26,10 +26,10 @@ pub const ORIGIN: &str = "grok";
 /// Recognize the import framework's short prefix, or the account export's
 /// standard filename. Metadata before the signature can require that filename.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     path.file_name().is_some_and(|name| name == EXPORT)
         && match head.shape {
-            Some(_) => head.holds("conversations", Kind::Array),
+            Some(_) => head.holds(ShapeKey::Conversations, Kind::Array),
             None => head.top() == Some(Kind::Object),
         }
 }

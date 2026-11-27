@@ -10,6 +10,7 @@ parser_modules! {}
 use crate::Records;
 use crate::parse::Output;
 use polylogue_model::{Json, JsonExt, MessageId, NativeId, Origin, SessionId};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Seek};
 
 /// The UTF-8 byte order mark some tools write at the start of a text file.
@@ -165,10 +166,10 @@ impl<'a> Head<'a> {
 
     /// Whether the top-level object, or an array's first element, has
     /// `key`. Without the whole document only the first key is known.
-    pub fn has(&self, key: &str) -> bool {
+    pub(crate) fn has(&self, key: ShapeKey) -> bool {
         match self.shape {
-            Some(shape) => shape.keys.contains_key(key),
-            None => first_key(self.bytes) == Some(key),
+            Some(shape) => shape.keys.contains_key(&key),
+            None => first_key(self.bytes).map(ShapeKey::from_str) == Some(key),
         }
     }
 
@@ -176,10 +177,10 @@ impl<'a> Head<'a> {
     /// `key` with a value of `kind`. Field order and a long first value do
     /// not matter. Without the whole document only the first key is known,
     /// and its value is assumed to be of `kind`.
-    pub fn holds(&self, key: &str, kind: Kind) -> bool {
+    pub(crate) fn holds(&self, key: ShapeKey, kind: Kind) -> bool {
         match self.shape {
-            Some(shape) => shape.keys.get(key) == Some(&kind),
-            None => first_key(self.bytes) == Some(key),
+            Some(shape) => shape.keys.get(&key) == Some(&kind),
+            None => first_key(self.bytes).map(ShapeKey::from_str) == Some(key),
         }
     }
 }
@@ -193,14 +194,46 @@ pub enum Kind {
     Other,
 }
 
+/// External field names that an origin can ask about during recognition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ShapeKey {
+    Characters,
+    ChatMessages,
+    #[serde(rename = "chunkedPrompt")]
+    ChunkedPrompt,
+    ConversationId,
+    Conversations,
+    CurrentNode,
+    Docs,
+    Id,
+    Mapping,
+    Messages,
+    PromptTemplate,
+    #[serde(rename = "resourceSpans")]
+    ResourceSpans,
+    Turns,
+    Uuid,
+    Version,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ShapeKey {
+    fn from_str(key: &str) -> Self {
+        use serde::de::value::{Error, StrDeserializer};
+        serde::Deserialize::deserialize(StrDeserializer::<Error>::new(key)).unwrap_or(Self::Unknown)
+    }
+}
+
 /// A JSON document's top-level structure: what it is, and the keys of its
-/// top-level object (of an array's first element) with the kind of each
-/// value. Read through the whole stream without holding a value.
+/// top-level object (or of an array's first element) used by recognition.
+/// Read through the whole stream, retaining only the kinds of known fields.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Shape {
     /// The kind of the top-level value; `None` for an empty document.
-    pub top: Option<Kind>,
-    pub keys: std::collections::BTreeMap<String, Kind>,
+    top: Option<Kind>,
+    keys: BTreeMap<ShapeKey, Kind>,
 }
 
 impl Shape {
@@ -239,15 +272,18 @@ impl<'de> serde::Deserialize<'de> for TopLevel {
         use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
         struct Fields;
         impl<'de> Visitor<'de> for Fields {
-            type Value = std::collections::BTreeMap<String, Kind>;
+            type Value = BTreeMap<ShapeKey, Kind>;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a JSON value")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut keys = std::collections::BTreeMap::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    let kind = map.next_value::<ValueKind>()?.0;
-                    keys.insert(key, kind);
+                let mut keys = BTreeMap::new();
+                while let Some(key) = map.next_key::<ShapeKey>()? {
+                    if key == ShapeKey::Unknown {
+                        map.next_value::<IgnoredAny>()?;
+                    } else {
+                        keys.insert(key, map.next_value::<ValueKind>()?.0);
+                    }
                 }
                 Ok(keys)
             }
@@ -324,7 +360,7 @@ impl<'de> serde::Deserialize<'de> for TopLevel {
                 keys: Default::default(),
             }
         }
-        struct Element(std::collections::BTreeMap<String, Kind>);
+        struct Element(BTreeMap<ShapeKey, Kind>);
         impl<'de> serde::Deserialize<'de> for Element {
             fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 d.deserialize_any(Fields).map(Element)

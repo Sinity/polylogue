@@ -20,13 +20,13 @@ pub const ORIGIN: &str = "codex-cloud";
 /// Read whole, a task (one object, or an array's first) has its `id` and
 /// its `turns`, and no conversation `mapping`.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     path.file_name().is_some_and(|name| name == EXPORT)
         && matches!(head.top(), Some(Kind::Array | Kind::Object))
         && (head.shape.is_none()
-            || (head.holds("id", Kind::String)
-                && head.holds("turns", Kind::Array)
-                && !head.has("mapping")))
+            || (head.holds(ShapeKey::Id, Kind::String)
+                && head.holds(ShapeKey::Turns, Kind::Array)
+                && !head.has(ShapeKey::Mapping)))
 }
 
 /// The file a ChatGPT export keeps Codex Cloud tasks in.

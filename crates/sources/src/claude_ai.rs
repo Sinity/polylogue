@@ -45,18 +45,18 @@ const ROOT_PARENT: &str = "00000000-0000-4000-8000-000000000000";
 /// read whole names itself by its `docs` or `prompt_template`; its path alone
 /// does not.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     if head.shape.is_some()
-        && head.holds("uuid", Kind::String)
-        && head.holds("chat_messages", Kind::Array)
+        && head.holds(ShapeKey::Uuid, Kind::String)
+        && head.holds(ShapeKey::ChatMessages, Kind::Array)
     {
         return true;
     }
     if sidecars::recognize(path, head.bytes) {
         return head.shape.is_none()
             || !project_path(path)
-            || (head.holds("uuid", Kind::String)
-                && (head.has("docs") || head.has("prompt_template")));
+            || (head.holds(ShapeKey::Uuid, Kind::String)
+                && (head.has(ShapeKey::Docs) || head.has(ShapeKey::PromptTemplate)));
     }
     let head = head.bytes;
     let named = path.extension().is_some_and(|ext| ext == "json");
@@ -76,17 +76,15 @@ pub fn project_path(path: &Path) -> bool {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    if let Some(parser) = sidecars::open(path) {
-        return Some(parser);
-    }
-    let named = path.extension().is_some_and(|ext| ext == "json");
-    named.then(|| Parse::Export(Box::new(Export)))
+    sidecars::open(path).or_else(|| Some(Parse::Export(Box::new(Export))))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
 pub fn recognize_design(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
-    in_design_dir(path) && head.top() == Some(Kind::Object) && head.holds("uuid", Kind::String)
+    use crate::document::{Kind, ShapeKey};
+    in_design_dir(path)
+        && head.top() == Some(Kind::Object)
+        && head.holds(ShapeKey::Uuid, Kind::String)
 }
 
 pub fn open_design(path: &Path) -> Option<Parse> {

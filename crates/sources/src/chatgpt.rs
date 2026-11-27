@@ -46,11 +46,11 @@ pub const ORIGIN: &str = "chatgpt";
 /// `current_node`, `conversation_id`), is recognized whatever the file is
 /// named, once the whole document is read.
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
-    use crate::document::Kind;
+    use crate::document::{Kind, ShapeKey};
     if head.shape.is_some()
-        && head.holds("mapping", Kind::Object)
-        && head.has("current_node")
-        && head.holds("conversation_id", Kind::String)
+        && head.holds(ShapeKey::Mapping, Kind::Object)
+        && head.has(ShapeKey::CurrentNode)
+        && head.holds(ShapeKey::ConversationId, Kind::String)
     {
         return true;
     }
@@ -78,10 +78,8 @@ const CONVERSATION_KEYS: &[&str] = &[
     "conversation_template_id",
 ];
 
-pub fn open(path: &Path) -> Option<Parse> {
-    path.extension()
-        .is_some_and(|ext| ext == "json")
-        .then(|| Parse::Export(Box::new(Export)))
+pub fn open(_: &Path) -> Option<Parse> {
+    Some(Parse::Export(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {
