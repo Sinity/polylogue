@@ -591,12 +591,31 @@ fn build_from_record(
         crate::writer::build::BuildWorker::create(&w.archive, 0, 32 << 20).unwrap(),
         crate::writer::build::BuildWorker::create(&w.archive, 1, 32 << 20).unwrap(),
     ];
+    let register = crate::archive::open_read(&w.archive.archive_db()).unwrap();
     for (i, (&(n, chain), &stored)) in chains.iter().enumerate() {
+        let input = &inputs[n];
         let records = stored_records[&(n, chain)];
-        let mut batch = step(n, &inputs[n], chain, 0, records);
+        let mut batch = step(n, input, chain, 0, records);
+        // All synthetic candidates read successfully. The archive decides
+        // which prefixes the newer candidate is known to contain.
+        let covered_prefix = if chain == 0 && !input.route.is_imported() {
+            let agreements =
+                crate::archive::writer::agreement::recorded(&register, &batch.input.id).unwrap();
+            agreements
+                .newer(stored)
+                .map(|(_, through)| through)
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if covered_prefix >= batch.length {
+            continue;
+        }
         let mut open = runs[i % 2]
             .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
+        open.omit_covered_prefix(covered_prefix);
         for step in std::mem::take(&mut batch.parse) {
             crate::parse::ParseSink::part(&mut open, step).unwrap();
         }

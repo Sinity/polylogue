@@ -8,6 +8,13 @@ use crate::archive::writer::agreement::{Chains, recorded_by_input};
 use polylogue_model::chain::{ChainFacts, ChainState, ChainStatusName, Due, due, status};
 use polylogue_model::freshness::CompletenessReason;
 
+/// A build candidate and the prefix it shares with each newer chain of
+/// the same input. Coverage is decided when those readings succeed.
+pub struct BuildChain {
+    pub chain: BehindChain,
+    pub agreements: Vec<(i64, u64)>,
+}
+
 /// One revision chain the index has not parsed to its stored length or
 /// under its parser's version.
 #[derive(Debug, Clone, PartialEq)]
@@ -237,18 +244,18 @@ impl Reader<'_> {
         Ok(progress)
     }
 
-    /// How many chains of the inputs up to `through` with a parser in
-    /// `versions` are due, and their stored bytes.
+    /// Candidate chains and bytes up to `through`, before the rebuild
+    /// can establish which newer readings successfully cover them.
     pub fn count_chains_behind_index(
         &self,
         versions: &[(String, String)],
         through: &str,
     ) -> Result<(u64, u64)> {
         let (mut chains, mut bytes) = (0, 0);
-        self.visit_chain_rows(None, RevisionChains::All, &mut |row| {
+        self.visit_chain_rows(None, RevisionChains::All, false, &mut |row, _| {
             if row.input.as_str() <= through
                 && parser(versions, &row.source.format).is_some()
-                && row.due(versions) != Due::No
+                && row.due(versions, None) != Due::No
             {
                 chains += 1;
                 bytes += row.stored;
@@ -267,22 +274,41 @@ impl Reader<'_> {
         selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
         let mut found = Vec::new();
-        self.visit_chain_rows(selected, chains, &mut |row| {
-            let due = row.due(versions);
+        self.visit_chain_rows(selected, chains, true, &mut |row, agreements| {
+            let due = row.due(versions, agreements);
             if due != Due::No {
-                found.push(BehindChain {
-                    input: row.input,
-                    current: row.current,
-                    source: row.source,
-                    chain: row.chain,
-                    imported: row.imported,
-                    stored: row.stored,
-                    state: row.state,
-                    due,
-                });
+                found.push(row.behind(due));
             }
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
+        Ok(found)
+    }
+
+    /// Rebuild candidates, in descending chain order within each input.
+    /// The build can omit a candidate only after a newer reading succeeds.
+    pub fn chains_to_build(
+        &self,
+        versions: &[(String, String)],
+        inputs: &[String],
+    ) -> Result<Vec<BuildChain>> {
+        let mut found = Vec::new();
+        self.visit_chain_rows(
+            Some(inputs),
+            RevisionChains::All,
+            true,
+            &mut |row, agreements| {
+                let due = row.due(versions, None);
+                if due != Due::No {
+                    let agreements = agreements
+                        .map_or_else(Vec::new, |chains| chains.newer(row.chain).collect());
+                    found.push(BuildChain {
+                        chain: row.behind(due),
+                        agreements,
+                    });
+                }
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )?;
         Ok(found)
     }
 
@@ -353,7 +379,8 @@ impl Reader<'_> {
         &self,
         selected: Option<&[String]>,
         chains: RevisionChains,
-        visit: &mut dyn FnMut(ChainRow) -> Result<std::ops::ControlFlow<()>>,
+        load_agreements: bool,
+        visit: &mut dyn FnMut(ChainRow, Option<&Chains>) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         let selected_json = selected.map(serde_json::to_string).transpose()?;
@@ -366,7 +393,11 @@ impl Reader<'_> {
             ),
         )?;
         let connection = self.conn()?;
-        let agreements = recorded_by_input(connection, selected)?;
+        let agreements = if load_agreements {
+            recorded_by_input(connection, selected)?
+        } else {
+            Default::default()
+        };
         let sql = planning_sql(selected.is_some(), chains);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params![selected_json])?;
@@ -376,16 +407,11 @@ impl Reader<'_> {
             let input: String = row.get(0)?;
             let (number, stored): (i64, u64) = (row.get(1)?, row.get(2)?);
             let imported: bool = row.get(4)?;
-            let (repeated_by, own_from) = agreements
-                .get(&input)
-                .filter(|_| !imported)
-                .map_or((None, 0), |chains| chains.repeats(number, stored));
+            let agreements = agreements.get(&input).filter(|_| !imported);
             let chain = ChainRow {
                 input,
                 chain: number,
                 stored,
-                repeated_by,
-                own_from,
                 current: row.get(3)?,
                 imported,
                 source: StoredSource {
@@ -397,7 +423,7 @@ impl Reader<'_> {
                 },
                 state: crate::parse_state::ParseStateRow::planned(row, 7)?,
             };
-            if visit(chain)?.is_break() {
+            if visit(chain, agreements)?.is_break() {
                 break;
             }
         }
@@ -410,9 +436,6 @@ struct ChainRow {
     input: String,
     chain: i64,
     stored: u64,
-    /// What the archive's recorded agreements say of the chain.
-    repeated_by: Option<i64>,
-    own_from: u64,
     current: bool,
     imported: bool,
     source: StoredSource,
@@ -420,17 +443,30 @@ struct ChainRow {
 }
 
 impl ChainRow {
-    fn due(&self, versions: &[(String, String)]) -> Due {
+    fn due(&self, versions: &[(String, String)], agreements: Option<&Chains>) -> Due {
         due(
             &self.state,
-            &ChainFacts {
-                stored: self.stored,
-                repeated_by: self.repeated_by,
-                own_from: self.own_from,
-                parser: parser(versions, &self.source.format).map(str::to_owned),
-                finished: self.imported,
-            },
+            &facts(
+                agreements,
+                self.chain,
+                self.stored,
+                parser(versions, &self.source.format),
+                self.imported,
+            ),
         )
+    }
+
+    fn behind(self, due: Due) -> BehindChain {
+        BehindChain {
+            input: self.input,
+            current: self.current,
+            source: self.source,
+            chain: self.chain,
+            imported: self.imported,
+            stored: self.stored,
+            state: self.state,
+            due,
+        }
     }
 }
 

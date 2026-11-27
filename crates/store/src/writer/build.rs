@@ -711,6 +711,7 @@ impl BuildWorker {
             tx,
             input: input.id.clone(),
             chain,
+            covered_prefix: 0,
             writer,
             out: Out {
                 sorter: &mut self.sorter,
@@ -749,6 +750,7 @@ pub struct OpenChain<'w> {
     tx: Transaction<'w>,
     input: String,
     chain: i64,
+    covered_prefix: u64,
     writer: &'w WriterSender,
     out: Out<'w>,
 }
@@ -816,10 +818,27 @@ impl crate::parse::ParseSink for OpenChain<'_> {
 }
 
 impl OpenChain<'_> {
+    /// Discards byte-ranged rows covered by successful newer readings.
+    pub fn omit_covered_prefix(&mut self, through: u64) {
+        self.covered_prefix = through;
+    }
+
     /// Ends the chain: moves its rows into the worker's stream and clears
     /// the scratch index.
     fn finish(mut self) -> Result<()> {
         self.steps.finish()?;
+        if self.covered_prefix > 0 {
+            let input_pk = self
+                .tx
+                .scalar("SELECT pk FROM input_ref WHERE id=?1", [&self.input])?;
+            super::repeated::trim(
+                &self.tx,
+                input_pk,
+                self.chain,
+                self.covered_prefix,
+                &mut super::readings::Touched::default(),
+            )?;
+        }
         move_out(
             &self.tx,
             &mut self.out,

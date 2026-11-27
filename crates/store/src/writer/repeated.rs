@@ -8,9 +8,9 @@
 //! Rows with a byte range leave by their range; the rest of the older
 //! chain's parse (what it states about sessions, links, call outcomes,
 //! copied prefixes, its unused counts) stays until the chain is repeated
-//! whole, when its parse and state leave together. A rebuild parses each
-//! chain that is not repeated whole and trims it by the same rule, so both
-//! paths hold the same rows.
+//! whole, when its parse and state leave together. A rebuild reads the
+//! chains of an input newest first and omits prefixes those readings
+//! successfully covered.
 use super::readings::{self, Touched};
 use super::*;
 use crate::archive::writer::agreement::{Chains, recorded};
@@ -30,7 +30,6 @@ pub(super) struct Seen<'a> {
     pub previous: &'a ChainState,
     pub replacing: bool,
     pub next: &'a ChainState,
-    pub rebuilding: bool,
 }
 
 /// The bytes a committed reading can account for. An open last record
@@ -108,16 +107,13 @@ pub(super) fn follow(
 
     // Upkeep publishes this part immediately. Only pass its records to a
     // newer reading that is already present and has reached the agreement.
-    // A rebuild publishes all its independent readings together.
     let stored = stored_length(chain)?;
     if reached(stored) {
         let mut through = 0;
         for (newer, known) in chains.newer(chain) {
-            if !seen.rebuilding {
-                let state = crate::parse_state::state(tx, input_pk, newer)?;
-                if state.version() != seen.next.version() || covers_through(&state) < known {
-                    continue;
-                }
+            let state = crate::parse_state::state(tx, input_pk, newer)?;
+            if state.version() != seen.next.version() || covers_through(&state) < known {
+                continue;
             }
             through = through.max(known.min(stored));
         }
@@ -170,7 +166,7 @@ fn give_up(
 /// or before `through`, and what belongs to them: the texts their bodies
 /// hold, their injection fields and their content, released when nothing
 /// else names it. What they stated is recorded in `touched`.
-fn trim(
+pub(super) fn trim(
     tx: &Connection,
     input_pk: i64,
     chain: i64,

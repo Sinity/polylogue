@@ -107,6 +107,91 @@ fn a_rebuild_parses_only_what_no_newer_chain_repeats() {
     assert!(differ.is_empty(), "{differ}");
 }
 
+/// Bytes alone cannot cover an older reading. The rebuild keeps the older
+/// records if the newer parser fails, and omits them when it succeeds.
+#[test]
+fn a_failed_newer_reading_keeps_the_readable_older_copy() {
+    use std::io::Read as _;
+
+    fault::clear();
+    let w = ClaudeHome::new();
+    let path = w.file("same.jsonl");
+    let older = user("shared", "same", "Shared first message");
+    let unrelated = user("other", "different", "A different chain");
+    let newest = older.clone() + &assistant("later", "same", "Only in the newest chain");
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        for bytes in [&older, &unrelated, &newest] {
+            fs::write(&path, bytes).unwrap();
+            let pass = engine.run_pass().unwrap();
+            assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        }
+    }
+    let versions = w.read(|reader| {
+        reader.query(
+            "SELECT input,chain,length FROM a.revision ORDER BY number",
+            &[],
+        )
+    });
+    assert_eq!(versions.len(), 3);
+    let input = versions[0]["input"].as_str().unwrap();
+    let first = versions[0]["chain"].as_i64().unwrap();
+    let last = versions[2]["chain"].as_i64().unwrap();
+    let reading_chain = || {
+        w.read(|reader| {
+            reader.query(
+                "SELECT chain FROM message_parse WHERE message_id='claude-code:shared'",
+                &[],
+            )
+        })
+    };
+
+    fs::remove_file(&path).unwrap();
+    delete_index(&w.root);
+    fault::arm("parse", "same.jsonl", Action::Panic, 0, 1);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
+        assert!(pass.errors[0].to_string().contains("panicked"));
+    }
+    assert_eq!(reading_chain(), [serde_json::json!({"chain":first})]);
+    assert_eq!(w.texts("same"), ["Shared first message"]);
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(*) AS n FROM parse_state WHERE chain={last} AND state='failed'"
+        )),
+        1
+    );
+
+    let blobs = std::sync::Arc::new(polylogue_store::Archive::at(&w.root).blobs().unwrap());
+    for (version, bytes) in versions.iter().zip([&older, &unrelated, &newest]) {
+        let chain = w.read(|reader| {
+            reader.stored_chain(
+                input,
+                version["chain"].as_i64().unwrap(),
+                version["length"].as_u64().unwrap(),
+            )
+        });
+        let mut raw = Vec::new();
+        chain.reader(blobs.clone()).read_to_end(&mut raw).unwrap();
+        assert_eq!(raw, bytes.as_bytes());
+    }
+
+    fault::clear();
+    delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    assert_eq!(reading_chain(), [serde_json::json!({"chain":last})]);
+    assert_eq!(
+        w.texts("same"),
+        ["Shared first message", "Only in the newest chain"]
+    );
+}
+
 /// The trace and the first-seen time of a record name every chain that
 /// held it, read from the recorded agreements: the chains with no parse of
 /// their own included (docs/archive.md, readings).

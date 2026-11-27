@@ -44,7 +44,7 @@ mod trace;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, ChainCensus, RevisionChains, StoredSource};
+pub use behind_index::{BehindChain, BuildChain, ChainCensus, RevisionChains, StoredSource};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;

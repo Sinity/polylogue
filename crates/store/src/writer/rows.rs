@@ -122,20 +122,21 @@ pub(super) fn write_step(
             ])?;
         }
     }
-    super::repeated::follow(
-        tx,
-        w.changes,
-        &b.input,
-        input_pk,
-        chain,
-        super::repeated::Seen {
-            previous: &previous,
-            replacing: p.reset,
-            next: &next,
-            rebuilding: w.rebuilding,
-        },
-        touched,
-    )?;
+    if !w.rebuilding {
+        super::repeated::follow(
+            tx,
+            w.changes,
+            &b.input,
+            input_pk,
+            chain,
+            super::repeated::Seen {
+                previous: &previous,
+                replacing: p.reset,
+                next: &next,
+            },
+            touched,
+        )?;
+    }
     Ok(())
 }
 

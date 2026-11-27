@@ -17,8 +17,10 @@ use crossbeam_channel::{Receiver, Select, Sender, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::parse::ParseSink as _;
+use polylogue_store::read::BuildChain;
 use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -98,6 +100,17 @@ impl Drop for Admitted<'_> {
     }
 }
 
+/// One input's candidate readings, kept on the same worker so that an
+/// older reading can use the outcome of its newer readings.
+struct BuildInput {
+    chains: Vec<PlannedChain>,
+}
+
+struct PlannedChain {
+    plan: Plan,
+    agreements: Vec<(i64, u64)>,
+}
+
 /// What the workers share while they prepare runs.
 struct Prepare {
     archive: polylogue_store::Archive,
@@ -108,7 +121,7 @@ struct Prepare {
     admission: Admission,
     /// The most input bytes one range of a chain reads.
     chunk: u64,
-    plans: Receiver<Plan>,
+    plans: Receiver<BuildInput>,
     next_run: AtomicU64,
     /// Each worker's own memory: its sort buffer and scratch cache.
     worker_memory: usize,
@@ -187,68 +200,34 @@ impl Prepare {
     /// stream.
     fn work_until_done(&self) -> Result<(), EngineError> {
         let mut run: Option<(u64, BuildWorker)> = None;
-        loop {
-            let plan = self.plans.recv();
-            let Ok(mut plan) = plan else { break };
-            if self.abandoned() {
-                return Err(EngineError::Stopped);
+        let mut read_chains = HashSet::new();
+        while let Ok(input) = self.plans.recv() {
+            read_chains.clear();
+            for PlannedChain { plan, agreements } in input.chains {
+                if self.abandoned() {
+                    return Err(EngineError::Stopped);
+                }
+                let Change::Reparse { chain } = plan.change else {
+                    return Err(EngineError::internal(
+                        "a rebuild plan must name its archive chain",
+                    ));
+                };
+                let length = plan.size;
+                let covered_prefix = agreements
+                    .into_iter()
+                    .filter(|(newer, _)| read_chains.contains(newer))
+                    .map(|(_, agrees_to)| agrees_to)
+                    .max()
+                    .unwrap_or(0);
+                if covered_prefix < length
+                    && self.write_chain(plan, chain, covered_prefix, &mut run)?
+                {
+                    read_chains.insert(chain);
+                }
+                self.chains_read.fetch_add(1, Ordering::Relaxed);
+                self.bytes_read.fetch_add(length, Ordering::Relaxed);
+                self.progress();
             }
-            let Change::Reparse { chain } = plan.change else {
-                continue;
-            };
-            let (input, length) = (plan.input.clone(), plan.size);
-            let _doing =
-                polylogue_store::activity::doing_on("reading a stored file", input.id.clone());
-            let admitted = self.admission.admit(
-                length.min(self.chunk) * PREPARED_PER_INPUT_BYTE + length / SCRATCH_DIVISOR,
-                || self.abandoned(),
-            )?;
-            if run.is_none() {
-                let number = self.next_run.fetch_add(1, Ordering::Relaxed);
-                run = Some((
-                    number,
-                    BuildWorker::create(&self.archive, number, self.worker_memory)?,
-                ));
-            }
-            let (_, worker) = run.as_mut().expect("a worker was opened");
-            let mut read = 0;
-            // The chain's steps go into the worker's scratch index as they
-            // are parsed; an unfinished chain leaves nothing there.
-            let written = worker
-                .begin(&self.writer, &input, chain, length)
-                .map_err(EngineError::from)
-                .and_then(|mut open| {
-                    let complete = polylogue_model::caught(|| {
-                        pool::read_chain(
-                            &mut plan,
-                            &self.archive,
-                            &self.blobs,
-                            &self.settings,
-                            &mut read,
-                            &mut open,
-                            |open, batch| open.decoded(batch),
-                        )
-                    })
-                    .unwrap_or_else(|panic| {
-                        Err(polylogue_model::ChainFailure::from(panic).into())
-                    })?;
-                    if !complete {
-                        return Err(EngineError::Stopped);
-                    }
-                    Box::new(open).end()?;
-                    Ok(())
-                });
-            drop(admitted);
-            self.parsed.fetch_add(read, Ordering::Relaxed);
-            match written {
-                Ok(()) => {}
-                Err(EngineError::Stopped) => return Err(EngineError::Stopped),
-                // A chain whose reading failed is left out of the build.
-                Err(error) => self.chain_failed(plan, error)?,
-            }
-            self.chains_read.fetch_add(1, Ordering::Relaxed);
-            self.bytes_read.fetch_add(length, Ordering::Relaxed);
-            self.progress();
         }
         if let Some((number, run)) = run {
             let paths = run.finish()?;
@@ -257,6 +236,61 @@ impl Prepare {
                 .extend(paths.into_iter().map(|path| (number, path)));
         }
         Ok(())
+    }
+    /// Writes a candidate before later candidates may rely on it.
+    fn write_chain(
+        &self,
+        mut plan: Plan,
+        chain: i64,
+        covered_prefix: u64,
+        run: &mut Option<(u64, BuildWorker)>,
+    ) -> Result<bool, EngineError> {
+        let (input, length) = (plan.input.clone(), plan.size);
+        let _doing = polylogue_store::activity::doing_on("reading a stored file", input.id.clone());
+        let _admitted = self.admission.admit(
+            length.min(self.chunk) * PREPARED_PER_INPUT_BYTE + length / SCRATCH_DIVISOR,
+            || self.abandoned(),
+        )?;
+        if run.is_none() {
+            let number = self.next_run.fetch_add(1, Ordering::Relaxed);
+            *run = Some((
+                number,
+                BuildWorker::create(&self.archive, number, self.worker_memory)?,
+            ));
+        }
+        let (_, worker) = run.as_mut().expect("a worker was opened");
+        let mut read = 0;
+        let written = worker
+            .begin(&self.writer, &input, chain, length)
+            .map_err(EngineError::from)
+            .and_then(|mut open| {
+                open.omit_covered_prefix(covered_prefix);
+                let complete = polylogue_model::caught(|| {
+                    pool::read_chain(
+                        &mut plan,
+                        &self.archive,
+                        &self.blobs,
+                        &self.settings,
+                        &mut read,
+                        &mut open,
+                        |open, batch| open.decoded(batch),
+                    )
+                })
+                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()))?;
+                if !complete {
+                    return Err(EngineError::Stopped);
+                }
+                Box::new(open).end()?;
+                Ok(())
+            });
+        self.parsed.fetch_add(read, Ordering::Relaxed);
+        match written {
+            Ok(()) => Ok(true),
+            Err(error) => {
+                self.chain_failed(plan, error)?;
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -275,7 +309,7 @@ impl Engine {
             crate::build_log::READING_STORED_FILES,
             format_args!("{workers} parse workers"),
         );
-        let (plans_tx, plans_rx) = crossbeam_channel::bounded::<Plan>(workers * 2);
+        let (plans_tx, plans_rx) = crossbeam_channel::bounded::<BuildInput>(workers * 2);
         let prepare = Prepare {
             archive: self.archive.clone(),
             blobs: Arc::clone(&self.blobs),
@@ -455,7 +489,7 @@ impl Engine {
     fn plan_build(
         &mut self,
         prepare: &Prepare,
-        plans: Sender<Plan>,
+        plans: Sender<BuildInput>,
         through: Option<String>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
@@ -506,14 +540,14 @@ impl Engine {
                 prepare.progress();
                 return Ok(());
             };
-            let behind = reader.chains_behind_index(
-                &versions,
-                polylogue_store::read::RevisionChains::All,
-                Some(&ids),
-            )?;
+            let behind = reader.chains_to_build(&versions, &ids)?;
             drop(reader);
-            let mut page = Vec::new();
-            for c in behind {
+            let mut page: Vec<BuildInput> = Vec::new();
+            for BuildChain {
+                chain: c,
+                agreements,
+            } in behind
+            {
                 // The count holds the chains of formats with a reading; one
                 // the build plans is read whatever its format says.
                 let expected = versions
@@ -550,11 +584,19 @@ impl Engine {
                     done();
                     continue;
                 }
-                page.push(plan);
+                let planned = PlannedChain { plan, agreements };
+                match page.last_mut() {
+                    Some(input) if input.chains[0].plan.input.id == planned.plan.input.id => {
+                        input.chains.push(planned);
+                    }
+                    _ => page.push(BuildInput {
+                        chains: vec![planned],
+                    }),
+                }
             }
             prepare.progress();
-            for mut plan in page {
-                // A plan waits for room with the workers; requests are
+            for mut input in page {
+                // An input waits for room with the workers; requests are
                 // answered meanwhile.
                 loop {
                     let requests = self.waiting_requests();
@@ -567,9 +609,9 @@ impl Engine {
                         self.answer_waiting(pass)?;
                         continue;
                     }
-                    match plans.try_send(plan) {
+                    match plans.try_send(input) {
                         Ok(()) => break,
-                        Err(TrySendError::Full(back)) => plan = back,
+                        Err(TrySendError::Full(back)) => input = back,
                         Err(TrySendError::Disconnected(_)) => return Ok(()),
                     }
                 }
