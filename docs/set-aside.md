@@ -21,7 +21,7 @@ vocabulary's [removed words](vocabulary.md#removed-words).
 | `ping --live` | select the running sessions: `polylogue 'sessions where running:true repo:here' send 'TEXT' --all` |
 | `compare DIMENSION` | `judge ROW --on DIMENSION` |
 | `variant` (as a verb) | `note TEXT --as translation:LANG [--parts FILE]` |
-| `explain syntax`, `explain capabilities`, `--detail full` | `help query`, `help --all --json`, `--explain --json` |
+| `explain syntax`, `explain capabilities`, `--detail full` | `help query`, `help capabilities`, `--explain --json` |
 | `analyze --by --cost --tools --time --windows --compare` (reports), `prices` | queries with `group by`, `agg` and `\| measure`; the unit `prices` |
 | the MCP `detail` argument | `show: ["tools:full"]` |
 | recall's `--keep`, `--fuzzy` and scope narrowing; the MCP brief's `task` | `polylogue 'WORDS' brief save` keeps the search's rows; `word~` is fuzzy; conditions in the selection narrow; `--for SESSION` says who the brief is for |
@@ -41,6 +41,16 @@ and message text only on request. Reading OpenTelemetry GenAI span files as
 an input is a capture origin and stays ([capture.md](capture.md)). The text is
 in `docs/rewrite/polylogue-spec/spec/export-format.md` at revision
 `37d38a6c4a^`.
+
+### Archive values in completion while the daemon is down
+
+Completion offering sessions, tags, saved names and other archive values
+with the daemon not running, from a catalog file the daemon published after
+each commit, with candidates marked by the catalog's age. Nothing a completed
+line does can run while the daemon is down, so Tab now asks the daemon, and
+without it offers the grammar alone ([completion.md](completion.md#how-completion-works));
+a saved name as a first word is recognised once the daemon answers. The text
+is in `docs/completion.md` (The catalog file) at revision `6934671f9`.
 
 ### Tool results restored from `PostToolUse`
 

@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Polylogue",
   "version": "0.4.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxTfqAxCrPhBovWEijZvV8oFSVNPhVvN1289QO+QbtVirBttCPqnGNhWrZCHfs1p70HnVxy+Go0iKegQq6CW0+JhE7A2vY5MCkm86xJXEVbwl0K01HfGOVVTIYcOjQKITrsoR73dF02SUgNqJRUYUrpHsTIIG6sCdH0HaEIud8z4BYQ6HTue6s1uB+fLYFUyoun6LuYQtRSZZST64GaqtJhbrfQ9o0WMMrUAWW+IWuDT4vcswmlXpQMx+86124R2R8pvowpZFf9FWa72m1aXzxlAy7+qwzmoosRTJDwqKE9kaqPPeXpkvAow4maZXhcKdGqo/x+rdpRPYLGByHAxqIwIDAQAB",
   "description": "Saves your ChatGPT, Claude, Grok and Gemini conversations into Polylogue as they happen.",
   "permissions": [
     "alarms",

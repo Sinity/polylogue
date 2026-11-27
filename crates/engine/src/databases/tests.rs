@@ -209,7 +209,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             .unwrap()[0]["n"],
         1
     );
-    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
+    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_parse r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
     assert_eq!(commit.len(), 1);
     assert_eq!(
         commit[0]["id"],
@@ -232,7 +232,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             .stored,
         progress.stored
     );
-    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
+    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_parse r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
 }
 
 #[test]

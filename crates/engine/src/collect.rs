@@ -54,6 +54,7 @@ pub struct Scan {
     pub unreadable: Vec<PathBuf>,
     pub coverage: Vec<Coverage>,
     pub roots: Vec<RootCoverage>,
+    pub errors: Vec<polylogue_model::Failure>,
 }
 
 pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
@@ -260,9 +261,9 @@ fn tool_roots(
 ) -> Vec<PathBuf> {
     let base = config.root(tool.root);
     let mut roots = Vec::new();
-    if tool.name == "hermes" {
+    if let Some(profiles) = tool.profiles {
         roots.extend(
-            entries(&base.join("profiles"), unreadable)
+            entries(&base.join(profiles), unreadable)
                 .into_iter()
                 .filter(|profile| fs::symlink_metadata(profile).is_ok_and(|m| m.is_dir())),
         );
@@ -304,20 +305,14 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
         unreadable: Vec::new(),
         coverage: Vec::new(),
         roots: Vec::new(),
+        errors: Vec::new(),
     };
     let mut rows = BTreeMap::new();
     for (root, tool) in areas {
         let mut files = Vec::new();
         let before = scan.unreadable.len();
         let mut status = Accessibility::Accessible;
-        all_files(
-            &root,
-            &root,
-            &roots,
-            &mut files,
-            &mut scan.unreadable,
-            &mut status,
-        );
+        all_files(&root, &root, &roots, &mut files, &mut scan, &mut status);
         for (path, meta) in files {
             let relative = path.strip_prefix(&root).unwrap_or(&path);
             let ignored = meta
@@ -362,7 +357,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             // user's checkout.
             let ignored = ignored.or_else(|| {
                 (matched.is_none()
-                    && tool.is_some_and(|tool| tool.name == "claude-code")
+                    && tool.is_some_and(|tool| tool.user_projects)
                     && user_project(&root, &path))
                 .then_some(("**", "user project under tool home"))
             });
@@ -451,12 +446,11 @@ fn user_project(root: &Path, path: &Path) -> bool {
 
 fn git_metadata(relative: &Path, tool: Option<&polylogue_sources::locations::Tool>) -> bool {
     relative.components().any(|p| p.as_os_str() == ".git")
+        // A location that names git data makes that data the tool's.
         && !tool.is_some_and(|tool| {
-            tool.name == "gemini-cli"
-                && tool
-                    .locations
-                    .iter()
-                    .any(|pattern| pattern.contains(".git/") && matches_path(relative, pattern))
+            tool.locations
+                .iter()
+                .any(|pattern| pattern.contains(".git/") && matches_path(relative, pattern))
         })
 }
 
@@ -464,14 +458,21 @@ fn context_origin(tool: &polylogue_sources::locations::Tool, path: &Path) -> &'s
     let database = path
         .extension()
         .is_some_and(|e| e == "db" || e == "sqlite" || e == "vscdb");
-    let name = if tool.name == "hermes" && polylogue_sources::hermes::open(path).is_some() {
-        "hermes"
-    } else if tool.name == "codex" && path.extension().is_some_and(|e| e == "zst") {
-        "codex-compressed"
+    let parsed = tool
+        .parsed_by
+        .and_then(polylogue_sources::origin::by_name)
+        .filter(|origin| (origin.open)(path).is_some());
+    let compressed = tool
+        .compressed
+        .filter(|_| path.extension().is_some_and(|e| e == "zst"));
+    let name = if let Some(origin) = parsed {
+        origin.name
+    } else if let Some(origin) = compressed {
+        origin
     } else if database {
-        "tool-database"
+        polylogue_sources::origin::TOOL_DATABASE
     } else {
-        "tool-context"
+        polylogue_sources::origin::TOOL_CONTEXT
     };
     polylogue_sources::origin::by_name(name).expect("collection origin")
 }
@@ -481,7 +482,7 @@ fn all_files(
     path: &Path,
     roots: &std::collections::BTreeSet<PathBuf>,
     files: &mut Vec<(PathBuf, fs::Metadata)>,
-    unreadable: &mut Vec<PathBuf>,
+    scan: &mut Scan,
     status: &mut Accessibility,
 ) {
     if path != root && roots.contains(path) {
@@ -500,14 +501,47 @@ fn all_files(
         };
     }
     match metadata {
-        Ok(meta) if meta.is_dir() => {
-            for child in entries(path, unreadable) {
-                all_files(root, &child, roots, files, unreadable, status);
+        Ok(meta) if meta.is_dir() => match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => all_files(root, &entry.path(), roots, files, scan, status),
+                        Err(error) => {
+                            scan.unreadable.push(path.to_path_buf());
+                            scan.errors.push(
+                                polylogue_model::Failure::new(
+                                    format!("source root {}", root.display()),
+                                    &crate::EngineError::from(error),
+                                )
+                                .doing(&path.display().to_string()),
+                            );
+                        }
+                    }
+                }
             }
-        }
+            Err(error) => {
+                scan.unreadable.push(path.to_path_buf());
+                scan.errors.push(
+                    polylogue_model::Failure::new(
+                        format!("source root {}", root.display()),
+                        &crate::EngineError::from(error),
+                    )
+                    .doing(&path.display().to_string()),
+                );
+            }
+        },
         Ok(meta) => files.push((path.to_path_buf(), meta)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => unreadable.push(path.to_path_buf()),
+        Err(error) => {
+            scan.unreadable.push(path.to_path_buf());
+            scan.errors.push(
+                polylogue_model::Failure::new(
+                    format!("source root {}", root.display()),
+                    &crate::EngineError::from(error),
+                )
+                .doing(&path.display().to_string()),
+            );
+        }
     }
 }
 
@@ -555,7 +589,7 @@ pub fn recognize(found: &Found) -> bool {
     let head = fs::File::open(&found.path)
         .and_then(|mut f| polylogue_sources::document::read_head(&mut f))
         .unwrap_or_default();
-    (found.origin.recognize)(&found.path, &head)
+    (found.origin.recognize)(&found.path, &polylogue_sources::document::Head::new(&head))
 }
 
 /// An existing input directory is watched recursively. Until it exists,

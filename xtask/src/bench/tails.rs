@@ -210,7 +210,7 @@ pub(super) fn run(
         archive,
         sandbox,
     };
-    let load = LoadMonitor::start()?;
+    let load = bench::LoadMonitor::start()?;
     let daemon = reader.start()?;
     let status_seconds = reader.idle()?;
     let (answer, _) = reader.request(&[&format!(
@@ -264,8 +264,7 @@ pub(super) fn run(
         "tails",
         &drawn.name,
         &reader.archive,
-        &load,
-        &metrics,
+        &json!({"result": metrics, "load": load.to_json()}),
     )
     .map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&scratch);

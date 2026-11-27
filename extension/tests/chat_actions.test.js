@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChatActions, actionUrl } from "../src/background/chat_actions.js";
 import { Host } from "../src/background/host.js";
 import { attachmentInPage, cancelChatActionInPage, failureOutcome } from "../src/actions/chatgpt.js";
-import { fakeChrome, json } from "./support/fake_chrome.js";
+import { fakeChrome } from "./support/fake_chrome.js";
 
 const ACTION = {
   id: "a1", provider: "chatgpt", conversation: null, text: "Draft this", model: "GPT X", submit: false,
@@ -11,12 +11,12 @@ const ACTION = {
 
 function setup(pageResult) {
   const reports = [];
-  const routes = {
-    "GET /v1/chat-actions": (_body, path) => ({ json: { action: path.includes("by=ext-1") ? ACTION : null } }),
-    "GET /v1/chat-actions/a1/attachments/f1": () => ({ bytes: new TextEncoder().encode("hello"), type: "text/plain" }),
-    "POST /v1/chat-actions/a1/report": (body) => { reports.push(json(body)); return { json: { action: {} } }; },
+  const operations = {
+    "internal chat claim": (args) => ({ json: { action: args.by === "ext-1" ? ACTION : null } }),
+    "internal chat attachment": () => ({ json: { bytes: "aGVsbG8=", media_type: "text/plain" } }),
+    "internal chat report": (body) => { reports.push(body.update); return { json: { action: {} } }; },
   };
-  const chrome = fakeChrome({ routes });
+  const chrome = fakeChrome({ operations });
   const ran = [];
   chrome.scripting.executeScript = async ({ func, args }) => {
     ran.push(func.name);
@@ -128,9 +128,9 @@ it("revokes only the owned page run after a claim is lost", () => {
 
 it("keeps an unconfirmed authored receipt without treating it as a claimed action", async () => {
   const receipt = { id: "action-pending", repeat: true, pending: true };
-  const chrome = fakeChrome({ routes: { "GET /v1/chat-actions": () => ({ json: receipt }) } });
+  const chrome = fakeChrome({ operations: { "internal chat claim": () => ({ json: receipt }) } });
   const host = new Host(chrome.runtime);
-  expect(await host.claimChatAction("ext-1")).toEqual(receipt);
+  expect(await host.call("internal chat claim", { by: "ext-1" })).toEqual(receipt);
   const actions = new ChatActions({ chrome, host, instance: async () => "ext-1", capture: async () => { throw new Error("no action was claimed"); } });
   await actions.step();
   expect(chrome.tabs.list).toHaveLength(0);

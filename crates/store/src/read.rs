@@ -5,8 +5,10 @@
 use crate::ConnExt as _;
 use crate::archive::Archive;
 use crate::archive::index_build::Reads;
+use crate::archive::writer::Position;
 use crate::blobs::FileFacts;
 use crate::row::{Json, MessagePk, Rows as _, SessionPk, Statement, row};
+use crate::writer::WriterSender;
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
@@ -30,8 +32,8 @@ mod behind_index;
 mod completeness;
 pub use completeness::ReadingContract;
 mod captured;
-mod cursor_generation;
-pub use cursor_generation::open_cursor;
+mod cursor_index_instance;
+pub use cursor_index_instance::open_cursor;
 mod chain_state;
 mod hook_fields;
 mod import_counts;
@@ -75,10 +77,11 @@ pub struct MessageParse {
     pub ordinal: u64,
 }
 
+/// Where a shown message sits, and the version its commit is read for.
 struct MessageArrival {
     order: Option<i64>,
-    fact: Option<i64>,
-    source: Option<(String, i64, i64)>,
+    /// The message's ID and shown version, when it has one.
+    version: Option<(String, Vec<u8>)>,
 }
 
 impl MessageArrival {
@@ -91,29 +94,51 @@ impl MessageArrival {
     }
 
     fn resolve(self, conn: &Connection) -> Result<Option<u64>> {
-        if let Some(fact) = self.fact {
-            return u64::try_from(fact)
-                .map(Some)
-                .map_err(|_| StoreError::stored(0, "negative message commit"));
-        }
-        let Some((input, chain, end)) = self.source else {
+        let Some((id, hash)) = self.version else {
             return Ok(None);
         };
-        let end = u64::try_from(end)
-            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
-        crate::source::Source::committed_through(conn, &input, chain, end)
+        version_commit(conn, &id, &hash)
     }
 }
 
 row! {
-    /// Both write counters and the index generation.
+    /// Where one reading of a message's version ends in its chain.
+    struct VersionReading {
+        input: String,
+        chain: i64,
+        source_end: i64,
+    }
+    statements {
+        const OF_VERSION = "SELECT i.id AS input, r.chain, r.source_start + r.source_length AS source_end
+            FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1 AND r.hash=?2";
+    }
+}
+
+/// The commit of a message's version: the latest of the commits of the
+/// readings that state it, since a shown version can join the blocks of
+/// several (a sparse export's union). Each reading's commit is the
+/// archive's for its byte range.
+fn version_commit(conn: &Connection, id: &str, hash: &[u8]) -> Result<Option<u64>> {
+    let mut latest = None;
+    for reading in conn.all(&VersionReading::OF_VERSION, rusqlite::params![id, hash])? {
+        let end = u64::try_from(reading.source_end)
+            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
+        let commit =
+            crate::source::Source::committed_through(conn, &reading.input, reading.chain, end)?;
+        latest = latest.max(commit);
+    }
+    Ok(latest)
+}
+
+row! {
+    /// Both write counters and the index instance.
     struct ChangePosition {
-        generation: String,
+        index_instance: String,
         index: i64,
         archive: i64,
     }
     statements {
-        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS generation,
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='index_instance') AS index_instance,
             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
     }
@@ -133,24 +158,19 @@ row! {
 }
 
 row! {
-    /// The commit facts of a shown message's reading.
+    /// A shown message's version.
     struct MessageCommit {
-        committed: Option<i64>,
-        input: String,
-        source_chain: i64,
-        source_end: i64,
+        version_hash: Vec<u8>,
     }
     statements {
-        const OF_MESSAGE = "SELECT (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
-            i.id AS input, m.source_chain, m.source_end
-            FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL";
+        const OF_MESSAGE = "SELECT m.version_hash FROM message m WHERE m.id=?1 AND m.version_hash IS NOT NULL";
     }
 }
 
 row! {
     /// Where a visit from a message starts in its session's order.
     struct MessageStart {
-        session_order: String,
+        session_order: Vec<u8>,
         id: String,
     }
     statements {
@@ -167,10 +187,9 @@ macro_rules! message_columns {
             m.cache_write_1h_tokens, m.speed, m.version_hash, m.layout,
             CASE WHEN m.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END AS stored_block_count,
-            (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
             CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END AS source_input,
             CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END AS source_chain,
-            CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END AS source_end, "
+            "
     };
 }
 
@@ -198,10 +217,8 @@ row! {
         version_hash: Option<Vec<u8>>,
         layout: Option<Vec<u8>>,
         stored_block_count: i64,
-        committed: Option<i64>,
         source_input: Option<String>,
         source_chain: Option<i64>,
-        source_end: Option<i64>,
         record_order: Option<i64>,
     }
     statements {
@@ -247,7 +264,8 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT what AS name, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20";
+        const UNUSED = "SELECT item AS name, sum(count) AS n FROM unused GROUP BY item
+            ORDER BY n DESC, item LIMIT 20";
     }
 }
 
@@ -314,6 +332,9 @@ pub struct ReadPool {
     counts: Mutex<crate::query::execute::CountCache>,
     /// The chain census of the last read position it was computed at.
     census: Mutex<Option<CensusAt>>,
+    /// The unused-record figures of the last read position they were read at:
+    /// they change only when a chain is parsed.
+    unused: Mutex<Option<(polylogue_model::ChangePosition, Arc<Unused>)>>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     /// A pipeline pool closes its idle connections before a build file is
@@ -444,14 +465,42 @@ pub struct LatestChain {
     pub state: polylogue_model::chain::ChainState,
 }
 
+/// How many pending search texts status counts exactly; past it the count
+/// is a minimum, so a backfill's queue costs status a bounded scan.
+pub const SEARCH_PENDING_BOUND: u64 = 1_000_000;
+
+/// The pending search texts, counted up to `bound`, and whether there are
+/// more: the scan reads at most `bound + 1` rows of the queue.
+pub(crate) const SEARCH_PENDING_COUNT: &str =
+    "SELECT count(*) FROM (SELECT 1 FROM main.search_pending LIMIT ?1)";
+
+fn search_pending(conn: &Connection, bound: u64) -> Result<(u64, bool)> {
+    let limit = i64::try_from(bound).unwrap_or(i64::MAX - 1) + 1;
+    let found: u64 = conn.scalar(SEARCH_PENDING_COUNT, [limit])?;
+    Ok((found.min(bound), found > bound))
+}
+
+/// The record kinds and fields parsers did not read, as status shows them.
+#[derive(Debug, Default)]
+struct Unused {
+    top: Vec<(String, u64)>,
+    fields: u64,
+}
+
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
 #[derive(
     Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct Status {
-    /// Inputs whose bytes are still being written.
+    /// Logical sessions, as the `sessions` unit lists them with no filter:
+    /// each once, with its subagents, forks, continuations and resumes
+    /// folded in; with a transcript and not hidden.
     pub sessions: u64,
+    /// Every session, as `sessions where physical:true` lists them: subagents, forks,
+    /// continuations and resumes counted on their own; with a transcript
+    /// and not hidden.
+    pub sessions_physical: u64,
     pub messages: u64,
     pub documents: u64,
     pub tool_calls: u64,
@@ -469,8 +518,13 @@ pub struct Status {
     /// How many record kinds and fields parsers did not read, all of them.
     pub unused_fields: u64,
     /// Texts stored but not yet in the search index: how far search lags
-    /// the writer.
+    /// the writer. Counted up to [`SEARCH_PENDING_BOUND`].
     pub search_pending: u64,
+    /// The count stopped at its bound: more texts than `search_pending` wait.
+    pub search_pending_is_minimum: bool,
+    /// Sessions whose summaries are due: until they are folded, their
+    /// messages and tool calls are missing from the totals.
+    pub summaries_due: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
     /// Why this index replaced the one before it, as its rebuild recorded.
@@ -550,6 +604,7 @@ impl ReadPool {
             cache_kib,
             counts: Mutex::default(),
             census: Mutex::default(),
+            unused: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -654,6 +709,22 @@ impl ReadPool {
     /// refuses to avoid deadlock.
     pub fn checkout(&self, lane: Lane, limit: &limit::ReadLimit) -> Result<Reader<'_>> {
         self.acquire(lane, Some(limit.clone()))
+    }
+
+    /// Waits for the index before taking a connection or opening a snapshot.
+    pub fn checkout_after(
+        &self,
+        writer: &WriterSender,
+        position: Position,
+        lane: Lane,
+        limit: &limit::ReadLimit,
+    ) -> Result<Reader<'_>> {
+        if writer.followed_position() < position {
+            self.index_path()?;
+            limit::ReadLimit::set_stage("waiting for the index");
+            writer.followed(position, Some(limit))?;
+        }
+        self.checkout(lane, limit)
     }
 
     /// A reader for work outside a request (the loop, workers): the ordinary
@@ -1216,10 +1287,10 @@ impl Reader<'_> {
     ) -> std::result::Result<query_language::cursor::Continuation, crate::selection::SelectionError>
     {
         let seal = query_language::cursor::CursorSeal::new(self.cursor_key()?);
-        let generation = self.change_position()?.generation;
+        let index_instance = self.change_position()?.index_instance;
         Ok(open_cursor(
             &seal,
-            &generation,
+            &index_instance,
             cursor,
             question,
             resolve_zone,
@@ -1231,7 +1302,7 @@ impl Reader<'_> {
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
         let position = self.conn()?.one(&ChangePosition::CURRENT, [])?;
         Ok(polylogue_model::ChangePosition {
-            generation: position.generation,
+            index_instance: position.index_instance,
             index: position.index,
             archive: position.archive,
         })
@@ -1319,8 +1390,7 @@ impl Reader<'_> {
         match conn.maybe(&MessageCommit::OF_MESSAGE, [id.to_string()])? {
             Some(commit) => MessageArrival {
                 order: None,
-                fact: commit.committed,
-                source: Some((commit.input, commit.source_chain, commit.source_end)),
+                version: Some((id.to_string(), commit.version_hash)),
             }
             .resolve(conn),
             None => Ok(None),
@@ -1399,7 +1469,7 @@ impl Reader<'_> {
         };
         let mut parameters = vec![Value::Integer(session_pk.0)];
         if let Some(start) = &start {
-            parameters.push(Value::Text(start.session_order.clone()));
+            parameters.push(Value::Blob(start.session_order.clone()));
             parameters.push(Value::Text(start.id.clone()));
         }
         let statement = match (&start, ordinal) {
@@ -1498,6 +1568,7 @@ impl Reader<'_> {
                     .map_err(|_| unreadable("an unparseable production record"))?
                     .unwrap_or_default(),
             };
+            let version = row.version_hash.clone().map(|hash| (named.clone(), hash));
             let block_selection = row
                 .version_hash
                 .map(|hash| {
@@ -1522,15 +1593,34 @@ impl Reader<'_> {
                 .transpose()?;
             let commit = MessageArrival {
                 order: row.record_order,
-                fact: row.committed,
-                source: row
-                    .source_input
-                    .zip(row.source_chain)
-                    .zip(row.source_end)
-                    .map(|((input, chain), end)| (input, chain, end)),
+                version,
             };
             Ok(visit(pk, message, block_selection, commit))
         })
+    }
+
+    /// The unused-record figures, read once for each read position.
+    fn unused_at_position(&self) -> Result<Arc<Unused>> {
+        let position = self.change_position()?;
+        if let Some((at, unused)) = self.pool.unused.locked().as_ref()
+            && *at == position
+        {
+            return Ok(unused.clone());
+        }
+        let c = self.conn()?;
+        let unused = Arc::new(Unused {
+            top: c
+                .all(&NamedCount::UNUSED, [])?
+                .into_iter()
+                .map(|count| (count.name, count.n))
+                .collect(),
+            fields: c.scalar::<u64>(
+                "SELECT count(*) FROM (SELECT item FROM unused GROUP BY item HAVING sum(count) > 0)",
+                [],
+            )?,
+        });
+        *self.pool.unused.locked() = Some((position, unused.clone()));
+        Ok(unused)
     }
 
     /// Totals for `status`, with every chain shown as the model judges it
@@ -1539,24 +1629,46 @@ impl Reader<'_> {
         limit::ReadLimit::set_stage("status counts");
         let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
-        let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
-        let unused = c
-            .all(&NamedCount::UNUSED, [])?
-            .into_iter()
-            .map(|count| (count.name, count.n))
-            .collect();
+        let count = |sql: &str| -> Result<u64> { c.scalar::<u64>(sql, []) };
+        // A summed total is of the visible sessions, as the `messages` and
+        // `tool_calls` units list them: all, less the hidden few.
+        let hidden = crate::query::fields::hidden_session_ids();
+        let visible = |column: &str| -> Result<u64> {
+            count(&format!(
+                "SELECT (SELECT coalesce(sum({column}), 0) FROM main.session)
+                      - (SELECT coalesce(sum({column}), 0) FROM main.session WHERE id IN ({hidden}))"
+            ))
+        };
+        let listed = |logical: bool| -> Result<u64> {
+            count(&format!(
+                "SELECT count(*) FROM main.session s WHERE {}",
+                crate::query::units::listed_sessions(
+                    &crate::query::fields::Aliases::plain(),
+                    logical
+                )
+            ))
+        };
+        let unused = self.unused_at_position()?;
+        let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
-            sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
-            messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
-            documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
-            tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
+            // Sessions (as the `sessions` unit lists them) and documents are
+            // counted; messages and tool calls
+            // are summed from the visible sessions' count summaries, which
+            // follow the index by the summary worker.
+            sessions: listed(true)?,
+            sessions_physical: listed(false)?,
+            messages: visible("message_count")?,
+            documents: count("SELECT count(*) FROM main.document")?,
+            tool_calls: visible("tool_call_count")?,
             inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
             revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
-            unused,
-            unused_fields: count("SELECT count(*) FROM unused_count WHERE n > 0")?,
-            search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
+            unused: unused.top.clone(),
+            unused_fields: unused.fields,
+            search_pending,
+            search_pending_is_minimum,
+            summaries_due: count("SELECT count(*) FROM main.summary_due")?,
             capture_coverage: self.all_capture_coverage()?,
             index_rebuild: crate::index::file::IndexRebuild::recorded(c)?,
         })

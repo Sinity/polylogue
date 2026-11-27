@@ -260,10 +260,10 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
             let question = inline_identity(query, &plan.identity_catalog)?;
             if !saved_definitions
                 .iter()
-                .any(|node| node.question == question)
+                .any(|node| node.query_id == question)
             {
                 saved_definitions.push(SavedQueryDefinition {
-                    question,
+                    query_id: question,
                     normal_form: identity::normal_form(query, &plan.identity_catalog)
                         .map_err(language)?,
                     parameters: BTreeMap::new(),
@@ -275,8 +275,8 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
         },
         &mut |_| Ok(()),
     )?;
-    saved_definitions.sort_by_key(|node| node.question.to_string());
-    saved_definitions.dedup_by_key(|node| node.question);
+    saved_definitions.sort_by_key(|node| node.query_id.to_string());
+    saved_definitions.dedup_by_key(|node| node.query_id);
     let edges = edges(&plan.identity, catalog)?;
     let object = QueryObject {
         id: plan.question_id,
@@ -344,7 +344,7 @@ pub fn saved_query_bindings(
 
 pub(super) fn root_definition(object: &QueryObject) -> SavedQueryDefinition {
     SavedQueryDefinition {
-        question: object.id,
+        query_id: object.id,
         normal_form: object.normal_form.clone(),
         parameters: object.parameters.clone(),
         query: object.query.clone(),
@@ -364,7 +364,7 @@ pub(super) fn definition_with_dependencies(
         object
             .definitions
             .iter()
-            .find(|node| node.question == question)
+            .find(|node| node.query_id == question)
             .cloned()
             .ok_or_else(|| QueryError::invalid("saved query differs from its declared hash"))?
     };
@@ -379,7 +379,7 @@ pub(super) fn definition_with_dependencies(
         let dependency = object
             .definitions
             .iter()
-            .find(|node| node.question == id)
+            .find(|node| node.query_id == id)
             .ok_or_else(|| QueryError::invalid(format!("missing saved query:{id}")))?;
         queue.extend(dependencies(&edges(&dependency.query, &catalog)?));
         dependency_nodes.push(dependency.clone());
@@ -395,7 +395,7 @@ fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, 
     let mut bindings = Bindings::default();
     let captured = std::sync::Arc::new(object.clone());
     for node in &object.definitions {
-        let id = node.question.to_string();
+        let id = node.query_id.to_string();
         let syntax =
             query_language::format::format_query(&node.query, catalog).map_err(language)?;
         let (text, body) = (
@@ -411,7 +411,7 @@ fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, 
                 text,
                 revision: id.clone(),
                 root: id,
-                hash: node.question,
+                hash: node.query_id,
                 denominator: None,
                 conflicts: vec![],
                 body,
@@ -538,7 +538,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     for node in &object.definitions {
         if identity::question_id_from_normal_form(&node.normal_form, &node.parameters)
             .map_err(language)?
-            != node.question
+            != node.query_id
         {
             return Err(QueryError::invalid(
                 "saved dependency hash differs from its normal form",
@@ -562,13 +562,13 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     let mut by_id = BTreeMap::new();
     for node in &object.definitions {
         check_node(
-            node.question,
+            node.query_id,
             &node.normal_form,
             &node.parameters,
             &node.query,
             &node.source_outputs,
         )?;
-        if by_id.insert(node.question.to_string(), node).is_some() {
+        if by_id.insert(node.query_id.to_string(), node).is_some() {
             return Err(QueryError::invalid("duplicate saved question body"));
         }
     }
@@ -646,10 +646,10 @@ pub fn replay_binding(
                 if question != binding.context.question
                     && !definitions
                         .iter()
-                        .any(|definition: &SavedQueryDefinition| definition.question == question)
+                        .any(|definition: &SavedQueryDefinition| definition.query_id == question)
                 {
                     definitions.push(SavedQueryDefinition {
-                        question,
+                        query_id: question,
                         normal_form: identity::normal_form(query, &catalog).map_err(language)?,
                         parameters: BTreeMap::new(),
                         query: query.clone(),
@@ -687,7 +687,7 @@ pub fn replay_binding(
             name: definition.name.clone(),
             revision: definition.revision.clone(),
             root: definition.root.clone(),
-            question_id: definition.question,
+            question_id: definition.query_id,
         })
         .collect();
     Ok(plan)

@@ -19,7 +19,27 @@ pub(super) fn card(
     let detail = reader
         .live_detail(session, now)?
         .ok_or_else(|| Error::not_found(format!("no session {session}")))?;
-    Ok(render(&detail, now, zone))
+    let mut card = render(&detail, now, zone);
+    if detail.view.state == LiveState::Ended
+        && detail.facts.ended_at.is_some()
+        && let Card::Live {
+            state: ValueState::Value { value },
+            ..
+        } = &mut card
+    {
+        let session = polylogue_model::SessionId::parse(session).map_err(Error::not_found)?;
+        let reason = reader
+            .events(&session)?
+            .into_iter()
+            .filter(|event| event.kind == "registry_hosted_ended")
+            .max_by_key(|event| event.at)
+            .and_then(|event| event.data.get("detail")?.as_str().map(str::to_owned));
+        if let Some(reason) = reason {
+            value.push_str(" · ");
+            value.push_str(&reason);
+        }
+    }
+    Ok(card)
 }
 
 fn known_or(value: Option<String>, reason: &str) -> ValueState<String> {

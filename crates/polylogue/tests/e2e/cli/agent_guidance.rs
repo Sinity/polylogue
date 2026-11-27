@@ -63,6 +63,21 @@ fn help_runs_offline_and_the_daemon_serves_the_full_manual() {
     assert!(full.status.success(), "{full:?}");
     let text = String::from_utf8(full.stdout).unwrap();
     assert!(text.contains("sessions where"));
+    // The operation reference follows the guide (docs/agents.md, The skill
+    // file): each tool, its operations with their CLI spelling, its steps.
+    for heading in [
+        "\n## `polylogue_read`\n",
+        "\n## `polylogue_write`\n",
+        "\n## `polylogue_act`\n",
+    ] {
+        assert!(text.contains(heading), "{heading}");
+    }
+    assert!(text.contains("- `status` (CLI `status`): "), "{text}");
+    assert!(text.contains("- `dev sql` (CLI `dev sql`): "), "{text}");
+    assert!(
+        text.contains("- step `tag(name)`: label each row."),
+        "{text}"
+    );
     let structured = cli(&fixture, &["--json", "help", "--all"]);
     assert!(structured.status.success(), "{structured:?}");
     assert_eq!(
@@ -139,7 +154,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["operation"], "internal delivery-event");
             assert_eq!(request["arguments"]["delivery"], delivery);
-            assert_eq!(request["arguments"]["what"], "delivered");
+            assert_eq!(request["arguments"]["outcome"], "delivered");
             write!(
                 stream,
                 "event: answer\ndata: {}\n\n",

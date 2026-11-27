@@ -33,7 +33,6 @@ struct StoredEvent {
     input: String,
     chain: i64,
     end: Option<i64>,
-    committed: Option<i64>,
 }
 
 impl Reader<'_> {
@@ -43,7 +42,7 @@ impl Reader<'_> {
         let mut reader = crate::content::Reader::default();
         let stored: Option<StoredEvent> = conn
             .prepare_cached(&format!(
-                "SELECT e.pk,i.id,e.source_chain,e.source_end,NULL,{SHOWN_EVENT_COLUMNS}
+                "SELECT e.pk,i.id,e.source_chain,e.source_end,{SHOWN_EVENT_COLUMNS}
                  FROM event e JOIN input_ref i ON i.pk=e.input_pk LEFT JOIN session s ON s.pk=e.session_pk
                  WHERE e.id=?1"
             ))?
@@ -53,8 +52,7 @@ impl Reader<'_> {
                     input: r.get(1)?,
                     chain: r.get(2)?,
                     end: r.get(3)?,
-                    committed: r.get(4)?,
-                    event: shown_event(conn, &mut reader, r, 5)?,
+                    event: shown_event(conn, &mut reader, r, 4)?,
                 })
             })?
             .next()
@@ -65,7 +63,6 @@ impl Reader<'_> {
             input,
             chain,
             end,
-            committed,
         }) = stored
         else {
             return Ok(None);
@@ -83,20 +80,14 @@ impl Reader<'_> {
         let selected = readings
             .iter()
             .find(|r| r.input == input && r.chain == chain);
-        let committed = committed.or(selected.and_then(|r| r.committed));
         let through = end
             .map(u64::try_from)
             .transpose()
             .map_err(|_| StoreError::stored(5, "negative event source coordinate"))?;
-        let commit = match committed {
-            Some(value) => u64::try_from(value)
-                .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| StoreError::stored(6, "invalid event commit position"))?,
-            None => self.source_commit(&input, chain, through)?.ok_or_else(|| {
-                StoreError::stored(6, "selected event has no stored commit position")
-            })?,
-        };
+        // The commit of the extents under the event's byte range.
+        let commit = self
+            .source_commit(&input, chain, through)?
+            .ok_or_else(|| StoreError::stored(6, "selected event has no stored commit position"))?;
         let mut sources = Vec::new();
         let mut rows: Vec<_> = readings
             .iter()
@@ -153,7 +144,7 @@ impl Reader<'_> {
         let Ok(ordinal) = i64::try_from(ordinal) else {
             return Ok(());
         };
-        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.seq,e.id LIMIT -1 OFFSET ?2")?;
+        let mut statement=self.conn()?.prepare_cached("SELECT e.id FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1 ORDER BY e.position,e.id LIMIT -1 OFFSET ?2")?;
         let mut rows = statement.query(rusqlite::params![session.to_string(), ordinal])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;

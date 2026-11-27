@@ -191,21 +191,25 @@ fn accepted_deliveries_are_pending_until_their_commit() {
             text: "synthetic brief".into(),
             refs: Vec::new(),
             left_out: Vec::new(),
+            prepared_position: Some(7),
         }),
         ..setting("delivery-one", "on")
     };
-    let committed = sender.accept_delivery(delivery.clone(), Some(7)).unwrap();
+    let committed = sender.accept_delivery(delivery.clone()).unwrap();
     pause.wait().unwrap();
-    assert_eq!(
+    let pending = |sender: &crate::archive::writer::ArchiveSender| {
         sender
             .pending_deliveries()
             .iter()
-            .map(|pending| (pending.request.id.as_str(), pending.prepared_at))
-            .collect::<Vec<_>>(),
-        [("delivery-one", Some(7))]
-    );
-    let repeated = sender.accept_delivery(delivery, Some(9)).unwrap();
-    assert_eq!(sender.pending_deliveries()[0].prepared_at, Some(7));
+            .map(|request| match &request.write {
+                UserWrite::Deliver(delivery) => (request.id.clone(), delivery.prepared_position),
+                _ => panic!("a delivery"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(pending(&sender), [("delivery-one".to_owned(), Some(7))]);
+    let repeated = sender.accept_delivery(delivery).unwrap();
+    assert_eq!(pending(&sender)[0], ("delivery-one".to_owned(), Some(7)));
     pause.release();
     let first = committed.recv().unwrap().unwrap();
     let again = repeated.recv().unwrap().unwrap();

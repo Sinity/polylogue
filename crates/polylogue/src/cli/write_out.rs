@@ -28,18 +28,17 @@ impl From<&str> for OutputError {
 }
 
 fn output_failure(error: OutputError, client: &crate::config::Client, json: bool) -> u8 {
-    let failure = match error {
-        OutputError::Text(error) => {
-            crate::protocol::failure(polylogue_model::Code::ReadOutput, error)
-        }
-        OutputError::Answer(answer) => match answer.outcome {
-            command_surface::Outcome::Error(error) => error,
-            _ => return answer.exit_code(),
-        },
+    let answer = match error {
+        OutputError::Text(error) => command_surface::Answer::error(crate::protocol::failure(
+            polylogue_model::Code::ReadOutput,
+            error,
+        )),
+        OutputError::Answer(answer) => *answer,
     };
-    super::fail_with(client.output, json, &failure, &[]);
-    failure.kind.exit_code()
+    super::fail_answer(client.output, json, &answer);
+    answer.exit_code()
 }
+
 fn page_of(answer: &command_surface::Answer<serde_json::Value>) -> Result<ReadPage, OutputError> {
     let Some(value) = answer.value() else {
         return Err(OutputError::Answer(Box::new(answer.clone())));
@@ -94,12 +93,6 @@ pub(crate) fn line_page(
             crate::protocol::failure(polylogue_model::Code::BadValue, "unknown read format")
         })?;
     let result = match destination {
-        Some(Destination::Clipboard | Destination::Browser) => {
-            return Err(crate::protocol::failure(
-                polylogue_model::Code::NotBuilt,
-                "this destination is not built yet",
-            ));
-        }
         Some(Destination::File(_) | Destination::Dir(_)) => {
             return Err(crate::protocol::failure(
                 polylogue_model::Code::BadRequest,
@@ -374,7 +367,7 @@ impl<W: Write> Write for BoldFirstLine<W> {
 enum Sink {
     Directory(Box<bundle::Bundle>),
     Encoded {
-        begin: Box<ReadBegin>,
+        header: Box<ReadHeader>,
         items: Box<ExportItems>,
         received: Counts,
         ordinal: u64,
@@ -495,13 +488,19 @@ fn write_read_stream(
                         "the read repeated its header".to_string(),
                     ));
                 }
-                let begin: ReadBegin = serde_json::from_str(&frame.data).map_err(|error| {
+                let header: ReadHeader = serde_json::from_str(&frame.data).map_err(|error| {
                     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
                 })?;
-                begin.options.validate().map_err(|error| {
+                let (Some(snapshot), Some(options)) = (&header.snapshot, &header.options) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the read stream's header has no snapshot or options".to_string(),
+                    ));
+                };
+                options.validate().map_err(|error| {
                     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
                 })?;
-                if !begin.snapshot.freshness.up_to_date() || !begin.snapshot.incomplete.is_empty() {
+                if !snapshot.freshness.up_to_date() || !snapshot.incomplete.is_empty() {
                     code = 5;
                 }
                 sink = Some(if directory {
@@ -513,7 +512,7 @@ fn write_read_stream(
                                     "directory destination missing".to_string(),
                                 )
                             })?,
-                            begin,
+                            header,
                             package_format.ok_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::InvalidData,
@@ -528,7 +527,7 @@ fn write_read_stream(
                     ))
                 } else {
                     Sink::Encoded {
-                        begin: Box::new(begin),
+                        header: Box::new(header),
                         items: Box::new(ExportItems::new().map_err(|error| {
                             io::Error::new(io::ErrorKind::InvalidData, error.to_string())
                         })?),
@@ -610,19 +609,13 @@ fn write_read_stream(
                 }
             }
             "complete" => {
-                let complete: ReadComplete =
-                    serde_json::from_str(&frame.data).map_err(|error| {
-                        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-                    })?;
-                if complete
-                    .footer
-                    .coverage
-                    .iter()
-                    .any(|coverage| coverage.omitted > 0)
-                {
+                let footer: ReadFooter = serde_json::from_str(&frame.data).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                if footer.coverage.iter().any(|coverage| coverage.omitted > 0) {
                     code = 5;
                 }
-                if code == 0 && complete.footer.shown == 0 && complete.counts == Counts::default() {
+                if code == 0 && footer.shown == 0 && footer.counts.is_empty() {
                     code = 1;
                 }
                 let finished_sink = sink.take().ok_or_else(|| {
@@ -633,7 +626,7 @@ fn write_read_stream(
                 })?;
                 match finished_sink {
                     Sink::Directory(bundle) => {
-                        let summary = bundle.finish(complete).map_err(|error| {
+                        let summary = bundle.finish(footer).map_err(|error| {
                             io::Error::new(io::ErrorKind::InvalidData, error.to_string())
                         })?;
                         if json {
@@ -648,12 +641,12 @@ fn write_read_stream(
                         }
                     }
                     Sink::Encoded {
-                        begin,
+                        header,
                         mut items,
                         received,
                         ..
                     } => {
-                        if complete.counts != received {
+                        if footer.counts != received {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "read completion counts disagree with its records".to_string(),
@@ -661,20 +654,20 @@ fn write_read_stream(
                         }
                         if let Some(path) = destination {
                             let mut output = super::staged_file::StagedFile::new(path)?;
-                            encode(&begin, &mut items, &complete, format, &mut output)?;
+                            encode(&header, &mut items, &footer, format, &mut output)?;
                             let path = output.commit()?;
                             if json {
                                 written(
-                                    serde_json::json!({"written":path,"counts":complete.counts}),
+                                    serde_json::json!({"written":path,"counts":footer.counts}),
                                     code,
                                 )?;
                             }
                             eprintln!("polylogue: wrote {}", path.display());
                         } else if !json {
                             encode(
-                                &begin,
+                                &header,
                                 &mut items,
-                                &complete,
+                                &footer,
                                 format,
                                 &mut io::stdout().lock(),
                             )?;
@@ -709,6 +702,21 @@ fn write_read_stream(
             .map_err(Refusal::Io),
         Ok(Some(answer)) => Err(Refusal::Answer(Box::new(answer))),
         Ok(None) => Ok(()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ) =>
+        {
+            let mut lifted = super::run_line::request(parsed).map_err(|error| error.message)?;
+            lifted.deadline = command_surface::Deadline::None;
+            let answer = command_surface::Answer::error(
+                crate::protocol::store_failure(&polylogue_store::StoreError::ReadDeadlineExceeded)
+                    .with_hint("rerun with `--deadline none`, or narrow to one session"),
+            )
+            .with_next("complete without a deadline", lifted);
+            Err(Refusal::Answer(Box::new(answer)))
+        }
         Err(error) => Err(Refusal::Io(error)),
     };
     if let Err(error) = result {
@@ -791,14 +799,25 @@ fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
 }
 
 fn encode(
-    begin: &ReadBegin,
+    header: &ReadHeader,
     items: &mut ExportItems,
-    complete: &ReadComplete,
+    footer: &ReadFooter,
     format: polylogue_render::Format,
     output: &mut dyn Write,
 ) -> io::Result<()> {
+    // The snapshot, options and record counts describe the transfer; the
+    // written document is the header, items and footer of the reading.
+    let header = ReadHeader {
+        snapshot: None,
+        options: None,
+        ..header.clone()
+    };
+    let footer = ReadFooter {
+        counts: Default::default(),
+        ..footer.clone()
+    };
     let mut encoder = polylogue_render::Encoder::new(
-        &begin.header,
+        &header,
         format,
         polylogue_render::EncodeOptions {
             commands: Some(crate::commands::declarations()),
@@ -820,7 +839,7 @@ fn encode(
             }
         }
     }
-    encoder.finish(&complete.footer)
+    encoder.finish(&footer)
 }
 
 fn count_record(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::Result<()> {

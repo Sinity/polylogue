@@ -80,7 +80,7 @@ pub(crate) fn prepare_query_plan_on(
                 format!("no saved run {id}"),
             )
         })?;
-        let question = run.question.ok_or_else(|| {
+        let question = run.query_id.ok_or_else(|| {
             SelectionError::invalid(
                 polylogue_model::Code::BadRequest,
                 "this run read an object and has no query question to run again",
@@ -337,21 +337,6 @@ fn named_kept_bindings<'a>(
         kept.insert(name.clone(), value.clone());
     }
     Ok((kept, names))
-}
-
-pub(super) fn saved_queries_for_family(
-    conn: &Connection,
-    root: &str,
-) -> Result<SavedFamily, SelectionError> {
-    let family = crate::annotations::saved_family(conn, root)?.definitions;
-    let names = family
-        .iter()
-        .map(|(name, definitions)| (name.clone(), definitions.len()))
-        .collect();
-    Ok(SavedFamily {
-        names,
-        queries: saved_queries_from(conn, conn, None, family)?,
-    })
 }
 
 fn saved_queries_from(

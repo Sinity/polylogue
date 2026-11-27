@@ -519,7 +519,7 @@ struct MetadataRow<'a> {
 fn put_metadata(conn: &Connection, row: &MetadataRow<'_>) -> Result<bool> {
     let changed = conn.execute(
         "INSERT INTO import_asset_metadata VALUES (?1,?2,?3,?4,?5,?6,?7)
-         ON CONFLICT(input,sidecar,ordinal) DO UPDATE SET
+         ON CONFLICT(input,sidecar,position) DO UPDATE SET
            source_id=excluded.source_id,name=excluded.name,
            media_type=excluded.media_type,size=excluded.size
          WHERE (source_id,name,media_type,size)

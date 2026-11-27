@@ -56,6 +56,8 @@ A brief for continuing work lets its recipient recover the goal, the constraints
 | `compact` | the session's own brief: every prompt its operator typed (`written_by: human`), verbatim and never cut; the latest todo list and plan; annotations on the session; failures not later fixed; what the compaction dropped ([sessions.md](sessions.md#compaction-boundaries)) |
 | `fork` | nothing |
 
+A directory with no recorded sessions says `No session is recorded for this directory: DIR.` This is distinct from a scope index that has not loaded.
+
 **"Here" is the repository, not the directory:** the current directory, its repository root, every worktree sharing its Git directory, the project home, and every repository name recorded for sessions there. Sessions in sibling worktrees are labelled with their worktree.
 
 **Sections, in order.** Each item carries its reference and age (`3 d ago`); each section names what it left out and the line that shows it.
@@ -88,10 +90,12 @@ The pages that bear on a session are those whose `scope` links name this reposit
 Where the recipient's role wrote text on a page here, the page's line also reports what became of it: `your 6 paragraphs on page:flaky-ci: 4 accepted, 1 rejected, 1 proposed` ([pages.md](pages.md#authorship-and-proposals)). Listed pages are ordered by their last change, newest first, and the budget decides how many are listed; the rest are counted with the query that lists them (`polylogue 'pages where scope:here'`). When no page matches, the block is absent.
 
 **Latency.** Every form of `brief` replies within the brief latency class ([latency.md](latency.md#latency-classes)), at any directory (`/` and a directory nobody worked in included); the hook shares one 1.5 s deadline across Git observation, mailbox/permission requests and context, including connection. Multiple takeover requests share the remaining allowance; an expired deadline starts no further request. Delivery acknowledgements keep their separate 20 ms allowance. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
-- **Scope index.** The daemon holds every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
+- **Scope index.** Until its first read finishes, the brief says "scope index has not loaded" and names `polylogue status`; it answers with the sections available and never waits for that read, including with `--deadline none`. The daemon holds every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
 - **Session summaries.** What a brief says about a session (its last model message, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call) is composed when the brief is read, from the session's rows through their indexes, so metadata entries need no session-body read. Only fitted expansions read the summary, the latest active prose request that is not a duplicate, and the session's annotations; scoped annotations and pending notices likewise select metadata before reading their fitted bodies.
 - **Deadline.** Sections run cheapest first (annotations, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the line that prints the whole brief (`polylogue brief --cwd ~/morrow --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
 - **Delivery off the reply path.** The reply does not wait for the writer: delivery records enter the archive writer's queue without waiting for room. The hook hands its `delivered` outcome over within 20 ms and exits, and the writer commits both in order, a repeated request ID once. An outcome is recorded even when the hook has already exited. A `resume` or `compact` brief reads the recipient's latest delivered brief from the writer's pending deliveries and committed rows, so a brief right after a delivery reports only what changed since.
+
+Every session-start attempt except a fork records whether context was given in a `SessionContext` hook spool event. When none was given, it names the cause: an unreachable daemon, the archive path, timeout, refusal, unusable answer, exchange failure, a missing working directory, empty context or failed output. `polylogue 'events where kind:hook_session_context'` lists these events with their details. Status counts starts without context by cause since the last start given context, and names the earliest failure in that interval. A wrong archive path is reported as such, rather than as a stopped daemon. When a spool write fails, one native journal entry names the failed write ([capture](capture.md#hooks)).
 
 Status counts delivery outcomes in the archive writer's pending deliveries. Shutdown stops producers and the writer finishes every accepted write before it stops ([operations](operations.md#the-daemon)).
 
@@ -151,23 +155,23 @@ Each harness's inline cap is declared with its hooks. A brief larger than the ca
 A **delivery** records each time prepared content is handed to a session or a person: the hooks' injected briefs, advisories, notices to sessions, sent messages, live-session acts, the first turn of a session Polylogue starts, and turns written into web chats. A delivery records:
 - `delivery:<id>`; sender (`hook`, `mcp`, `signal`, `send`, `act`); event (`session_start`, `resume`, `compaction`, `session_brief`, `search_brief`, `signal`, `advice`, `message`, `notice`, `control`, `first_turn`);
 - its computed author; recipient kind and reference (session, role instance, web conversation, or the operator when a brief names no recipient session; the operator has no reference); `cwd`;
-- the delivered bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
+- the delivered bytes, `refs`, `left_out` (each an `item` and its `reason`), `content_hash`, the read position it was prepared at (`prepared_position`), and its outcome events (each with its `outcome`).
 
 **Outcomes** (one vocabulary for deliveries and notices):
 
 | Outcome | Meaning |
 |---|---|
 | `prepared` | no send attempted yet |
-| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, the harness command exited 0 |
-| `failed(<first stderr line>)` | a handed-over run that then exited unsuccessfully, recorded after `delivered` |
-| `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
+| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, or the headless harness process started with it |
+| `failed` | a handed-over run that then failed, recorded after `delivered` with the exit status and the end of standard error when the process exited unsuccessfully |
+| `not_sent:<reason>` | `timeout`, `empty`, `failed` with the cause, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 
 **A delivery acknowledges a handing over.** A harness may store a tool result outside its inline output, apply its own output cap, or later compact the context. The `delivered` outcome alone does not show that the whole text remains in the model's current context. The [context view](transcripts.md#the-context-view) reconstructs what the captured harness records show, and a caller can read any passage again.
 
 - The delivery reference appears in the delivered text.
 - **Uncertain sends are reconciled, never resent.** For `unknown`, the daemon looks for the delivery's reference line in the recipient's transcript and records `delivered` when it finds it.
-- While a brief's delivery is pending, the writer also holds the read counter of the snapshot used to prepare it, so annotations committed after preparation remain in the next brief's delta. This counter is discarded when the delivery commits. Committed briefs use the delivery's own write counter for their delta start.
+- A delivery records the archive write counter of the read its content was prepared from (`prepared_position`), and the next brief's delta starts there, whether the delivery is still queued or committed: annotations committed after the brief was prepared remain in the next brief. A delivery recorded without it (written before it was kept) starts its delta at its own write counter.
 - High-frequency deliveries (advisories) are recorded once per session, advisory and target.
 - Deliveries are user state: they survive rebuilds, travel in `read --to` bundles, and in primary mode go to Sinex as `polylogue.delivery` ([primary-mode.md](primary-mode.md)).
 

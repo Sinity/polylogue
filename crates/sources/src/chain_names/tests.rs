@@ -366,3 +366,18 @@ fn a_reference_to_a_content_named_message_follows_its_number() {
     assert_eq!(parent, steps[0].output.messages[1].message.id);
     assert!(parent.native().as_str().ends_with("-1"));
 }
+
+#[test]
+fn claude_sidechains_keep_their_sessions_when_parsed_in_pieces() {
+    let bytes =
+        include_bytes!("../../../../examples/sources/claude-code/two-sidechains/input.jsonl");
+    let parser = open(
+        "claude-code",
+        Path::new(".claude/projects/p/two-sidechains.jsonl"),
+    );
+    let whole = reading(&settled(&parse_in_steps(&parser, bytes, &[])));
+    for cut in 0..=bytes.len() {
+        let divided = reading(&settled(&parse_in_steps(&parser, bytes, &[cut])));
+        assert_eq!(divided, whole, "cut at {cut}");
+    }
+}

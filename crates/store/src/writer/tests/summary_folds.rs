@@ -3,7 +3,7 @@
 //! after a re-parse of the whole input, every stored summary equals what
 //! the same rows written in one step give.
 use crate::fixture::writer::{WriterArchive, message, sid};
-use crate::writer::{ChainParse, InputKey, ParseStep};
+use crate::writer::{InputKey, ParsePart, Replacement};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, MessageRow, Output, RecordCounts, RecordOutcome, Role,
     Session, SessionKind, Timestamp, ToolAction, ToolOutcome,
@@ -286,9 +286,9 @@ fn reparse(w: &WriterArchive, records: &[Record], stored: &[(usize, u64)]) {
     for _ in records {
         counts.add("record", &RecordOutcome::Used);
     }
-    let mut step = ParseStep::new(output(records, stored), counts, 0..length, true);
+    let mut step = ParsePart::new(output(records, stored), counts, 0..length, true);
     step.parse_version = "synthetic=1".into();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
         .replace_chain(
@@ -311,10 +311,10 @@ fn summaries(w: &WriterArchive) -> Json {
     for (name, sql) in [
         (
             "session",
-            "SELECT id, title, derived_title, kind, started_at, last_activity_at, message_count,
+            "SELECT id, title, prompt_title, kind, started_at, last_active_at, message_count,
                     human_prompt_count, human_command_count, word_count, human_word_count,
                     model_word_count, thinking_count, compaction_count, tool_call_count,
-                    error_count, live_facts, live_last_at, stub
+                    error_count, live_facts, live_last_at, has_transcript
              FROM session ORDER BY id",
         ),
         (
@@ -333,8 +333,8 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "values",
-            "SELECT s.id, field, value, n FROM session_value v JOIN session s ON s.pk = v.session_pk
-             WHERE n > 0 ORDER BY s.id, field, value",
+            "SELECT s.id, field, value, count FROM session_value v JOIN session s ON s.pk = v.session_pk
+             WHERE count > 0 ORDER BY s.id, field, value",
         ),
         (
             "first_prompt",
@@ -355,21 +355,21 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "pulls",
-            "SELECT s.id, l.repo, l.number, l.url, l.evidence FROM pr_link l
+            "SELECT s.id, l.repo, l.number, l.url, l.evidence FROM pull_request_link l
              JOIN session s ON s.pk = l.session_pk ORDER BY s.id, l.repo, l.number",
         ),
         (
             "intervals",
-            "SELECT s.id, aspect, value, start_at, end_at, closed_by FROM live_interval i
-             JOIN session s ON s.pk = i.session_pk ORDER BY s.id, aspect, start_at",
+            "SELECT s.id, aspect, value, i.started_at, i.ended_at, closed_by FROM live_interval i
+             JOIN session s ON s.pk = i.session_pk ORDER BY s.id, aspect, i.started_at",
         ),
         (
             "lines",
-            "SELECT s.id, i.seq, hex(i.unit) AS unit, hex(i.entry) AS entry, i.class, i.call_id,
+            "SELECT s.id, i.position, hex(i.source_key) AS source_key, hex(i.body) AS body, i.class, i.call_id,
                     hex(i.counts) AS counts, m.id AS message, e.id AS event
              FROM transcript_line i JOIN session s ON s.pk = i.session_pk
              LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk
-             ORDER BY s.id, i.seq",
+             ORDER BY s.id, i.position",
         ),
     ] {
         out.insert(name.into(), Json::Array(w.rows(sql)));

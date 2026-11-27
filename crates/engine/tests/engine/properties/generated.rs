@@ -5,8 +5,8 @@
 //! The generator writes main session files, some of which resume an earlier
 //! session and so begin with a byte-identical copy of its first records.
 
-use polylogue_model::bundle::Record;
-use polylogue_store::{Archive, ReadPool};
+use polylogue_model::{SessionId, bundle::Record};
+use polylogue_store::{Archive, Reader};
 use polylogue_testkit::{
     ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
 };
@@ -84,13 +84,10 @@ fn corpus(shape: &Shape) -> Corpus {
     }
 }
 
-/// Everything a reader sees for every session, in session order.
-fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
-    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    // Built or kept current, the index names only rows it holds.
+/// Built or kept current, the index names only rows it holds.
+fn assert_references_hold(reader: &Reader<'_>) {
     assert_eq!(
-        pool.reader()
-            .unwrap()
+        reader
             .query(
                 "SELECT \"table\", rowid, parent FROM pragma_foreign_key_check",
                 &[]
@@ -98,13 +95,21 @@ fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
             .unwrap(),
         Vec::<serde_json::Value>::new()
     );
-    let ids = pool
-        .reader()
-        .unwrap()
+}
+
+/// Everything a reader sees for every session, in session order.
+fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    assert_references_hold(&reader);
+    let ids = reader
         .query("SELECT id FROM session ORDER BY id", &[])
         .unwrap();
     ids.iter()
-        .map(|row| w.export(row["id"].as_str().unwrap()))
+        .map(|row| {
+            let id = SessionId::parse(row["id"].as_str().unwrap()).unwrap();
+            polylogue_testkit::session_bundle(&reader, &id).unwrap()
+        })
         .collect()
 }
 
@@ -180,7 +185,7 @@ fn search_index(w: &ClaudeHome) -> Vec<serde_json::Value> {
 
 /// Row count of every archive.db table.
 fn archive_row_counts(w: &ClaudeHome) -> Vec<(String, i64)> {
-    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
+    let pool = w.reads();
     let r = pool.reader().unwrap();
     r.query(
         "SELECT name FROM a.sqlite_master WHERE type = 'table' ORDER BY name",
@@ -206,15 +211,14 @@ fn write_whole(w: &ClaudeHome, c: &Corpus) {
     }
 }
 
-fn run_all_at_once(c: &Corpus) -> (ClaudeHome, Vec<Vec<Record>>) {
+fn run_all_at_once(c: &Corpus) -> ClaudeHome {
     let w = ClaudeHome::new();
     write_whole(&w, c);
     let (mut e, lock) = w.engine(64 << 20);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     drop((e, lock));
-    let v = view(&w);
-    (w, v)
+    w
 }
 
 #[test]
@@ -223,8 +227,15 @@ fn two_resumes_of_one_parent_store_each_record_once() {
         parents: vec![5],
         children: vec![(7, 4, 3), (2, 3, 3)],
     });
-    let (w, _) = run_all_at_once(&c);
-    assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 11);
+    let w = run_all_at_once(&c);
+    w.read(|reader| {
+        assert_references_hold(reader);
+        assert_eq!(
+            reader.query("SELECT count(*) AS n FROM message", &[])?[0]["n"],
+            11
+        );
+        Ok(())
+    });
 }
 
 proptest! {
@@ -266,7 +277,8 @@ proptest! {
     #[test]
     fn append_equivalence(s in shape(), pick in 0usize..8, cut in 0usize..8) {
         let c = corpus(&s);
-        let (whole_archive, whole) = run_all_at_once(&c);
+        let whole_archive = run_all_at_once(&c);
+        let whole = view(&whole_archive);
         let whole_search = search_index(&whole_archive);
         prop_assert!(whole_search.iter().any(|v| v["idx"] == "text_fts"));
         let f = pick % c.files.len();
@@ -296,7 +308,7 @@ proptest! {
     #[test]
     fn order_independence(s in shape(), order in prop::collection::vec(any::<u32>(), 8)) {
         let c = corpus(&s);
-        let (_, whole) = run_all_at_once(&c);
+        let whole = view(&run_all_at_once(&c));
         let mut idx: Vec<usize> = (0..c.files.len()).collect();
         idx.sort_by_key(|i| (order[i % order.len()], *i));
         let w = ClaudeHome::new();
@@ -314,7 +326,8 @@ proptest! {
     #[test]
     fn rebuild_equivalence(s in shape(), files_gone in any::<bool>()) {
         let c = corpus(&s);
-        let (w, before) = run_all_at_once(&c);
+        let w = run_all_at_once(&c);
+        let before = view(&w);
         let archive_rows = archive_row_counts(&w);
         if files_gone {
             for (name, _) in &c.files {
@@ -343,15 +356,16 @@ proptest! {
     #[test]
     fn parents_without_duplication(s in shape()) {
         let c = corpus(&s);
-        let (w, _) = run_all_at_once(&c);
+        let w = run_all_at_once(&c);
+        let pool = w.reads();
+        let r = pool.reader().unwrap();
+        assert_references_hold(&r);
         prop_assert_eq!(
-            w.count("SELECT COUNT(*) AS n FROM message"),
+            r.query("SELECT count(*) AS n FROM message", &[]).unwrap()[0]["n"].as_i64().unwrap(),
             c.uuids.len() as i64
         );
-        let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-        let r = pool.reader().unwrap();
         for child in &c.resumes {
-            let cid = polylogue_model::SessionId::parse(&format!("claude-code:{child}")).unwrap();
+            let cid = SessionId::parse(&format!("claude-code:{child}")).unwrap();
             let own = r.messages(&cid, false).unwrap();
             prop_assert!(own.iter().all(|m| m.session == cid), "a copy is owned by its origin");
             let (_, lines) = c.files.iter().find(|(n, _)| n == &format!("{child}.jsonl")).unwrap();

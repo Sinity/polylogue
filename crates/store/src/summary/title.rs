@@ -56,7 +56,7 @@ impl Fold for Title {
 
 pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, title: Option<&str>) -> Result<()> {
     tx.prepare_cached(
-        "UPDATE session SET derived_title = ?2 WHERE pk = ?1 AND derived_title IS NOT ?2",
+        "UPDATE session SET prompt_title = ?2 WHERE pk = ?1 AND prompt_title IS NOT ?2",
     )?
     .execute(params![session_pk, title])?;
     Ok(())

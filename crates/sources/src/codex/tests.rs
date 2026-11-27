@@ -598,6 +598,82 @@ fn spawned_agents_are_linked_from_the_call() {
 }
 
 #[test]
+fn only_starting_a_subagent_states_a_spawn() {
+    let child = "019a0000-0000-7000-8000-0000000000cc";
+    let activity = |ordinal: u64, id: &str, kind: Option<&str>, other: &str| {
+        let mut item = json!({"type": "SubAgentActivity", "id": id, "agent_thread_id": other});
+        if let Some(kind) = kind {
+            item["kind"] = json!(kind);
+        }
+        env(
+            ordinal,
+            "event_msg",
+            json!({"type": "item_completed", "thread_id": THREAD, "turn_id": "t1",
+            "item": item, "completed_at_ms": 1}),
+        )
+    };
+    let records = [
+        meta(json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT}}}})),
+        activity(2, "act_parent", Some("interacted"), PARENT),
+        activity(3, "act_child", Some("interacted"), child),
+        activity(4, "act_start", Some("started"), child),
+        activity(5, "act_duplicate", Some("started"), child),
+        activity(6, "act_complete", Some("completed"), child),
+        activity(7, "act_unspecified", None, PARENT),
+    ];
+    let assert_activity = |steps: &[Step]| {
+        let links = steps
+            .iter()
+            .flat_map(|step| &step.output.links)
+            .collect::<Vec<_>>();
+        let [parent, spawn] = links.as_slice() else {
+            panic!("unexpected links: {links:?}");
+        };
+        assert_eq!(parent.kind, LinkKind::Spawn);
+        assert_eq!(parent.parent.native().as_str(), PARENT);
+        assert_eq!(parent.child.native().as_str(), THREAD);
+        assert_eq!(spawn.kind, LinkKind::Spawn);
+        assert_eq!(spawn.parent.native().as_str(), THREAD);
+        assert_eq!(spawn.child.native().as_str(), child);
+        assert_eq!(spawn.call_id.as_deref(), Some("act_start"));
+        let events = steps
+            .iter()
+            .flat_map(|step| &step.output.events)
+            .filter(|event| event.kind == "subagent_activity")
+            .map(|event| {
+                event
+                    .data
+                    .pointer("/item/id")
+                    .and_then(Json::as_str)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            [
+                "act_parent",
+                "act_child",
+                "act_start",
+                "act_duplicate",
+                "act_complete",
+                "act_unspecified"
+            ]
+        );
+    };
+    let mut parser_state = ParserState::default();
+    let whole = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
+    assert_activity(&[whole]);
+    let bytes = jsonl(&records);
+    let split = jsonl(&records[..4]).len();
+    let mut parser_state = ParserState::default();
+    let first = run(&rollout(), &mut parser_state, &bytes[..split], 0).unwrap();
+    let parser_state_json = serde_json::to_string(&parser_state).unwrap();
+    let mut parser_state: ParserState = serde_json::from_str(&parser_state_json).unwrap();
+    let rest = run(&rollout(), &mut parser_state, &bytes[split..], split as u64).unwrap();
+    assert_activity(&[first, rest]);
+}
+
+#[test]
 fn rollouts_from_2025_have_a_header_and_bare_items() {
     let records = vec![
         json!({"id": THREAD, "timestamp": "2025-08-11T16:59:28.000Z", "instructions": null,

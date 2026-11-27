@@ -1,4 +1,5 @@
-//! Coalesced cues from committed index changes and the offline completion catalog.
+//! Coalesced cues from committed index changes, and what completion reads
+//! from the archive.
 use polylogue_model::LockExt;
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -173,17 +174,8 @@ impl CommitSubscription {
     }
 }
 
-mod catalog;
-pub use catalog::{
-    CatalogReader, CatalogWriter, Dependencies, Kept, Metadata, Parameter, PublisherVocabulary,
-    Saved, Session, Setting, ValueCount,
-};
-
-mod catalog_rows;
-pub use catalog_rows::{DefinitionChange, KeptEntry, SavedEntry, SessionChange, VocabularyChanges};
-
-mod pointer;
-pub use pointer::CatalogPointer;
+mod values;
+pub use values::{KeptName, Session, ValueCount};
 
 #[cfg(test)]
 mod tests;

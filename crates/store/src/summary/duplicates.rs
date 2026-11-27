@@ -63,7 +63,7 @@ struct Reply {
 fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String>)>> {
     let marked: HashMap<i64, String> = conn
         .prepare_cached(
-            "SELECT pk, duplicate_of FROM message WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
+            "SELECT pk, duplicate_of FROM message INDEXED BY message_marked WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
         )?
         .query_map([session_pk], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
@@ -102,16 +102,16 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     // would otherwise scan every input of the format.
     let has_capture: bool = conn
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM session s CROSS JOIN session_record p ON p.session_id = s.id
+            "SELECT EXISTS (SELECT 1 FROM session s CROSS JOIN session_parse p ON p.session_id = s.id
                             CROSS JOIN input_ref r ON r.pk = p.input_pk
-                            WHERE s.pk = ?1 AND r.format = ?2)",
+                            WHERE s.pk = ?1 AND r.origin = ?2)",
         )?
         .query_row(params![session_pk, CAPTURE], |r| r.get(0))?;
     if !has_capture {
         return Ok(wanted);
     }
     let mut statement = conn.prepare_cached(
-        "SELECT m.pk, m.id, m.role, count(*), sum(r.format = ?2)
+        "SELECT m.pk, m.id, m.role, count(*), sum(r.origin = ?2)
          FROM message m JOIN message_parse s ON s.message_id = m.id
          JOIN input_ref r ON r.pk = s.input_pk
          WHERE m.session_pk = ?1

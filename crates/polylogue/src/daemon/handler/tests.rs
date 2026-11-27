@@ -521,7 +521,7 @@ fn named_context_budget_and_identity_survive_the_socket() {
         words.extend(["brief", "--cwd", "/synthetic"]);
         let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let parsed =
-            crate::cli::line::parse(&words, &crate::cli::line::FirstWordCatalog::default(), true)
+            crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), true)
                 .unwrap();
         let actual = crate::cli::run_line::request(&parsed).unwrap();
         // Hook source is accepted over the typed protocol, not exposed as a CLI option.

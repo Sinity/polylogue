@@ -70,7 +70,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
-                "SELECT source_start,source_end FROM message_parse WHERE source_start>0 \
+                "SELECT source_start,source_start+source_length AS source_end FROM message_parse WHERE source_start>0 \
                  ORDER BY source_start",
                 &[],
             )
@@ -504,7 +504,7 @@ fn ai_studio_rows(w: &ClaudeHome) -> serde_json::Value {
         "sessions": rows("SELECT id FROM session WHERE origin='ai-studio' ORDER BY id"),
         "messages": rows(
             "SELECT s.id AS session, m.id AS message,
-                    (SELECT COUNT(*) FROM shown_message_parse v WHERE v.message_pk=m.pk) AS readings
+                    (SELECT COUNT(*) FROM assembled_message_parse v WHERE v.message_pk=m.pk) AS readings
              FROM message m JOIN session s ON s.pk=m.session_pk ORDER BY s.id, m.id"
         ),
         "events": rows(

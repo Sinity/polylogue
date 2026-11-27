@@ -77,6 +77,8 @@ impl PageBuilder {
     }
     /// Input starts with the starting item itself, even when character zero
     /// excludes it, then proceeds through earlier items in metadata order.
+    /// Rows are numbered from the page's end: the starting row is 0 and each
+    /// earlier row one more.
     pub fn new_before(
         header: ReadHeader,
         budget: PageBudget,
@@ -196,10 +198,9 @@ impl PageBuilder {
         ordinal: u64,
         item: ReadItem,
     ) -> Result<Push, PageError> {
-        if self
-            .previous_input
-            .is_some_and(|last| (selection, ordinal) >= last)
-        {
+        if self.previous_input.is_some_and(|last| {
+            backward_order(selection, ordinal) >= backward_order(last.0, last.1)
+        }) {
             return Err(PageError::InvalidPosition);
         }
         if self.start.is_some_and(|page_start| {
@@ -451,6 +452,15 @@ impl PageBuilder {
         Ok(document)
     }
 }
+/// Where an input of a backward page comes in its input order: rows count
+/// up going back, records and items within a row count down.
+fn backward_order(
+    selection: SelectionLocator,
+    ordinal: u64,
+) -> (std::cmp::Reverse<u64>, ReadRecordLocator, u64) {
+    (std::cmp::Reverse(selection.row), selection.record, ordinal)
+}
+
 /// Bytes kept free for the footer when the header is measured.
 const FOOTER_RESERVE: usize = 512;
 

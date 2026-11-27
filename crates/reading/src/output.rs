@@ -147,7 +147,7 @@ impl<'a> Stream<'a> {
     pub(super) fn begin(
         output: &'a mut dyn Write,
         check: &'a dyn Fn() -> Result<(), Error>,
-        begin: &ReadBegin,
+        header: &ReadHeader,
     ) -> Result<Self, Error> {
         let mut stream = Self {
             output,
@@ -155,7 +155,7 @@ impl<'a> Stream<'a> {
             counts: Counts::default(),
             shown: 0,
         };
-        stream.emit("begin", begin)?;
+        stream.emit("begin", header)?;
         Ok(stream)
     }
 
@@ -208,14 +208,11 @@ impl<'a> Stream<'a> {
         self.emit("blob", chunk)
     }
 
-    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<ReadComplete, Error> {
+    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<ReadFooter, Error> {
         footer.shown = self.shown;
         footer.count = ValueState::known(self.shown);
-        let complete = ReadComplete {
-            footer,
-            counts: self.counts,
-        };
-        self.emit("complete", &complete)?;
-        Ok(complete)
+        footer.counts = self.counts;
+        self.emit("complete", &footer)?;
+        Ok(footer)
     }
 }

@@ -1,12 +1,12 @@
 //! The acts on live sessions: `send`, `answer` and `interrupt`. A web-chat
 //! session's turns go through [`acts::web_chat`]. Each recipient's act is
 //! its own request, `<step>-<n>` when the step has several.
-use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use, sessions};
+use super::{RowRule, Selection, StepCall, StepDone, Verb, sessions};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::daemon::service::acts;
-use crate::protocol::acts::{Acted, Reached, SendReport, Skipped};
+use crate::protocol::acts::{Acted, Reached, SendReport, SkipReason, Skipped};
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{AnswerStep, InterruptStep, SendStep};
 use command_surface::{Answer as Answered, Envelope, Outcome};
@@ -27,7 +27,7 @@ impl Verb for Send {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let targets = recipients(&step, selection)?;
+        let targets = recipients(selection)?;
         send(&step, &targets, &call.call).map(|answer| answer.map(StepAnswer::Sent).into())
     }
     fn would(
@@ -35,7 +35,7 @@ impl Verb for Send {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        let targets = recipients(step, selection)?;
+        let targets = recipients(selection)?;
         let several = targets.len() > 1;
         targets
             .iter()
@@ -136,21 +136,28 @@ fn send(
             acts::web_chat::send(one, &session, &step.text, &step.attach)?.map(Reached::WebChat)
         } else {
             if !step.attach.is_empty() {
-                return Err(not_built("send", "attach to a harness session"));
+                return Err(
+                    crate::unbuilt::refusal("send", "--attach to a harness session").into(),
+                );
             }
             if several {
                 // The same notion of running as `would`: a session just
                 // started and still hosted has no live events yet.
                 let session = session_id(target)?;
-                let running = acts::session_state(
+                let state = acts::session_state(
                     call.daemon,
                     &session,
                     call.daemon.config.requests.now().unix_ms(),
-                )?
-                .is_some_and(|(state, _, _)| state.running());
-                if !running {
+                )?;
+                let reason = match state {
+                    Some((state, _, _)) if state.running() => None,
+                    Some((state, _, _)) => Some(SkipReason::SessionNotRunning { state }),
+                    None => Some(SkipReason::SessionMissing),
+                };
+                if let Some(reason) = reason {
                     report.skipped.push(Skipped {
                         session: target.clone(),
+                        reason,
                         line: format!(
                             "polylogue {} send {}",
                             target,
@@ -175,6 +182,28 @@ fn send(
             .reached
             .push(super::gather(reached, &mut outcome, &mut envelope)?);
     }
+    use crate::protocol::acts::ActOutcome;
+    let not_sent = report
+        .reached
+        .iter()
+        .filter_map(|reached| match reached {
+            Reached::Session(sent) => Some(&sent.deliveries),
+            Reached::WebChat(_) => None,
+        })
+        .flatten()
+        .filter(|delivery| delivery.outcome == ActOutcome::NotSent);
+    let mut missing: Vec<_> = not_sent
+        .map(|delivery| format!("message to {}", delivery.session))
+        .collect();
+    missing.extend(
+        report
+            .skipped
+            .iter()
+            .map(|skipped| format!("message to {}", skipped.session)),
+    );
+    if !missing.is_empty() {
+        super::merge_outcome(&mut outcome, Outcome::Degraded { value: (), missing });
+    }
     Ok(Answered {
         outcome: outcome.map(|()| report),
         envelope,
@@ -182,15 +211,7 @@ fn send(
 }
 
 /// Sessions or one role, preserving its send-time resolution.
-fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
-    for (given, option) in [
-        (step.page.is_some(), "page"),
-        (step.section.is_some(), "section"),
-    ] {
-        if given {
-            return Err(not_built("send", option));
-        }
-    }
+fn recipients(selection: &Selection) -> Result<Vec<String>, Failure> {
     let references = selection.references()?;
     references
         .iter()
@@ -290,7 +311,7 @@ fn approves(step: &AnswerStep) -> Result<bool, Failure> {
     match step.value.as_str() {
         "allow" => Ok(true),
         "deny" => Ok(false),
-        _ => Err(not_built_use("answer", "with text")),
+        _ => Err(crate::unbuilt::refusal("answer", "with text").into()),
     }
 }
 

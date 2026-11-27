@@ -1,6 +1,6 @@
 //! `save [NAME]`: name the question and keep this line's rows; `--watch`
 //! also watches the question.
-use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built};
+use super::{RowRule, Selection, StepCall, StepDone, Verb};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::service::handlers;
@@ -22,7 +22,7 @@ impl Verb for Save {
         let rows = selection
             .query_text()
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
-        let mut question = selection.question.clone().unwrap_or_else(|| rows.clone());
+        let mut question = selection.query.clone().unwrap_or_else(|| rows.clone());
         if let (Some(name), Some(retained), super::Given::Query(selected)) =
             (&step.name, selection.retained.as_deref(), &selection.given)
             && (selected == name || selected.strip_prefix("query:") == Some(name.as_str()))
@@ -51,15 +51,22 @@ impl Verb for Save {
             question = value.text;
         }
         let mut undo = Vec::new();
+        let mut position = None;
         let mut done = StepDone::from(
-            handlers::save_selection(step, question, selection, &call.call)?.map(
-                |(report, committed)| {
-                    undo = committed;
-                    StepAnswer::Saved(report)
-                },
-            ),
+            handlers::save_selection(step, question, selection, &call.call)?.map(|committed| {
+                position = Some(committed.position);
+                let result = committed.outcome;
+                undo = result.written;
+                let mut report = result
+                    .save
+                    .expect("Save transaction returns its resolved outcomes");
+                report.pending = result.outcome.pending;
+                report.repeat |= result.outcome.repeat;
+                StepAnswer::Saved(report)
+            }),
         )
         .checked()?;
+        done.position = position;
         done.undo
             .extend(super::undo_line(call.call.request_id, &undo)?);
         Ok(done)
@@ -120,7 +127,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         .as_deref()
         .is_some_and(|name| name.starts_with("page:"))
     {
-        return Err(super::not_built_use("save", "page:NAME"));
+        return Err(crate::unbuilt::refusal("save", "page:NAME").into());
     }
     if let Some(name) = &step.name
         && !polylogue_model::annotation::policy::valid_saved_name(name)
@@ -128,19 +135,6 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         return Err(Failure::bad_value(format!(
             "{name:?} is not a saved query name: use lowercase letters, digits and hyphens, starting with a letter"
         )));
-    }
-    for (given, option) in [
-        (step.section.is_some(), "section"),
-        (step.after.is_some(), "after"),
-        (step.fixed, "fixed"),
-        (step.live, "live"),
-        (step.kept, "kept"),
-        (step.template.is_some(), "template"),
-        (step.kind.is_some(), "as"),
-    ] {
-        if given {
-            return Err(not_built("save", option));
-        }
     }
     if !step.watch {
         for (given, option) in [(step.hold.is_some(), "hold"), (step.notify, "notify")] {
@@ -161,7 +155,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
     }
     if step.watch && step.name.is_none() {
         let query = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .unwrap_or_else(|| "QUERY".into());
