@@ -731,7 +731,9 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
         format!("{record}\n"),
     )
     .unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["messages"] == 2);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 2 && status["store"]["messages"] == 2
+    });
     assert_eq!(
         all(
             &d.daemon,

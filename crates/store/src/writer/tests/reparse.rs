@@ -979,7 +979,10 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         status.search_pending,
         count("SELECT count(*) AS n FROM search_pending")
     );
-    assert_eq!(status.sessions, count("SELECT count(*) AS n FROM session"));
+    assert_eq!(
+        status.sessions_physical,
+        count("SELECT count(*) AS n FROM session WHERE stub = 0")
+    );
     assert_eq!(status.messages, count("SELECT count(*) AS n FROM message"));
     assert_eq!(
         status.documents,

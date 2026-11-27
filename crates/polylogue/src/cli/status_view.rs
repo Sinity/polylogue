@@ -224,9 +224,20 @@ fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
 fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(store) = &status.store {
+        // Logical sessions lead; the physical sessions (subagents, forks,
+        // continuations and resumes on their own, as `physical:true` lists
+        // them) are named beside them when they add some.
+        let sessions = if store.sessions_physical > store.sessions {
+            format!(
+                "{} sessions ({} physical)",
+                count(store.sessions),
+                count(store.sessions_physical)
+            )
+        } else {
+            format!("{} sessions", count(store.sessions))
+        };
         lines.push(format!(
-            "{} sessions   {} messages   {} tool calls   {} documents",
-            count(store.sessions),
+            "{sessions}   {} messages   {} tool calls   {} documents",
             count(store.messages),
             count(store.tool_calls),
             count(store.documents)

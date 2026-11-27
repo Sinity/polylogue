@@ -151,14 +151,20 @@ fn readme_examples_run_against_morrow() {
     // The daemon line: the daemon serves the archive the demo built.
     let _daemon = super::cli::start_daemon(&env);
     let status = super::cli::wait_status(&env, |_| true);
-    assert_eq!(status["store"]["sessions"], 8);
+    // Logical sessions as `sessions` lists them, and every session: #3
+    // folds into #2 and #6 into #5, while the copy #4 has no recorded
+    // provider relationship and stays its own root (docs/measures.md,
+    // logical session).
+    assert_eq!(status["store"]["sessions"], 6);
+    assert_eq!(status["store"]["sessions_physical"], 8);
 
-    // The orientation screen counts what FACTS.md lists: eight sessions and
-    // the messages they count, 12 + 18 + 6 + 11 + 13 + 10 + 6 + 4 = 80 (#7's
-    // abandoned branch of 2 is stored but off the active path).
+    // The orientation screen counts the eight sessions FACTS.md lists, six
+    // of them logical sessions, and the messages they count, 12 + 18 + 6 +
+    // 11 + 13 + 10 + 6 + 4 = 80 (#7's abandoned branch of 2 is stored but off
+    // the active path).
     let orientation = terminal.run(&env, &examples[2]);
     assert!(
-        orientation.contains("ARCHIVE    8 sessions   80 messages"),
+        orientation.contains("ARCHIVE    6 sessions (8 physical)   80 messages"),
         "{orientation}"
     );
 
