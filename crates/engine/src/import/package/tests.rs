@@ -94,14 +94,13 @@ fn a_container_inside_its_own_bytes_is_refused() {
     let source = scratch.path().join("export.zip");
     zip(&source, &[("conversations.json", CHAT.as_bytes())]);
     let archive = Archive::at(&scratch.path().join("encoded"));
-    let bytes = copy_source(&source, &archive).unwrap();
+    let pending = prepare_source(source, &archive).unwrap();
     // As if this container had been reached through a chain of containers
     // that starts with these same bytes.
     let mut seen = Expansion {
-        ancestors: vec![bytes.hash()],
+        ancestors: vec![pending.member.bytes.hash()],
         ..Expansion::default()
     };
-    let pending = PendingMember::new(source, bytes).unwrap();
     let error = expand(pending, &archive, None, &mut seen, &mut Vec::new()).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
@@ -130,6 +129,79 @@ fn fits_in_staging_refuses_only_sizes_beyond_free_space() {
         fits_in_staging(&archive, u64::MAX).unwrap_err().kind(),
         std::io::ErrorKind::StorageFull
     );
+}
+
+#[test]
+fn fragmented_container_signatures_keep_the_exact_staged_bytes() {
+    struct OneByte<'a>(&'a [u8]);
+    impl Read for OneByte<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let limit = buffer.len().min(1);
+            self.0.read(&mut buffer[..limit])
+        }
+    }
+
+    let scratch = tempfile::tempdir().unwrap();
+    let archive = Archive::at(&scratch.path().join("encoded"));
+    for (name, bytes, kind) in [
+        ("empty", b"".as_slice(), None),
+        ("one", b"P", None),
+        ("two", b"PK", None),
+        ("three", b"PK\x03", None),
+        ("zip", b"PK\x03\x04tail", Some("zip")),
+        ("gzip.tar.gz", b"\x1f\x8btail", Some("tar+gzip")),
+        ("zstd.tar.zst", b"\x28\xb5\x2f\xfdtail", Some("tar+zstd")),
+        ("plain.tar", b"plain", Some("tar")),
+    ] {
+        let pending = PendingMember::prepare(name.into(), &archive, OneByte(bytes)).unwrap();
+        assert_eq!(pending.format.unwrap().map(Container::kind), kind);
+        assert_eq!(
+            pending.member.bytes.hash(),
+            polylogue_model::BlobHash::of(bytes)
+        );
+        let mut decoded = Vec::new();
+        pending
+            .member
+            .bytes
+            .reader()
+            .unwrap()
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+    }
+
+    let mut source = OneByte(b"PK\x03\x04");
+    let pending =
+        PendingMember::prepare("truncated.zip".into(), &archive, source.by_ref().take(3)).unwrap();
+    assert_eq!(source.0, b"\x04");
+    assert_eq!(pending.member.bytes.len(), 3);
+    assert_eq!(
+        pending.format.err().unwrap().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn a_zip_member_larger_than_its_declared_size_is_refused() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("export.zip");
+    zip(&source, &[("conversations.json", CHAT.as_bytes())]);
+
+    let mut bytes = std::fs::read(&source).unwrap();
+    let central = bytes
+        .windows(4)
+        .position(|prefix| prefix == b"PK\x01\x02")
+        .unwrap();
+    bytes[22..26].copy_from_slice(&2u32.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&2u32.to_le_bytes());
+    std::fs::write(&source, bytes).unwrap();
+
+    let archive = Archive::at(&scratch.path().join("encoded"));
+    let Err(error) = stage(&source, &archive, None) else {
+        panic!("member larger than its declaration was accepted");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("different from its declared 2"));
 }
 
 #[test]
