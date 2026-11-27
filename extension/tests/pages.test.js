@@ -13,6 +13,7 @@ import { event, fakeChrome, json, portPair, until } from "./support/fake_chrome.
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 const source = (path) => readFileSync(join(SRC, path), "utf8");
+const chatgptSession = ["https://chatgpt.com/api/auth/session", [200, { accessToken: "token", account: { id: "acct" } }]];
 
 /** A chat page with the extension's page scripts, its fetches answered by `routes`. */
 function page(url, scripts, { html = "<body></body>", routes = {}, resources = [], storage = {} } = {}) {
@@ -52,11 +53,9 @@ function page(url, scripts, { html = "<body></body>", routes = {}, resources = [
 }
 
 describe("the ChatGPT page script", () => {
-  const session = ["https://chatgpt.com/api/auth/session", [200, { accessToken: "token", account: { id: "acct" } }]];
-
   it("reads the conversation with the page's sign-in", async () => {
     const { window, fetched } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js"], {
-      routes: Object.fromEntries([session, ["https://chatgpt.com/backend-api/conversation/c1", [200, { conversation_id: "c1" }]]]),
+      routes: Object.fromEntries([chatgptSession, ["https://chatgpt.com/backend-api/conversation/c1", [200, { conversation_id: "c1" }]]]),
     });
     const answer = await window.polylogueProvider.fetchConversation(null);
     expect(answer.status).toBe(200);
@@ -74,7 +73,7 @@ describe("the ChatGPT page script", () => {
 
   it("pages through the four partitions of the conversation list", async () => {
     const { window } = page("https://chatgpt.com/", ["content/chatgpt.js"], {
-      routes: Object.fromEntries([session,
+      routes: Object.fromEntries([chatgptSession,
         ["https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false",
           [200, { items: [{ id: "a", update_time: 1767225600 }], total: 1 }]],
         ["https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=true&is_starred=true",
@@ -91,7 +90,7 @@ describe("the ChatGPT page script", () => {
   it("keeps listing a partition whose reply has no total until a short page", async () => {
     const full = Array.from({ length: 28 }, (_, i) => ({ id: `c${i}` }));
     const { window } = page("https://chatgpt.com/", ["content/chatgpt.js"], {
-      routes: Object.fromEntries([session,
+      routes: Object.fromEntries([chatgptSession,
         ["https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false", [200, { items: full }]],
         ["https://chatgpt.com/backend-api/conversations?offset=28&limit=28&order=updated&is_archived=false&is_starred=false", [200, { items: [{ id: "last" }] }]],
       ]),
@@ -286,7 +285,7 @@ describe("the shared page script", () => {
       first: { message: { id: "m1", author: { role: "user" }, content: { parts: [text] } } },
       second: { message: { id: "m2", author: { role: "assistant" }, content: { parts: [tail] } } },
     } });
-    const routes = Object.fromEntries([session, [nativeUrl, [200, snapshot("first")]]]);
+    const routes = Object.fromEntries([chatgptSession, [nativeUrl, [200, snapshot("first")]]]);
     const { window, sent, fetched } = page(url, ["content/chatgpt.js"], {
       routes,
       html: `<main><p data-message-id="m1">first</p><p data-message-id="m2">${tail}</p><div role="menu" id="menu"></div></main>`,
