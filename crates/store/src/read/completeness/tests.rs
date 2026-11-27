@@ -173,7 +173,7 @@ fn status_names_failed_and_refused_parses_and_not_lag() {
     );
     edit(
         &fixture.archive.index_db(),
-        "INSERT INTO input_ref(id,format) VALUES('broken','synthetic'),('foreign','synthetic');
+        "INSERT INTO input_ref(id,origin) VALUES('broken','synthetic'),('foreign','synthetic');
         INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting,failure_kind,failure_detail)
         SELECT pk,1,'v1','failed',0,10,'malformed','not a record' FROM input_ref WHERE id='broken';
         INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting,failure_kind,failure_detail)

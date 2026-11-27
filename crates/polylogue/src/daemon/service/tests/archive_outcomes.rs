@@ -91,7 +91,14 @@ fn a_failed_parse_leaves_reads_ok_and_status_names_it_with_its_origin() {
     let status = test_daemon::call(&d.daemon, "status", json!({}));
     assert_eq!(status.exit_code(), 5, "{status:?}");
     let (value, notes) = test_answers::degraded(status);
-    assert_eq!(notes, ["1 claude-code input failed to parse"]);
+    let [count, detail] = notes.as_slice() else {
+        panic!("the census and source failure must both be reported: {notes:?}");
+    };
+    assert_eq!(count, "1 claude-code input failed to parse");
+    assert!(
+        detail.contains("generated-broken.jsonl: panicked: injected panic at parse"),
+        "{detail}"
+    );
     assert_eq!(
         value["freshness"]["local"]["failed_parses"],
         json!([{"reason": "parse_failed", "origin": "claude-code", "count": 1, "waiting_ends": false}])
@@ -120,6 +127,7 @@ fn a_reply_while_the_index_catches_up_is_degraded_with_the_count_and_origin() {
     assert!(older > 0);
     fault::wait_held();
     let rows = listing(&d, ROWS);
+    fault::release();
     assert_eq!(rows.exit_code(), 5, "{rows:?}");
     let (value, notes) = test_answers::degraded(rows);
     assert_eq!(
@@ -129,12 +137,11 @@ fn a_reply_while_the_index_catches_up_is_degraded_with_the_count_and_origin() {
         )]
     );
     assert_eq!(
-        value["reply"]["read_at"]["freshness"]["local"]["parsing"],
+        value["reply"]["read_position"]["freshness"]["local"]["parsing"],
         json!({"state": "incomplete", "reasons": [
             {"reason": "parse_version_changed", "origin": "claude-code", "count": older, "waiting_ends": true}
         ]})
     );
-    fault::release();
     d.wait_for(|status| status["caught_up"] == true);
     test_answers::ok(listing(&d, ROWS));
     fault::clear();
