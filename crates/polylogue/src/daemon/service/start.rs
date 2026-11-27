@@ -400,7 +400,7 @@ pub fn start(
             .status_snapshot
             .refresh(&runtime.daemon, &reader, commits_read);
     }
-    steps.next("starting the scope and completion workers");
+    steps.next("starting the scope worker");
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),
         runtime

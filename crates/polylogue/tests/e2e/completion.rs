@@ -73,8 +73,8 @@ fn environment(base: &Path, root: &Path) -> process::Fixture {
     )
 }
 
-/// Keeps the rows of a query with match rows through the daemon, as
-/// `QUERY save` does, and returns the kept result's ID.
+/// Keeps the rows of a query through the daemon, as `QUERY save` does,
+/// and returns the kept result's ID.
 fn keep(environment: &process::Fixture) -> String {
     let output = environment
         .command()
@@ -143,7 +143,7 @@ fn completion_matrix_thirteen_positions_three_shells_daemon_down_and_up() {
             daemon = Some(crate::cli::start_daemon(&environment));
             kept = keep(&environment);
         }
-        let kept_matches = format!("result:{kept}.matches | where to");
+        let kept_rows = format!("result:{kept} | where ti");
         let cases: [(&str, Vec<&str>, &str, bool); 13] = [
             ("commands", vec!["sta"], "status", false),
             ("session fields", vec!["sessions where ti"], "title", false),
@@ -180,7 +180,7 @@ fn completion_matrix_thirteen_positions_three_shells_daemon_down_and_up() {
                 "count",
                 true,
             ),
-            ("kept matches", vec![&kept_matches], "tool", true),
+            ("kept rows", vec![&kept_rows], "title", true),
             ("session reference", vec!["abc"], "codex:a", true),
             // Setting keys are the CLI's own table, offered without the daemon.
             (
@@ -192,7 +192,7 @@ fn completion_matrix_thirteen_positions_three_shells_daemon_down_and_up() {
         ];
         for shell in ["bash", "zsh", "fish"] {
             for (name, words, expected, needs_daemon) in &cases {
-                if !up && *name == "kept matches" {
+                if !up && *name == "kept rows" {
                     continue;
                 }
                 let (output, took) = callback(&environment, shell, words, "polylogue");

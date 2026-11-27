@@ -478,6 +478,22 @@ pub(crate) fn settings(
 }
 
 fn fill_values(catalog: &mut Catalog, wanted: &str, found: &[values::ValueCount]) {
+    // A source namespace (`query:`, `result:`) completes from the default
+    // unit's field of that name, which the query catalog does not declare.
+    if matches!(wanted, "query" | "result") {
+        let default_unit = catalog.default_unit.clone();
+        if let Some(unit) = catalog
+            .units
+            .iter_mut()
+            .find(|unit| unit.name == default_unit)
+            && !unit.fields.iter().any(|field| field.name == wanted)
+        {
+            unit.fields.push(query_language::catalog::Field {
+                name: wanted.into(),
+                ..Default::default()
+            });
+        }
+    }
     for field in catalog
         .units
         .iter_mut()
