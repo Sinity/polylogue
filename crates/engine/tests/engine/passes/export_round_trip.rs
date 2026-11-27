@@ -25,14 +25,14 @@ const USER_STATE: &[(&str, &str)] = &[
         "annotation",
         "id,root,kind,key,value,author,via,machine,created_at,valid_until",
     ),
-    ("annotation_link", "record,role,ref,seen_hash,quote"),
+    ("annotation_link", "annotation,role,ref,seen_hash,quote"),
     ("revision_state", "*"),
-    ("kept_result", "*"),
+    ("saved_rows", "*"),
     (
         "delivery",
         "id, recipient_kind, recipient_id, sender, event, cwd, at, content_hash, bytes, body, refs_json, left_out_json",
     ),
-    ("delivery_event", "delivery, what, at, detail"),
+    ("delivery_event", "delivery, outcome, at, detail"),
     (
         "chat_action",
         "id, request_key, request_hash, request_json, stage_only, needs_approval, created_at",
@@ -40,12 +40,12 @@ const USER_STATE: &[(&str, &str)] = &[
     ("chat_action_attachment", "*"),
     (
         "chat_action_event",
-        "action, n, at, kind, phase, detail, by, receipt_json",
+        "action, position, at, kind, phase, detail, by, receipt_json",
     ),
     ("import_job", "id, provider, since, created_at"),
     (
         "import_job_event",
-        "job, n, at, kind, by, position, listed, captured, unchanged, failed, detail",
+        "job, position, at, kind, by, provider_position, listed, captured, unchanged, failed, detail",
     ),
 ];
 
@@ -207,7 +207,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             query: format!("query:{}", "0".repeat(64)),
             query_text: "synthetic session and authored state".into(),
             ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
-            read_at: reader.change_position().unwrap(),
+            read_position: reader.change_position().unwrap(),
             freshness: polylogue_model::freshness::ReadFreshness {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
@@ -318,7 +318,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         name: Some("kept".into()),
         query: "sessions".into(),
         rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-        read_at: "{}".into(),
+        read_position: "{}".into(),
         denominator: None,
         watch: None,
         outcomes: None,
@@ -332,10 +332,11 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         text: "a synthetic brief".into(),
         refs: vec!["session:claude-code:s1".into()],
         left_out: vec![],
+        prepared_position: None,
     }));
     write(UserWrite::DeliveryEvent {
         delivery,
-        what: DeliveryOutcome::Delivered,
+        outcome: DeliveryOutcome::Delivered,
         detail: None,
     });
     let chat_request = serde_json::json!({"provider": "chatgpt", "text": "synthetic"});

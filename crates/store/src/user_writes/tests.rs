@@ -21,7 +21,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             name: Some("example".into()),
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-            read_at: "{\"now\":1}".into(),
+            read_position: "{\"now\":1}".into(),
             denominator: None,
             watch: None,
             outcomes: None,
@@ -34,7 +34,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             watch: None,
             outcomes: None,
         })),
@@ -78,7 +78,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
         assert_eq!(recorded, request);
     }
     let stored = reader
-        .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
+        .query("SELECT rows_json FROM a.saved_rows WHERE id='kept'", &[])
         .unwrap();
     let body: serde_json::Value =
         serde_json::from_str(stored[0]["rows_json"].as_str().unwrap()).unwrap();
@@ -121,7 +121,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows_json.into(),
-                read_at: "{\"now\":1}".into(),
+                read_position: "{\"now\":1}".into(),
                 denominator: None,
                 watch: None,
                 outcomes: None,
@@ -139,7 +139,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
         assert!(reader.user_request(id).unwrap().is_none());
         assert_eq!(
             reader
-                .query("SELECT count(*) AS n FROM a.kept_result", &[])
+                .query("SELECT count(*) AS n FROM a.saved_rows", &[])
                 .unwrap()[0]["n"],
             0
         );
@@ -151,7 +151,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             watch: None,
             outcomes: None,
         })),
@@ -341,7 +341,7 @@ fn annotation_retry_ignores_object_key_order_and_preserves_array_and_value_ident
 fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     let w = crate::fixture::writer::WriterArchive::new();
     let conn = crate::archive::open_archive_writer(&w.archive).unwrap();
-    conn.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON kept_result BEGIN SELECT RAISE(ABORT,'synthetic kept insert failure'); END;").unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON saved_rows BEGIN SELECT RAISE(ABORT,'synthetic kept insert failure'); END;").unwrap();
     let request = crate::fixture::authored::operator_request(
         "atomic-save".into(),
         UserWrite::Save(Box::new(polylogue_model::user::Save {
@@ -350,7 +350,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
                 request: "forged-request".into(),
                 repeat: true,
                 pending: true,
-                kept: polylogue_model::user::KeptPart {
+                saved_rows: polylogue_model::user::KeptPart {
                     result: "result:caller-cannot-choose-this".into(),
                     rows: 0,
                     at: Timestamp::from_unix_ms(1).unwrap(),
@@ -361,7 +361,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: r#"{"now":1}"#.into(),
+            read_position: r#"{"now":1}"#.into(),
             watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
@@ -387,7 +387,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         error.to_string().contains("synthetic kept insert failure"),
         "{error:?}"
     );
-    for table in ["annotation", "kept_result", "client_request"] {
+    for table in ["annotation", "saved_rows", "client_request"] {
         let count: i64 = conn
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap();
@@ -400,7 +400,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     assert!(repeated.outcome.repeat);
     assert_eq!(first.save, repeated.save);
     assert_eq!(
-        first.save.as_ref().unwrap().kept.result,
+        first.save.as_ref().unwrap().saved_rows.result,
         "result:atomic-save"
     );
     assert_eq!(
@@ -417,7 +417,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         .unwrap();
     assert_eq!(ids, ["atomic-save.1", "atomic-save.2"]);
     let kept: String = conn
-        .query_row("SELECT id FROM kept_result", [], |r| r.get(0))
+        .query_row("SELECT id FROM saved_rows", [], |r| r.get(0))
         .unwrap();
     assert_eq!(kept, "atomic-save");
     let journal: i64 = conn

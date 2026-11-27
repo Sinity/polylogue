@@ -31,6 +31,7 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
             text: text.into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         }),
     )
     .unwrap();
@@ -501,6 +502,7 @@ fn resume_with_missing_directory_is_refused_by_name() {
                 text: "rebase".into(),
                 refs: vec![],
                 left_out: vec![],
+                prepared_position: None,
             }),
         )
         .unwrap();
@@ -516,12 +518,12 @@ fn resume_with_missing_directory_is_refused_by_name() {
         let reader = d.daemon.reads.reader().unwrap();
         let rows = reader
             .query(
-                "SELECT what, detail FROM delivery_event WHERE delivery=?1",
+                "SELECT outcome, detail FROM delivery_event WHERE delivery=?1",
                 &[polylogue_store::SqlValue::Text(delivery.into())],
             )
             .unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0]["what"], "not_sent");
+        assert_eq!(rows[0]["outcome"], "not_sent");
         rows[0]["detail"].as_str().unwrap().to_owned()
     };
     assert_eq!(

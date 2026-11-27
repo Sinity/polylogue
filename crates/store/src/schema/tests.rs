@@ -16,8 +16,8 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 8);
-    assert_eq!(INDEX_VERSION, 21);
+    assert_eq!(ARCHIVE_VERSION, 10);
+    assert_eq!(INDEX_VERSION, 23);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -39,15 +39,15 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 22).unwrap();
+    set_version(&conn, INDEX_VERSION + 1).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 22,
+            found,
             wanted: INDEX_VERSION
-        })
+        }) if found == INDEX_VERSION + 1
     ));
-    assert_eq!(version(&conn).unwrap(), 22);
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION + 1);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))
@@ -179,7 +179,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
             .unwrap(),
         "synthetic"
     );
-    conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
+    conn.execute_batch("DROP INDEX event_time; CREATE INDEX event_time ON event(kind)")
         .unwrap();
     assert!(!same_index_schema_in(&conn).unwrap());
 }
@@ -259,7 +259,7 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
 fn a_parse_state_row_cannot_hold_a_half_stated_failure() {
     let conn = Connection::open_in_memory().unwrap();
     ensure_index(&conn).unwrap();
-    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'parsed','synthetic'),(2,'failed','synthetic');
+    conn.execute_batch("INSERT INTO input_ref(pk,id,origin) VALUES(1,'parsed','synthetic'),(2,'failed','synthetic');
         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,resume) VALUES
           (1,1,'parsed','v1',40,60,x'00');
         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES
@@ -364,10 +364,10 @@ fn schema_check_lists_come_from_names() {
         .map(|group| group.as_str())
         .collect();
     let record: &[(&str, &str, &[&str])] = &[
-        ("delivery_event", "what", DeliveryOutcome::NAMES),
+        ("delivery_event", "outcome", DeliveryOutcome::NAMES),
         ("chat_action", "execution", RunsHere::NAMES),
         ("import_job", "execution", RunsHere::NAMES),
-        ("query_edge", "how", QueryEdgeKind::NAMES),
+        ("query_edge", "kind", QueryEdgeKind::NAMES),
         ("revision", "produced", crate::input_rows::Produced::NAMES),
         (
             "observation",
@@ -375,14 +375,48 @@ fn schema_check_lists_come_from_names() {
             crate::input_rows::ObservationClass::NAMES,
         ),
     ];
-    let index_sets: [(&str, &str, &[&str]); 11] = [
+    let precisions: Vec<&str> = polylogue_model::Precision::ALL
+        .iter()
+        .map(|precision| precision.as_str())
+        .collect();
+    let index_sets: [(&str, &str, &[&str]); 29] = [
+        ("session", "kind", polylogue_model::SessionKind::NAMES),
+        ("session", "started_precision", &precisions[..]),
+        ("session", "last_active_precision", &precisions[..]),
+        ("message", "role", polylogue_model::Role::NAMES),
+        ("message", "written_by", polylogue_model::WrittenBy::NAMES),
+        ("message", "prompt_kind", polylogue_model::PromptKind::NAMES),
+        ("message", "at_precision", &precisions[..]),
+        ("event", "at_precision", &precisions[..]),
+        ("document", "at_precision", &precisions[..]),
+        ("block", "kind", polylogue_model::BlockKind::NAMES),
+        ("tool_call", "action", polylogue_model::ToolAction::NAMES),
+        ("tool_call", "outcome", polylogue_model::CallOutcome::NAMES),
+        ("link_statement", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "link_statement",
+            "reason",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
+        ("session_link", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "session_link",
+            "reason",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
+        ("link_parse", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "link_parse",
+            "reason",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
         ("input_ref", "route", Route::NAMES),
         ("message_parse", "id_kind", IdKind::NAMES),
         ("message_parse", "route", Route::NAMES),
         ("document_parse", "route", Route::NAMES),
         ("event_parse", "route", Route::NAMES),
         ("link_parse", "route", Route::NAMES),
-        ("message_parse", "completion", Completion::NAMES),
+        ("message_parse", "state", Completion::NAMES),
         ("message_route", "field_group", &routed[..]),
         ("parse_state", "state", crate::parse_state::StateWord::NAMES),
         (

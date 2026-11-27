@@ -59,7 +59,7 @@ fn output(record: TextFragmentRecord) -> Output {
 }
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,format TEXT); INSERT INTO input_ref VALUES(1,'receiving-input','polylogue-bundle');").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,origin TEXT); INSERT INTO input_ref VALUES(1,'receiving-input','polylogue-bundle');").unwrap();
     conn.execute_batch(include_str!("../schema/text_fragments.sql"))
         .unwrap();
     conn
@@ -285,8 +285,8 @@ fn streamed_chain_scratch_keeps_stated_fragments() {
         BlobHash::of(b"complete source"),
     ));
     let expected = output.clone();
-    let mut step = crate::ParseStep::new(output, Default::default(), 0..9, true);
-    let mut reading = crate::writer::ChainParse::new().unwrap();
+    let mut step = crate::ParsePart::new(output, Default::default(), 0..9, true);
+    let mut reading = crate::writer::Replacement::new().unwrap();
     reading.push(&mut step).unwrap();
     let mut visits = 0;
     reading

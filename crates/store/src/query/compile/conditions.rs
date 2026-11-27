@@ -106,9 +106,8 @@ impl<'a> Compiler<'a> {
     ) -> Result<String, QueryError> {
         let time_bounds = if scope.unit != Unit::ToolCalls {
             fields::time_window(scope.unit, true, &scope.a).filter(|lower| {
-                fields::time_window(scope.unit, false, &scope.a).is_some_and(|upper| {
-                    lower.bytes == upper.bytes && lower.storage == upper.storage
-                })
+                fields::time_window(scope.unit, false, &scope.a)
+                    .is_some_and(|upper| lower.at == upper.at)
             })
         } else {
             None
@@ -189,7 +188,11 @@ impl<'a> Compiler<'a> {
             }
         }
         if let Some(stored) = time_bounds.filter(|_| combine_bounds) {
-            parts.push(self.time_test(&stored, time::TimePredicate::Overlap { since, until }));
+            parts.push(self.time_test(
+                &stored,
+                time::TimePredicate::Overlap { since, until },
+                cx.is_top(),
+            ));
         }
         if !words.is_empty() {
             parts.push(self.text(&words, scope, Index::Prose, cx)?);
@@ -289,7 +292,7 @@ impl<'a> Compiler<'a> {
             .flatten();
         let alternate = if let Some(languages) = alternate_languages {
             let alternates = format!("{cte}_alternates");
-            self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.n,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
+            self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.position,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
             let mut language = Vec::new();
             for lang in languages {
                 language.push(self.text_param(lang));
@@ -300,7 +303,7 @@ impl<'a> Compiler<'a> {
                 format!(" AND av.to_lang IN ({})", language.join(","))
             };
             let from = format!(
-                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.n=ah.n JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
+                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.position=ah.position JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
                 crate::alternates::current_sql("av"),
                 fields::message_alternate_match("av", "ap", &a.m)
             );
@@ -401,7 +404,7 @@ impl<'a> Compiler<'a> {
                 "{n}.kind = '{}'",
                 polylogue_model::SessionKind::Main.as_str()
             ),
-            format!("{n}.stub = 0"),
+            format!("{n}.has_transcript = 1"),
         ];
         if let Some(me) = self.opts.self_session.clone() {
             conditions.push(format!("{n}.id <> {}", self.text_param(&me)));
@@ -409,7 +412,7 @@ impl<'a> Compiler<'a> {
         conditions.extend(within);
         format!(
             "{outer}.pk = (SELECT {n}.pk FROM {} WHERE {} \
-             ORDER BY {n}.last_activity_at IS NULL, {n}.last_activity_at DESC, {n}.pk DESC LIMIT 1)",
+             ORDER BY {n}.last_active_at IS NULL, {n}.last_active_at DESC, {n}.pk DESC LIMIT 1)",
             base_from(Unit::Sessions, inner),
             conditions.join(" AND ")
         )
@@ -608,7 +611,7 @@ impl<'a> Compiler<'a> {
         if def.kind == Kind::Time
             && let Some(stored) = fields::stored_time(def.unit, def.name, &a)
         {
-            return self.time_condition(&stored, &t.test, t.span);
+            return self.time_condition(&stored, &t.test, t.span, cx.is_top());
         }
         // A structured value matches by its JSON scalar, so a string value
         // matches its text rather than its quoted JSON spelling.
@@ -623,34 +626,111 @@ impl<'a> Compiler<'a> {
         self.typed(def, def.kind, &expr, &t.test)
     }
 
+    /// A time predicate over the time's columns, in three-valued logic: a
+    /// row whose time or period end is unknown meets no bound and fails
+    /// none. At the top of a query only the rows it holds for matter, so
+    /// it is the condition that holds, led by a range of starts an index
+    /// seeks; inside NOT or OR it is true, false or NULL.
     pub(super) fn time_test(
         &mut self,
         stored: &fields::StoredTime,
         predicate: time::TimePredicate,
+        top: bool,
     ) -> String {
-        let broad = predicate.candidates(&stored.cache);
-        let encoded = serde_json::to_string(&predicate).expect("typed time predicates serialize");
-        let parameter = self.text_param(&encoded);
-        let exact = format!(
-            "pl_time_test({}, '{}', {parameter})",
-            stored.bytes,
-            stored.storage.as_str()
-        );
-        if broad == "1" {
-            return exact;
-        }
-        // A period can meet a bound its cached start misses, so the rows
-        // that may hold one are tested whatever their cache says. Where the
-        // field names them (`periods`), no other row's stored time is read.
-        let may_be_period = match &stored.periods {
-            Some(periods) => periods.clone(),
-            None => format!(
-                "NOT pl_time_is_instant({}, '{}')",
-                stored.bytes,
-                stored.storage.as_str()
-            ),
+        use query_language::time::TimeCondition as C;
+        use time::{TimePredicate as P, ceil_ms, floor_ms};
+        let at = &stored.at;
+        let last = stored.last();
+        // A bound on the period's last instant is a bound on its start
+        // widened by the longest stored period.
+        let widened = |bound: i64| {
+            stored
+                .longest()
+                .map(|longest| format!("{at} >= {bound} - {longest} AND "))
+                .unwrap_or_default()
         };
-        format!("(({broad} OR {may_be_period}) AND {exact})")
+        let (range, holds, fails) = match predicate {
+            P::Known => return format!("{at} IS NOT NULL"),
+            P::Overlap { since, until } => {
+                if since.zip(until).is_some_and(|(a, b)| a >= b) {
+                    return "0".into();
+                }
+                let mut range = String::new();
+                let mut holds = vec![format!("{last} IS NOT NULL")];
+                if let Some(since) = since {
+                    range.push_str(&widened(ceil_ms(since)));
+                    holds.push(format!("{last} >= {}", ceil_ms(since)));
+                }
+                if let Some(until) = until {
+                    holds.push(format!("{at} < {}", ceil_ms(until)));
+                }
+                let holds = holds.join(" AND ");
+                let fails = format!("NOT ({holds})");
+                (range, holds, fails)
+            }
+            P::Compare { condition, invert } => {
+                let (range, holds, fails) = match condition {
+                    C::Before { at: k } => (
+                        format!("{at} < {} AND ", ceil_ms(k)),
+                        format!("{last} < {}", ceil_ms(k)),
+                        format!("{at} >= {k} AND {last} >= {k}", k = ceil_ms(k)),
+                    ),
+                    C::AtOrBefore { at: k } => (
+                        format!("{at} <= {} AND ", floor_ms(k)),
+                        format!("{last} <= {}", floor_ms(k)),
+                        format!("{at} > {k} AND {last} > {k}", k = floor_ms(k)),
+                    ),
+                    C::After { at: k } => (
+                        String::new(),
+                        format!("{at} > {k} AND {last} > {k}", k = floor_ms(k)),
+                        format!("{last} <= {}", floor_ms(k)),
+                    ),
+                    C::AtOrAfter { at: k } => (
+                        String::new(),
+                        format!("{at} >= {k} AND {last} >= {k}", k = ceil_ms(k)),
+                        format!("{last} < {}", ceil_ms(k)),
+                    ),
+                    C::Within { range: r } => {
+                        let (start, end) = (ceil_ms(r.start), ceil_ms(r.end));
+                        if start >= end {
+                            (String::new(), "0".into(), format!("{last} IS NOT NULL"))
+                        } else {
+                            (
+                                format!("{at} < {end} AND "),
+                                format!("{at} >= {start} AND {last} < {end}"),
+                                format!("({last} < {start} OR {at} >= {end})"),
+                            )
+                        }
+                    }
+                    C::Equal { at: k } | C::NotEqual { at: k } => {
+                        let equal = if ceil_ms(k) == floor_ms(k) {
+                            format!("{at} = {k} AND {last} = {k}", k = floor_ms(k))
+                        } else {
+                            "0".into()
+                        };
+                        let differs =
+                            format!("({at} > {} OR {last} < {})", floor_ms(k), ceil_ms(k));
+                        if matches!(condition, C::Equal { .. }) {
+                            (format!("{at} = {} AND ", floor_ms(k)), equal, differs)
+                        } else {
+                            (String::new(), differs, equal)
+                        }
+                    }
+                };
+                if invert {
+                    (String::new(), fails, holds)
+                } else {
+                    (range, holds, fails)
+                }
+            }
+        };
+        if top {
+            format!("({range}{holds})")
+        } else {
+            format!(
+                "(CASE WHEN {last} IS NULL THEN NULL WHEN {holds} THEN 1 WHEN {fails} THEN 0 END)"
+            )
+        }
     }
 
     fn time_condition(
@@ -658,6 +738,7 @@ impl<'a> Compiler<'a> {
         stored: &fields::StoredTime,
         test: &Test,
         span: Span,
+        top: bool,
     ) -> Result<String, QueryError> {
         use query_language::time::{TimeCondition as C, TimeRange};
         use time::TimePredicate as P;
@@ -683,9 +764,9 @@ impl<'a> Compiler<'a> {
         let predicate = match test {
             Test::Any => return Ok("1".into()),
             Test::Unknown => {
-                return Ok(format!("NOT ({})", self.time_test(stored, P::Known)));
+                return Ok(format!("NOT ({})", self.time_test(stored, P::Known, top)));
             }
-            Test::Known => return Ok(self.time_test(stored, P::Known)),
+            Test::Known => return Ok(self.time_test(stored, P::Known, top)),
             Test::Time(TimeTest::Within(at)) => compare(self.resolved(at), Op::Eq)?,
             Test::Time(TimeTest::Compare(op, at)) => compare(self.resolved(at), *op)?,
             Test::Time(TimeTest::Between(from, to)) => {
@@ -698,6 +779,7 @@ impl<'a> Compiler<'a> {
                             condition: C::AtOrAfter { at: a.start() },
                             invert: false,
                         },
+                        top,
                     ));
                 }
                 let end = match b {
@@ -718,7 +800,7 @@ impl<'a> Compiler<'a> {
             }
             _ => return Err(not_built("this time field condition")),
         };
-        Ok(self.time_test(stored, predicate))
+        Ok(self.time_test(stored, predicate, top))
     }
     pub(super) fn display_value(expr: &str, kind: ColKind) -> String {
         match kind {

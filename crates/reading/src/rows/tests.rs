@@ -92,7 +92,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             links: vec![StoredLink {
                 kind: LinkKind::Fork,
                 copies_prefix: false,
-                how: None,
+                reason: None,
                 parent: target,
                 child,
                 branch_point: None,

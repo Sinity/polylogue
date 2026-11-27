@@ -20,12 +20,12 @@ CREATE TABLE alternate (
 
 CREATE TABLE alternate_part (
   alternate     TEXT NOT NULL REFERENCES alternate(id),
-  n           INTEGER NOT NULL,    -- order in the alternate
-  of          TEXT NOT NULL,       -- the source child it renders: a message, block or span inside `source`
-  of_hash     BLOB NOT NULL,
+  position    INTEGER NOT NULL,    -- order in the alternate
+  source      TEXT NOT NULL,       -- the source child it renders: a message, block or span inside the alternate's `source`
+  source_hash BLOB NOT NULL,
   relation    TEXT NOT NULL,       -- translates | transliterates | simplifies | summarizes | omits | expands | reorders
   body        BLOB NOT NULL,       -- zstd text
-  PRIMARY KEY (alternate, n)
+  PRIMARY KEY (alternate, position)
 ) STRICT, WITHOUT ROWID;
 ```
 

@@ -58,7 +58,7 @@ fn physical_family_counts_match_membership_without_reading_payload_columns() {
                     table_name: "event",
                     column_name: "data" | "fields"
                 } | AuthAction::Read {
-                    table_name: "link",
+                    table_name: "session_link",
                     column_name: "evidence"
                 }
             ) {

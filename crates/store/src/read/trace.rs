@@ -18,10 +18,10 @@ row! {
         stored: u64,
     }
     statements {
-        const OF_MESSAGE = "SELECT i.id AS input, s.chain, s.source_start, s.source_end, s.route,
+        const OF_MESSAGE = "SELECT i.id AS input, s.chain, s.source_start, s.source_start + s.source_length AS source_end, s.route,
             (s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,
             (SELECT max(r.length) FROM source_revision r WHERE r.input=i.id AND r.chain=s.chain) AS stored
-            FROM message m JOIN shown_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
+            FROM message m JOIN assembled_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
             WHERE m.id=?1 ORDER BY 6 DESC, i.id, s.chain";
     }
 }
@@ -56,7 +56,7 @@ impl Reader<'_> {
                     conn.scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(None) };
                 if let Reference::Block { n, .. } = reference {
-                    let present = conn.exists("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2)", params![pk, n.to_string()])?;
+                    let present = conn.exists("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(source_position,cast(position AS TEXT))=?2)", params![pk, n.to_string()])?;
                     if !present {
                         return Err(StoreError::ReferenceUnavailable {
                             reference: reference.to_string(),

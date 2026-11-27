@@ -26,7 +26,7 @@ pub(crate) fn visit_text(
     let mut statement = connection.prepare_cached(&format!(
         "SELECT {COLUMNS} FROM message m JOIN block b ON b.message_pk=m.pk {TEXT_JOIN}
          WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND b.kind IN ('text','thinking','tool_result')
-         ORDER BY m.session_order,m.id,b.idx"
+         ORDER BY m.session_order,m.id,b.position"
     ))?;
     let mut rows = statement.query([session])?;
     let mut reader = Reader::default();
@@ -61,7 +61,7 @@ pub(crate) fn of_message(
     structured: bool,
 ) -> Result<Vec<Block>> {
     let mut statement = connection.prepare_cached(&format!(
-        "SELECT {COLUMNS} FROM block b {TEXT_JOIN} WHERE b.message_pk=?1 ORDER BY b.idx"
+        "SELECT {COLUMNS} FROM block b {TEXT_JOIN} WHERE b.message_pk=?1 ORDER BY b.position"
     ))?;
     let mut rows = statement.query([message_pk])?;
     let mut reader = Reader::default();

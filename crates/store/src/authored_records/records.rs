@@ -33,10 +33,10 @@ fn ids(conn: &Connection, table: &str, filter: &str, seq: Option<i64>) -> Result
 }
 fn kept(conn: &Connection, id: &str) -> Result<KeptResult> {
     let source = Source::reading(conn)?;
-    let (name, query, at, read_at, rows_json): (Option<String>, String, i64, String, String) = conn
-        .query_row(
+    let (name, query, at, read_position, rows_json): (Option<String>, String, i64, String, String) =
+        conn.query_row(
             &source.sql(
-                "SELECT name,query,ran_at,read_at,rows_json FROM @source.kept_result WHERE id=?1",
+                "SELECT name,query,ran_at,read_position,rows_json FROM @source.saved_rows WHERE id=?1",
             ),
             [id],
             |r| <(_, _, _, _, _)>::try_from(r),
@@ -46,7 +46,7 @@ fn kept(conn: &Connection, id: &str) -> Result<KeptResult> {
         name,
         query,
         ran_at: time(at)?,
-        read_at,
+        read_position,
         rows_json,
     })
 }
@@ -63,12 +63,12 @@ fn delivery_events_from(
     id: &str,
     counter: Option<i64>,
 ) -> Result<Vec<DeliveryEvent>> {
-    let mut query =
-        source.sql("SELECT what,at,detail,request FROM @source.delivery_event WHERE delivery=?1");
+    let mut query = source
+        .sql("SELECT outcome,at,detail,request FROM @source.delivery_event WHERE delivery=?1");
     if counter.is_some() {
         query.push_str(" AND commit_seq=?2");
     }
-    query.push_str(" ORDER BY at,what");
+    query.push_str(" ORDER BY at,outcome");
     let mut statement = conn.prepare(&query)?;
     let mut rows = if let Some(counter) = counter {
         statement.query(params![id, counter])?
@@ -80,7 +80,7 @@ fn delivery_events_from(
         let kind: String = row.get(0)?;
         events.push(DeliveryEvent {
             request: row.get(3)?,
-            what: serde_json::from_value(serde_json::Value::String(kind))?,
+            outcome: serde_json::from_value(serde_json::Value::String(kind))?,
             at: time(row.get(1)?)?,
             detail: row.get(2)?,
         });
@@ -101,11 +101,12 @@ pub(super) fn delivery_from(conn: &Connection, source: Source, id: &str) -> Resu
         body: Vec<u8>,
         refs: String,
         left_out: String,
+        prepared_position: Option<i64>,
     }
-    let DeliveryRow { recipient_kind, recipient_id, sender, event, cwd, at, body, refs, left_out } = conn.query_row(
-        &source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json FROM @source.delivery WHERE id=?1"),
+    let DeliveryRow { recipient_kind, recipient_id, sender, event, cwd, at, body, refs, left_out, prepared_position } = conn.query_row(
+        &source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json,prepared_position FROM @source.delivery WHERE id=?1"),
         [id],
-        |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.name(2)?, event: r.name(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)? }),
+        |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.name(2)?, event: r.name(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)?, prepared_position: r.get(9)? }),
     )?;
     Ok(DeliveryRecord {
         signal: crate::signals::metadata(conn, source, id)?,
@@ -119,6 +120,7 @@ pub(super) fn delivery_from(conn: &Connection, source: Source, id: &str) -> Resu
             text: crate::encoding::unpack_text(&body)?,
             refs: serde_json::from_str(&refs)?,
             left_out: serde_json::from_str(&left_out)?,
+            prepared_position,
         },
         at: time(at)?,
         events: delivery_events_from(conn, source, id, None)?,
@@ -137,7 +139,7 @@ pub(super) fn capture(
         effect.annotations.push(row.fact);
     }
     if let UserWrite::Save(_) = &request.write {
-        effect.kept_results.push(kept(conn, &request.id)?);
+        effect.saved_rows.push(kept(conn, &request.id)?);
     }
     let touched = |table: &str, event_table: &str, column: &str| -> Result<Vec<String>> {
         Ok(conn.prepare(&source.sql(&format!("SELECT id FROM @source.{table} WHERE commit_seq=?1 UNION SELECT {column} FROM @source.{event_table} WHERE commit_seq=?1 ORDER BY 1")))?.query_map([counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?)
@@ -160,7 +162,7 @@ pub(super) fn capture(
     for id in touched("chat_action", "chat_action_event", "action")? {
         let action = crate::chat_actions::read(conn, source.prefix(), &id)?
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
-        let ns:Vec<i64>=conn.prepare(&source.sql("SELECT n FROM @source.chat_action_event WHERE action=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let ns:Vec<i64>=conn.prepare(&source.sql("SELECT position FROM @source.chat_action_event WHERE action=?1 AND commit_seq=?2 ORDER BY position"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
         let added_events = ns
             .into_iter()
             .map(|n| {
@@ -181,7 +183,7 @@ pub(super) fn capture(
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
         let ns: Vec<i64> = conn
             .prepare(&source.sql(
-                "SELECT n FROM @source.import_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY n",
+                "SELECT position FROM @source.import_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY position",
             ))?
             .query_map(params![id, counter], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -208,7 +210,7 @@ pub(crate) fn insert_kept(conn: &Connection, value: &KeptResult) -> Result<()> {
     crate::kept::validate_body(&value.id, &value.rows_json)?;
     crate::selection::check_kept_body(conn, &value.id, &value.rows_json)?;
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.kept_result(id,name,query,ran_at,read_at,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_at,value.rows_json])?;
+    conn.execute(&source.sql("INSERT INTO @source.saved_rows(id,name,query,ran_at,read_position,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_position,value.rows_json])?;
     Ok(())
 }
 pub(super) fn insert_delivery(
@@ -234,7 +236,7 @@ pub(super) fn insert_delivery(
         }
         return Ok(());
     }
-    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender.as_str(),d.event.as_str(),d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq,prepared_position) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender.as_str(),d.event.as_str(),d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter,d.prepared_position])?;
     if let Some(mut signal) = value.signal.clone() {
         if historical {
             signal.execution = RunsHere::Historical;
@@ -261,7 +263,7 @@ fn append_delivery(
             }
             continue;
         }
-        conn.execute(&source.sql("INSERT INTO @source.delivery_event(delivery,what,at,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![id,event.what.as_str(),event.at.unix_ms(),event.detail,event.request,counter])?;
+        conn.execute(&source.sql("INSERT INTO @source.delivery_event(delivery,outcome,at,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![id,event.outcome.as_str(),event.at.unix_ms(),event.detail,event.request,counter])?;
     }
     Ok(())
 }
@@ -304,7 +306,8 @@ fn append_chat(
 ) -> Result<()> {
     let source = Source::of(conn)?;
     let mut n: i64 = conn.scalar(
-        &source.sql("SELECT COALESCE(max(n),0) FROM @source.chat_action_event WHERE action=?1"),
+        &source
+            .sql("SELECT COALESCE(max(position),0) FROM @source.chat_action_event WHERE action=?1"),
         [id],
     )?;
     let known = crate::chat_actions::read(conn, source.prefix(), id)?
@@ -320,7 +323,7 @@ fn append_chat(
         n = n
             .checked_add(1)
             .or_stored("chat event order is out of range")?;
-        conn.execute(&source.sql("INSERT INTO @source.chat_action_event(action,n,at,kind,phase,detail,by,receipt_json,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),params![id,n,event.at,event.kind,event.phase,event.detail,event.by,event.receipt.as_ref().map(serde_json::to_string).transpose()?,event.request,counter])?;
+        conn.execute(&source.sql("INSERT INTO @source.chat_action_event(action,position,at,kind,phase,detail,by,receipt_json,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),params![id,n,event.at,event.kind,event.phase,event.detail,event.by,event.receipt.as_ref().map(serde_json::to_string).transpose()?,event.request,counter])?;
     }
     Ok(())
 }
@@ -356,7 +359,7 @@ fn append_import_job_events(
 ) -> Result<()> {
     let source = Source::of(conn)?;
     let mut n: i64 = conn.scalar(
-        &source.sql("SELECT COALESCE(max(n),0) FROM @source.import_job_event WHERE job=?1"),
+        &source.sql("SELECT COALESCE(max(position),0) FROM @source.import_job_event WHERE job=?1"),
         [id],
     )?;
     let known = crate::import_jobs::read(conn, source.prefix(), id)?
@@ -373,7 +376,7 @@ fn append_import_job_events(
             .checked_add(1)
             .or_stored("import_job event order is out of range")?;
         let count = |value: u64| crate::to_i64(value, "import_job count is out of range");
-        conn.execute(&source.sql("INSERT INTO @source.import_job_event(job,n,at,kind,by,position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
+        conn.execute(&source.sql("INSERT INTO @source.import_job_event(job,position,at,kind,by,provider_position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
     }
     Ok(())
 }
@@ -386,7 +389,7 @@ pub(super) fn apply(
 ) -> Result<()> {
     crate::alternates::apply(conn, &effect.alternates, counter)?;
     crate::annotations::apply(conn, &effect.annotations, counter)?;
-    for value in &effect.kept_results {
+    for value in &effect.saved_rows {
         insert_kept(conn, value)?;
     }
     for value in &effect.deliveries {
@@ -414,7 +417,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     crate::annotations::copy(from, to)?;
     for (table, copy) in [
         (
-            "kept_result",
+            "saved_rows",
             copy_kept as fn(&Connection, &Connection, &str) -> Result<()>,
         ),
         ("delivery", copy_delivery),

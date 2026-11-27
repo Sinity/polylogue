@@ -62,7 +62,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
     let reader = pool.reader().unwrap();
     let recorded = reader
         .query(
-            "SELECT title, derived_title FROM session WHERE id='claude-code:derived'",
+            "SELECT title, prompt_title FROM session WHERE id='claude-code:derived'",
             &[],
         )
         .unwrap();
@@ -94,5 +94,5 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
     assert_eq!(empty[0]["title"], "");
     assert_eq!(empty[0]["title_source"], "generated");
     assert!(recorded[0]["title"].is_null());
-    assert_eq!(recorded[0]["derived_title"], "First human question");
+    assert_eq!(recorded[0]["prompt_title"], "First human question");
 }

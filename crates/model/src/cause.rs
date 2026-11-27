@@ -284,10 +284,19 @@ impl std::error::Error for ChainFailure {}
 
 impl Caused for ChainFailure {
     fn cause(&self) -> Cause {
-        Cause::Content
+        match self.kind {
+            ChainFailureKind::Malformed | ChainFailureKind::Refused => Cause::Content,
+            ChainFailureKind::BytesDiffer => Cause::StoredData,
+            ChainFailureKind::CountsDiffer | ChainFailureKind::ParserPanicked => Cause::Bug,
+        }
     }
     fn code(&self) -> Code {
-        Code::Import
+        match self.kind {
+            ChainFailureKind::Malformed | ChainFailureKind::Refused => Code::Import,
+            ChainFailureKind::BytesDiffer
+            | ChainFailureKind::CountsDiffer
+            | ChainFailureKind::ParserPanicked => Code::Internal,
+        }
     }
 }
 

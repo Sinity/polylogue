@@ -38,7 +38,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     index
-        .execute("UPDATE document_block SET body=x'00' WHERE idx=2", [])
+        .execute("UPDATE document_block SET body=x'00' WHERE position=2", [])
         .unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -71,7 +71,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert!(selected.document().is_err());
     drop(reader);
     index
-        .execute("UPDATE document_block SET body=x'00' WHERE idx=0", [])
+        .execute("UPDATE document_block SET body=x'00' WHERE position=0", [])
         .unwrap();
     let reader = pool.reader().unwrap();
     let selected = reader.select_document(&original.id).unwrap().unwrap();
@@ -413,5 +413,42 @@ fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
         [Block::Text {
             text: "newer".into()
         }]
+    );
+}
+
+/// Search text the writer settles while it prepares a derive is a commit
+/// its readers are told of, as the search thread's batches are, so the
+/// status snapshot is read again after it and stops saying search text is
+/// pending (docs/operations.md, status). The search thread is held before
+/// it reads the queue, so the derive's preparation is what settles it.
+#[cfg(feature = "faults")]
+#[test]
+fn search_text_settled_for_a_derive_is_announced_as_a_commit() {
+    use crate::fault::{self, Action};
+    let w = test_archive();
+    fault::clear();
+    fault::arm("search.read_queue", "", Action::Hold, 0, 1);
+    w.store_reading(
+        doc_batch(
+            "settled",
+            document("project:a:doc:settled", "walrus tusk", 1),
+            true,
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush_rows().unwrap().errors.is_empty());
+    fault::wait_held();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    assert!(pool.reader().unwrap().status(&[]).unwrap().search_pending > 0);
+    let commits = w.writer.completion_commits();
+    w.writer.derive().unwrap();
+    let pending = pool.reader().unwrap().status(&[]).unwrap().search_pending;
+    let announced = commits.try_recv();
+    fault::release();
+    assert_eq!(pending, 0);
+    assert!(
+        announced.is_ok_and(|changed| changed.content),
+        "the commit that settled the search text was not announced"
     );
 }

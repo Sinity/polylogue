@@ -9,7 +9,7 @@ fn standing(engine: &Engine) -> Vec<(String, Option<String>)> {
         .unwrap()
         .query(
             "SELECT CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status,p.failure_detail AS reason FROM parse_state p
-             JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",
+             JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin='claude-code'",
             &[],
         )
         .unwrap()
@@ -98,6 +98,9 @@ fn a_parser_panic_in_the_build_fails_the_chain_with_its_message() {
         [("failed".to_owned(), Some(reason.clone()))]
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert_eq!(pass.errors[0].cause, polylogue_model::Cause::Content);
+    assert_eq!(
+        (pass.errors[0].cause, pass.errors[0].code),
+        (polylogue_model::Cause::Bug, polylogue_model::Code::Internal)
+    );
     assert_eq!(pass.errors[0].message, reason);
 }

@@ -28,14 +28,14 @@ CREATE TABLE annotation (
 ) STRICT;
 
 CREATE TABLE annotation_link (
-  record      TEXT NOT NULL REFERENCES annotation(id),
+  annotation  TEXT NOT NULL REFERENCES annotation(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
   seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
   quote       TEXT,              -- JSON, links to a span and citations: the exact text with up to 32 characters before and after, and the container's parse version when written
-  PRIMARY KEY (record, role, ref)
+  PRIMARY KEY (annotation, role, ref)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX annotation_link_ref ON annotation_link(ref, role, record);
+CREATE INDEX annotation_link_ref ON annotation_link(ref, role, annotation);
 
 CREATE TABLE revision_state (    -- an index kept by the writing transaction, never a source of truth
   id          TEXT PRIMARY KEY,
@@ -44,17 +44,17 @@ CREATE TABLE revision_state (    -- an index kept by the writing transaction, ne
   withdrawn   INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE annotation_slot (    -- the uniqueness slots each revision occupies, by digest
-  slot        BLOB NOT NULL,
+CREATE TABLE annotation_unique_key (    -- the unique keys each revision holds, by digest
+  key_hash    BLOB NOT NULL,
   id          TEXT NOT NULL REFERENCES annotation(id),
-  PRIMARY KEY (slot, id)
+  PRIMARY KEY (key_hash, id)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX annotation_kind_key ON annotation(kind, key);
 CREATE INDEX annotation_root     ON annotation(root);
 ```
 
 - **One link table.** What it is about, evidence, scope, origin and every relation are the same kind of row: this annotation points at that reference, in this role.
-- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `annotation_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
+- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `annotation_unique_key` which unique keys each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
 - **Nothing expires by itself.** `valid_until` changes how an annotation is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
 - **Original authored time is optional.** Other writes use the accepting request's captured time; imports keep the recorded time, or `null` when none was recorded. An undated annotation is current by the same link and slot rules as a dated one. Time-filtered and as-of reads exclude undated annotations, whose standing at that instant cannot be established; unbounded reads include them and show an unknown time. An import's observed time describes arrival, not authorship.
 
@@ -85,7 +85,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `seen` | the target's reference | `{position}` | one per (key, author) | — | reads shown to their reader ([reading.md](reading.md#ranges)) | — |
 | `role` | name | `{instructions, harness}` ([session-control.md](session-control.md#roles)) | one per name | — | `import` | — |
 | `page` | page name | `{title, layout: linear\|board\|table, template?, params?, brief: off\|contents\|full}` ([pages.md](pages.md#page)) | one per name | its subject (optional) | `note --as page`, `save page:NAME`, `edit` and `import` of its working copy | — |
-| `slot` | — | `{parent?, pos, mode: current\|fixed, form?, heading?, query?, caption?, x?, y?, w?, h?}` ([pages.md](pages.md#slot)) | many (`slot_of` one page) | what it shows (absent for headings and live queries) | `save page:NAME`, `note --section`, `note --as heading`, `edit` and `import` of the page's working copy | `page=`, `section=`, `::heading`, `::slot` |
+| `slot` | — | `{parent?, position, mode: current\|fixed, form?, heading?, query?, caption?, x?, y?, w?, h?}` ([pages.md](pages.md#slot)) | many (`slot_of` one page) | what it shows (absent for headings and live queries) | `save page:NAME`, `note --section`, `note --as heading`, `edit` and `import` of the page's working copy | `page=`, `section=`, `::heading`, `::slot` |
 | `member` | alias | — | one per (key, page) | a session | `note ALIAS --as member` | — |
 | `saved_query` | name | `{text, hash, denominator?}` | one per name | — | `save` | — |
 | `signal` | name | a signal rule ([operations.md](operations.md#notices)) | one per name | — | `save --watch`, `note --as signal` | — |
@@ -98,7 +98,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 - **`hidden`** takes a session and its rows out of default listings, search results, briefs and the `unfinished` list; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is written with `note 'why' --as hidden` and taken back with `withdraw`.
 - **A summary is an alternate,** not a kind ([alternates.md](alternates.md)). A pass is the one way to group bulk annotation.
 
-Seen marks contain `{position: {item, at}}`, where `item` is the last displayed item's reference or null, and `at` is the captured `GENERATION:INDEX:ARCHIVE` position. A mark belongs to one target and computed author. Within the current index generation it advances by archive counter, then index counter, then the actual item's reading order. Repeating or moving backward writes no request or mark. A mark from the current generation replaces an older-generation mark; a late write from a stale generation is refused. Reading marks provide no undo command and are omitted from normal annotation and feed listings. Displaying readers submit them; a read that merely writes a pipe or file does not.
+Seen marks contain `{position: {item, at}}`, where `item` is the last displayed item's reference or null, and `at` is the captured `INDEX_INSTANCE:INDEX:ARCHIVE` position. A mark belongs to one target and computed author. Within the current index generation it advances by archive counter, then index counter, then the actual item's reading order. Repeating or moving backward writes no request or mark. A mark from the current generation replaces an older-generation mark; a late write from a stale generation is refused. Reading marks provide no undo command and are omitted from normal annotation and feed listings. Displaying readers submit them; a read that merely writes a pipe or file does not.
 
 ## Links
 

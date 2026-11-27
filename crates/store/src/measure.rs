@@ -123,7 +123,7 @@ impl Selection {
             clauses.push(if self.logical {
                 format!(
                     "{column} IN (WITH RECURSIVE logical(pk) AS (SELECT value FROM json_each(?{n}) \
-                     UNION SELECT lc.pk FROM link l JOIN session lp ON lp.id = l.parent_id \
+                     UNION SELECT lc.pk FROM session_link l JOIN session lp ON lp.id = l.parent_id \
                      JOIN logical ON logical.pk = lp.pk JOIN session lc ON lc.id = l.child_id \
                      WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM logical)"
                 )
@@ -152,7 +152,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
     let sql = format!(
         "SELECT count(DISTINCT s.pk) FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} AND EXISTS (
-           SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about'
+           SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about'
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND {} )",
         crate::annotations::sql::current_annotation("hn")

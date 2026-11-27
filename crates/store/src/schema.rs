@@ -75,8 +75,51 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
         "QueryEdgeKind",
         polylogue_model::query_objects::QueryEdgeKind::NAMES,
     ),
+    ("Precision", &PRECISIONS),
+    ("Route", polylogue_model::Route::NAMES),
+    ("IdKind", polylogue_model::batch::IdKind::NAMES),
+    ("Completion", polylogue_model::Completion::NAMES),
+    ("RoutedFieldGroup", &ROUTED_FIELD_GROUPS),
+    ("Party", crate::measure::time::Party::NAMES),
+    ("SessionKind", polylogue_model::SessionKind::NAMES),
+    ("Role", polylogue_model::Role::NAMES),
+    ("WrittenBy", polylogue_model::WrittenBy::NAMES),
+    ("PromptKind", polylogue_model::PromptKind::NAMES),
+    ("BlockKind", polylogue_model::BlockKind::NAMES),
+    ("ToolAction", polylogue_model::ToolAction::NAMES),
+    ("CallOutcome", polylogue_model::CallOutcome::NAMES),
+    ("LinkKind", polylogue_model::LinkKind::NAMES),
+    ("ReferenceReason", polylogue_model::ReferenceReason::NAMES),
     ("ChainFailureKind", polylogue_model::ChainFailureKind::NAMES),
 ];
+
+/// The field groups `message_route` records: every group but the content,
+/// whose route is the message's main route.
+const ROUTED_FIELD_GROUPS: [&str; polylogue_model::FieldGroup::NAMES.len() - 1] = {
+    let all = polylogue_model::FieldGroup::ALL;
+    let mut names = [""; polylogue_model::FieldGroup::NAMES.len() - 1];
+    let (mut i, mut n) = (0, 0);
+    while i < all.len() {
+        if !matches!(all[i], polylogue_model::FieldGroup::Content) {
+            names[n] = all[i].as_str();
+            n += 1;
+        }
+        i += 1;
+    }
+    names
+};
+
+/// The precisions a stored time states, from the shared query language's
+/// closed set.
+const PRECISIONS: [&str; polylogue_model::Precision::ALL.len()] = {
+    let mut names = [""; polylogue_model::Precision::ALL.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = polylogue_model::Precision::ALL[i].as_str();
+        i += 1;
+    }
+    names
+};
 
 /// Schema text with each `@names(Type)` replaced by that type's names.
 pub(crate) fn with_names(sql: &str) -> String {
@@ -120,31 +163,21 @@ pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 /// natural-key indexes the writer looks rows up by stay throughout.
 pub(crate) const BUILT_AT_END: &[&str] = &[
     "text_normalized",
-    "message_order",
-    "tool_call_order",
-    "event_order",
-    "message_at",
-    "message_recent",
-    "message_session_at",
-    "message_model_at",
-    "message_session_model_at",
-    "event_at",
-    "session_order",
-    "session_activity",
-    "session_recent",
+    "message_time",
+    "message_period",
+    "message_marked",
+    "tool_call_time",
+    "event_time",
+    "document_time",
+    "event_period",
+    "session_last_active",
     "session_started",
     "session_cwd",
     "session_repo",
     "session_live",
-    "message_prose",
-    "message_branch",
-    "tool_call_tool",
     "tool_call_action",
-    "tool_call_path",
     "tool_call_repo_command",
     "event_kind",
-    "commit_link_hash",
-    "pr_link_number",
     "removed_session_changed",
 ];
 #[cfg(test)]
@@ -172,10 +205,10 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The register format version.
-pub const ARCHIVE_VERSION: u32 = 8;
+pub const ARCHIVE_VERSION: u32 = 10;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 21;
+pub const INDEX_VERSION: u32 = 23;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an

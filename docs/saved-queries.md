@@ -11,7 +11,7 @@ A question and its reply are stored objects with identities, so they can be cite
 | saved query | `query:NAME`, `query:NAME@N` | a name for a question, with revisions | `queries` (field `name`) |
 | kept result | `result:<id>`, `result:NAME`, `result:<id>#<row>`, `result:<id>.matches` | the rows of one run, stored, never run again | `results` |
 
-Composition edges are recorded at compile time in `query_edge(query, uses, how)`, where `how` is `saved` (a name and the hash it resolved to), `result` (a kept result used as source), `combine` or `in` (a sub-query). "Which queries use this one" and "what did this run depend on" are queries over `queries`.
+Composition edges are recorded at compile time in `query_edge(query, uses, kind)`, where `kind` is `saved` (a name and the hash it resolved to), `result` (a kept result used as source), `combine` or `in` (a sub-query). "Which queries use this one" and "what did this run depend on" are queries over `queries`.
 
 ## Identity
 
@@ -22,10 +22,10 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 ## Runs
 
-- Every executed query writes a run: `query_run(id, query, at, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([authorship.md](authorship.md)). `--explain` and completion write none.
+- Every executed query writes a run: `query_run(id, query, at, read_position, author, via, outcome, count, exact)`, with the author computed as for every authored record ([authorship.md](authorship.md)). `--explain` and completion write none.
 - Runs are written by the writer in its regular groups. A first page reserves space in the bounded user queue within its existing deadline, before acquiring the reader that prepares its page, then hands its completed execution to the writer without waiting for a commit. The run and its outcome commit together; the question is independently reusable under its hash. A cancelled or refused request starts no page and creates no run.
 - Every reply carries `query: "query:<hash>"` and `run: "run:<id>"`; a reply whose rows were kept also carries `result:<id>`.
-- A run is read as `polylogue run:01JD7Q4M read`: its question, read position, author, outcome and count. A run holds no rows; reading the rows again is running its question, and reading the same rows is reading a kept result. A normal run read returns one run card. Its next command runs the immutable question only when that question object is available; an object-read run has no invented question. A beginning without a completion is pending, an absent run is not found, and a completion whose beginning has not arrived is unavailable. `--view raw` shows the checked original beginning and optional completion instead of a card.
+- A run is read as `polylogue run:01JD7Q4M read`: its query ID (`query_id`), read position (`read_position`), author, outcome and count. A run holds no rows; reading the rows again is running its query, and reading the same rows is reading a kept result. A normal run read returns one run card. Its next command runs the immutable query only when that query object is available; an object-read run has no invented query ID. A beginning without a completion is pending, an absent run is not found, and a completion whose beginning has not arrived is unavailable. `--view raw` shows the checked original beginning and optional completion instead of a card.
 - The unit `runs` lists them: `polylogue 'runs where author:operator since:1d'`.
 - The shared language's `answer:<id>` form is refused with `try: polylogue run:<id> read`.
 
@@ -146,7 +146,7 @@ Shipped pages (`home`, `index`, `pinned`, `cost`) and page templates sit beside 
 A kept result stores a reply as it is now under `result:<uuidv7>`. It records:
 
 - `query:<hash>`, the run and the definitions;
-- the resolved bounds (`now`, zone, day start, resolved times) and `read_at`;
+- the resolved bounds (`now`, zone, day start, resolved times) and the read position (`read_position`);
 - **exactness**: whether `count` was exact, and whether the reply was complete or `incomplete`, with the missing parts;
 - columns with kinds and references, each row's values and references, and annotations pinned to their revisions;
 - for `exists` or `seq`, the match rows; for a ranked reply, each row's rank and per-list contributions;

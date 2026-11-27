@@ -4,7 +4,7 @@
 //! names its rule here, so a field without one cannot be declared.
 
 use super::*;
-use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
+use polylogue_model::{CallOutcome, LINK_KIND_NAMES, LINK_REASON_NAMES};
 use polylogue_query::filter::{Special, Test, TimeTest, closed_set_message};
 
 /// A special field's compile rule.
@@ -234,6 +234,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
                 since: Some(t.start()),
                 until: None,
             },
+            x.cx.is_top(),
         );
         return Ok(if x.unit == Unit::ToolCalls {
             format!("({test} OR {}.result_message_id IS NULL)", x.scope.a.t)
@@ -263,6 +264,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
                 since: None,
                 until: Some(t.until_bound()),
             },
+            x.cx.is_top(),
         ));
     }
     let bound = crate::calendar::boundary_ms(t.until_bound());
@@ -320,14 +322,14 @@ pub(crate) fn changes_after(
         .and_then(|text| polylogue_model::ChangePosition::parse(&text));
     let Some(position) = position else {
         return Err(QueryError::Invalid {
-            message: "after: takes a feed position `GENERATION:INDEX:ARCHIVE`".into(),
+            message: "after: takes a feed position `INDEX_INSTANCE:INDEX:ARCHIVE`".into(),
             position: x.span.start,
         });
     };
-    c.change_generations.push(position.generation);
+    c.change_generations.push(position.index_instance);
     Ok(format!(
         "(({r}.kind = 'annotation' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
-         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
+         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.summary_changed > {index})))",
         r = x.row(),
         index = position.index,
         archive = position.archive,
@@ -443,11 +445,11 @@ pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, Q
         Some(repo) => {
             let p = c.text_param(&repo.to_lowercase());
             format!(
-                "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
+                "EXISTS (SELECT 1 FROM pull_request_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
             )
         }
         None => format!(
-            "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
+            "EXISTS (SELECT 1 FROM pull_request_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
         ),
     })
 }
@@ -560,7 +562,7 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, 
     for v in x.values() {
         let p = c.text_param(&v.to_lowercase());
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM source_annotation tn JOIN source_annotation_link tt ON tt.record = tn.id AND tt.role = 'about' \
+            "EXISTS (SELECT 1 FROM source_annotation tn JOIN source_annotation_link tt ON tt.annotation = tn.id AND tt.role = 'about' \
              WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
              AND ((tn.key IS NULL AND lower(json_extract(tn.value,'$.value')) = {p}) \
                OR lower(tn.key) || ':' || lower(json_extract(tn.value,'$.value')) = {p} \
@@ -598,12 +600,12 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<Strin
     let v = x.value()?;
     if v.eq_ignore_ascii_case("missing") {
         return Ok(format!(
-            "EXISTS (SELECT 1 FROM link l WHERE l.child_id = {s}.id AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
         ));
     }
     let reference = c.session_reference("l.parent_id", "id", &v, false);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_id = {s}.id AND {reference})"
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND {reference})"
     ))
 }
 
@@ -625,18 +627,18 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
         let v = v.to_ascii_lowercase();
         let column = if LINK_KIND_NAMES.contains(&v.as_str()) {
             "kind"
-        } else if LINK_HOW_NAMES.contains(&v.as_str()) {
-            "how"
+        } else if LINK_REASON_NAMES.contains(&v.as_str()) {
+            "reason"
         } else {
             let message = format!(
-                "link is one of {}, or how it was made: {}; not {v:?}",
+                "link is one of {}, or the reason it was made: {}; not {v:?}",
                 LINK_KIND_NAMES.join(", "),
-                LINK_HOW_NAMES.join(", ")
+                LINK_REASON_NAMES.join(", ")
             );
             return Err(x.bad(v, message));
         };
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM link l WHERE l.child_id = {s}.id AND l.{column} = '{v}')"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND l.{column} = '{v}')"
         ));
     }
     any_of(x, parts)
@@ -645,7 +647,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
 pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("l.parent_id", "id", &x.value()?, false);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_id = {}.id AND l.kind IN ('fork','continuation','resume') AND {reference})",
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {}.id AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
 }
@@ -656,7 +658,7 @@ pub(crate) fn continued_by(
 ) -> Result<String, QueryError> {
     let reference = c.session_reference("lc.id", "id", &x.value()?, false);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l JOIN session lc ON lc.id = l.child_id WHERE l.parent_id = {}.id \
+        "EXISTS (SELECT 1 FROM session_link l JOIN session lc ON lc.id = l.child_id WHERE l.parent_id = {}.id \
          AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
@@ -667,7 +669,7 @@ pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<St
     Ok(format!(
         "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT rs.id FROM session rs WHERE {reference} \
          UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
-         FROM link l JOIN session lc ON lc.id = l.child_id JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
+         FROM session_link l JOIN session lc ON lc.id = l.child_id JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
          SELECT id FROM comp)",
         x.s()
     ))
@@ -757,7 +759,7 @@ pub(crate) fn spawned_child(
     let reference = c.session_reference("lcs.id", "id", &x.value()?, false);
     let a = &x.scope.a;
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.id = lc.child_id WHERE lc.kind = 'spawn' \
+        "EXISTS (SELECT 1 FROM session_link lc JOIN session lcs ON lcs.id = lc.child_id WHERE lc.kind = 'spawn' \
          AND lc.parent_id = {s}.id AND lc.spawning_call = {t}.call_id \
          AND {reference})",
         s = a.s,
@@ -823,7 +825,7 @@ pub(crate) fn annotation_about(
         })?;
     let p = c.text_param(&reference.to_string());
     Ok(format!(
-        "EXISTS(SELECT 1 FROM source_annotation_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
+        "EXISTS(SELECT 1 FROM source_annotation_link nt WHERE nt.annotation={r}.id AND nt.role='about' AND nt.ref={p})",
         r = x.row()
     ))
 }
@@ -834,7 +836,7 @@ pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
 }
 
 pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
-    delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.what')")
+    delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.item')")
 }
 
 fn delivery_member(
@@ -877,7 +879,7 @@ pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<Str
             .map_err(|error| x.bad(value.clone(), error.to_string()))?;
         let p = c.text_param(&reference.to_string());
         clauses.push(format!(
-            "EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record={}.id AND l.role<>'about' AND {})",
+            "EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.annotation={}.id AND l.role<>'about' AND {})",
             x.row(),
             crate::session_sql::names_record("l.ref", &p)
         ));
@@ -953,7 +955,7 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, Quer
     );
     let unchanged = match x.unit {
         Unit::Sessions => format!(
-            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='generation') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.derived_changed,0)<={index}",
+            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='index_instance') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.summary_changed,0)<={index}",
             s = x.s()
         ),
         Unit::Annotations => format!("{}.commit_seq<={archive}", x.row()),

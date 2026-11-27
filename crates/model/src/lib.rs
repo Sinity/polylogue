@@ -79,7 +79,7 @@ pub use change_position::ChangePosition;
 pub use delivery::{DELIVERY_STATES, DeliveryEvent, DeliveryOutcome, DeliverySender};
 pub use document::{Document, DocumentAuthorship, DocumentPurpose};
 pub use event::{
-    CompactionBoundary, Event, KeptRange, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind,
+    CompactionBoundary, Event, KeptRange, LINK_KIND_NAMES, LINK_REASON_NAMES, Link, LinkKind,
     MicrocompactionBoundary, PrefixCopy, PrefixMember, PrefixSource, ReferenceReason,
 };
 pub use id::{BlobHash, DocumentId, IdError, MessageId, NativeId, Origin, RunId, SessionId};

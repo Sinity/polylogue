@@ -123,7 +123,7 @@ struct Head {
 /// Writes a run's lines and state; the summary's token check has passed.
 pub(crate) fn apply(tx: &Connection, session_pk: i64, lines: &Lines) -> Result<()> {
     let mut rekey = tx.prepare_cached(
-        "UPDATE transcript_line SET row_key = ?3 WHERE session_pk = ?1 AND seq = ?2",
+        "UPDATE transcript_line SET row_key = ?3 WHERE session_pk = ?1 AND position = ?2",
     )?;
     for (seq, key) in &lines.rekeys {
         rekey.execute(params![session_pk, seq, key])?;
@@ -132,30 +132,30 @@ pub(crate) fn apply(tx: &Connection, session_pk: i64, lines: &Lines) -> Result<(
     if let Some(from) = lines.from {
         let calls: Vec<(String, i64)> = tx
             .prepare_cached(
-                "SELECT call_id, seq FROM transcript_line
-                 WHERE session_pk = ?1 AND seq >= ?2 AND call_id IS NOT NULL",
+                "SELECT call_id, position FROM transcript_line
+                 WHERE session_pk = ?1 AND position >= ?2 AND call_id IS NOT NULL",
             )?
             .query_map(params![session_pk, from], |r| <(String, i64)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
         let mut forget = tx.prepare_cached(
-            "DELETE FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 AND seq = ?3",
+            "DELETE FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 AND position = ?3",
         )?;
         for (call, seq) in calls {
             forget.execute(params![session_pk, call, seq])?;
         }
-        tx.prepare_cached("DELETE FROM transcript_line WHERE session_pk = ?1 AND seq >= ?2")?
+        tx.prepare_cached("DELETE FROM transcript_line WHERE session_pk = ?1 AND position >= ?2")?
             .execute(params![session_pk, from])?;
         let mut head = tx.prepare_cached(
-            "INSERT INTO transcript_line(session_pk, seq, unit, message_pk, event_pk, time_bound,
-                                         row_key, entry, class, call_id, counts)
+            "INSERT INTO transcript_line(session_pk, position, source_key, message_pk, event_pk, time_bound,
+                                         row_key, body, class, call_id, counts)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         let mut later = tx.prepare_cached(
-            "INSERT INTO transcript_line(session_pk, seq, entry, class, call_id)
+            "INSERT INTO transcript_line(session_pk, position, body, class, call_id)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         let mut call = tx.prepare_cached(
-            "INSERT INTO transcript_call(session_pk, call_id, seq, class) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO transcript_call(session_pk, call_id, position, class) VALUES (?1, ?2, ?3, ?4)",
         )?;
         for line in &lines.lines {
             match &line.head {
@@ -268,7 +268,7 @@ fn start(conn: &Connection, session_pk: i64, from: &Key, end: i64) -> Result<Sta
     // moved or went.
     let reached: Option<i64> = conn
         .prepare_cached(
-            "SELECT min(seq) FROM transcript_line INDEXED BY transcript_line_row
+            "SELECT min(position) FROM transcript_line INDEXED BY transcript_line_row
              WHERE session_pk = ?1 AND row_key >= ?2",
         )?
         .query_row(params![session_pk, from.0], |r| r.get(0))?;
@@ -302,7 +302,7 @@ fn start(conn: &Connection, session_pk: i64, from: &Key, end: i64) -> Result<Sta
     let mut earliest_timed: Option<i64> = None;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
-        let event_order: String = row.get(1)?;
+        let event_order: Vec<u8> = row.get(1)?;
         if Key::event(&event_order, &id) < *from {
             continue;
         }
@@ -333,11 +333,11 @@ fn start(conn: &Connection, session_pk: i64, from: &Key, end: i64) -> Result<Sta
     };
     let point = conn
         .prepare_cached(
-            "SELECT i.seq, i.message_pk, i.time_bound FROM transcript_line i
+            "SELECT i.position, i.message_pk, i.time_bound FROM transcript_line i
              JOIN message m ON m.pk = i.message_pk
-             WHERE i.session_pk = ?1 AND i.seq <= ?2 AND i.message_pk IS NOT NULL
+             WHERE i.session_pk = ?1 AND i.position <= ?2 AND i.message_pk IS NOT NULL
                AND m.at IS NOT NULL
-             ORDER BY i.seq DESC LIMIT 1",
+             ORDER BY i.position DESC LIMIT 1",
         )?
         .query_row(params![session_pk, limit], |r| {
             Ok(StartPoint {
@@ -354,7 +354,7 @@ fn start(conn: &Connection, session_pk: i64, from: &Key, end: i64) -> Result<Sta
 fn header(conn: &Connection, session_pk: i64, message_pk: i64) -> Result<Option<i64>> {
     Ok(conn
         .prepare_cached(
-            "SELECT seq FROM transcript_line WHERE message_pk = ?1 AND session_pk = ?2",
+            "SELECT position FROM transcript_line WHERE message_pk = ?1 AND session_pk = ?2",
         )?
         .query_row(params![message_pk, session_pk], |r| r.get(0))
         .optional()?)
@@ -365,10 +365,10 @@ fn header(conn: &Connection, session_pk: i64, message_pk: i64) -> Result<Option<
 fn timed_place(conn: &Connection, session_pk: i64, at: i64) -> Result<i64> {
     Ok(conn
         .prepare_cached(
-            "SELECT i.seq FROM transcript_line i JOIN message m ON m.pk = i.message_pk
+            "SELECT i.position FROM transcript_line i JOIN message m ON m.pk = i.message_pk
              WHERE i.session_pk = ?1 AND i.message_pk IS NOT NULL AND m.at IS NOT NULL
                AND (i.time_bound IS NULL OR i.time_bound <= ?2)
-             ORDER BY i.seq DESC LIMIT 1",
+             ORDER BY i.position DESC LIMIT 1",
         )?
         .query_row(params![session_pk, at], |r| r.get(0))
         .optional()?
@@ -466,7 +466,7 @@ impl Unit {
 struct MessageRow {
     pk: i64,
     id: String,
-    order: String,
+    order: Vec<u8>,
     content: [u8; 32],
     active: Option<bool>,
     branch_point: bool,
@@ -477,7 +477,7 @@ struct MessageRow {
 struct EventRow {
     pk: i64,
     id: String,
-    order: String,
+    order: Vec<u8>,
     at: Option<i64>,
     after: Option<i64>,
     seq: i64,
@@ -543,16 +543,17 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id, m.session_order,
                               FROM block b WHERE b.message_pk = m.pk)),
     m.role, m.prompt_kind, m.input_tokens, m.cache_read_tokens, m.cache_write_tokens,
     m.on_active_path, m.at,
-    EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
+    EXISTS(SELECT 1 FROM message c INDEXED BY message_parent
+           WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1),
-    (SELECT group_concat(o, ',') FROM (SELECT coalesce(CAST(b.ordinal AS INTEGER), b.idx) AS o
-                                      FROM block b WHERE b.message_pk = m.pk ORDER BY b.idx)),
+    (SELECT group_concat(o, ',') FROM (SELECT coalesce(CAST(b.source_position AS INTEGER), b.position) AS o
+                                      FROM block b WHERE b.message_pk = m.pk ORDER BY b.position)),
     m.model";
 
 /// The columns an event is read with. The data a line needs is read only
 /// for the kinds whose line holds it (see [`read_data`]).
 const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, e.data_length,
-    (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.seq,
+    (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.position,
     CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.content_group END,
     e.content_start + e.content_length, e.data_length, e.session_order";
 
@@ -800,7 +801,7 @@ fn events_from(
         let mut events: Vec<EventRow> = conn
             .prepare_cached(&format!(
                 "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_session
-                 WHERE e.session_pk = ?1 ORDER BY e.seq, e.id"
+                 WHERE e.session_pk = ?1 ORDER BY e.position, e.id"
             ))?
             .query_map([session_pk], event_row)?
             .collect::<rusqlite::Result<_>>()?;
@@ -835,8 +836,8 @@ fn events_from(
     // Each written event's key, with its stored identity, entry and call ID.
     let written: Vec<(i64, EventBody)> = conn
         .prepare_cached(
-            "SELECT event_pk, unit, entry, call_id FROM transcript_line
-             WHERE session_pk = ?1 AND seq >= ?2 AND event_pk IS NOT NULL",
+            "SELECT event_pk, source_key, body, call_id FROM transcript_line
+             WHERE session_pk = ?1 AND position >= ?2 AND event_pk IS NOT NULL",
         )?
         .query_map(params![session_pk, point.seq], |row| {
             Ok((
@@ -850,7 +851,7 @@ fn events_from(
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut placed = conn.prepare_cached(
-        "SELECT e.id, e.at, (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.seq,
+        "SELECT e.id, e.at, (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.position,
                 e.session_order
          FROM event e INDEXED BY event_placement WHERE e.session_pk = ?1 AND e.pk = ?2",
     )?;
@@ -896,7 +897,7 @@ fn reached_events(conn: &Connection, session_pk: i64, from: &Key) -> Result<BTre
     )?;
     let mut rows = now.query(params![session_pk, from.order()])?;
     while let Some(row) = rows.next()? {
-        let order: String = row.get(2)?;
+        let order: Vec<u8> = row.get(2)?;
         if Key::event(&order, &row.get::<_, String>(1)?) >= *from {
             out.insert(row.get(0)?);
         }
@@ -943,8 +944,8 @@ fn rebuild(
     let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect::<Result<_>>()?;
     let written: Vec<Written> = conn
         .prepare_cached(
-            "SELECT seq, unit, message_pk, event_pk, row_key FROM transcript_line
-             WHERE session_pk = ?1 AND seq >= ?2 AND unit IS NOT NULL ORDER BY seq",
+            "SELECT position, source_key, message_pk, event_pk, row_key FROM transcript_line
+             WHERE session_pk = ?1 AND position >= ?2 AND source_key IS NOT NULL ORDER BY position",
         )?
         .query_map(params![session_pk, first_seq], |row| {
             Ok(Written {
@@ -1092,7 +1093,9 @@ fn rebuild(
 /// The counts stored on the unit whose first line is at `seq`.
 fn unit_counts(conn: &Connection, session_pk: i64, seq: i64) -> Result<ItemCounts> {
     let counts: Option<Vec<u8>> = conn
-        .prepare_cached("SELECT counts FROM transcript_line WHERE session_pk = ?1 AND seq = ?2")?
+        .prepare_cached(
+            "SELECT counts FROM transcript_line WHERE session_pk = ?1 AND position = ?2",
+        )?
         .query_row(params![session_pk, seq], |row| row.get(0))
         .optional()?
         .flatten();
@@ -1237,8 +1240,8 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
     let mut blocks = Vec::new();
     let mut ordinals = Vec::new();
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT b.pk, coalesce(CAST(b.ordinal AS INTEGER), b.idx), {}
-         FROM block b {} WHERE b.message_pk = ?1 ORDER BY b.idx",
+        "SELECT b.pk, coalesce(CAST(b.source_position AS INTEGER), b.position), {}
+         FROM block b {} WHERE b.message_pk = ?1 ORDER BY b.position",
         crate::ordered_blocks::COLUMNS,
         crate::ordered_blocks::TEXT_JOIN
     ))?;
@@ -1286,9 +1289,9 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
 fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
     let mut digest = blake3::Hasher::new();
     let mut statement = conn.prepare_cached(
-        "SELECT l.parent_id, l.kind, l.how, coalesce(l.branch_point, ''), coalesce(l.spawning_call, ''), CAST(l.copies_prefix AS TEXT)
+        "SELECT l.parent_id, l.kind, l.reason, coalesce(l.branch_point, ''), coalesce(l.spawning_call, ''), CAST(l.copies_prefix AS TEXT)
          FROM session_link l JOIN session s ON s.id = l.child_id
-         WHERE s.pk = ?1 ORDER BY l.parent_id,l.kind,l.how,l.branch_point,l.spawning_call",
+         WHERE s.pk = ?1 ORDER BY l.parent_id,l.kind,l.reason,l.branch_point,l.spawning_call",
     )?;
     let mut rows = statement.query([session_pk])?;
     while let Some(row) = rows.next()? {
@@ -1301,7 +1304,7 @@ fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
             digest.update(b"\0");
         }
     }
-    let mut copies = conn.prepare_cached("SELECT DISTINCT p.parent_id FROM prefix_copy p JOIN session s ON s.id=p.child_id WHERE s.pk=?1 ORDER BY p.parent_id")?;
+    let mut copies = conn.prepare_cached("SELECT DISTINCT p.parent_id FROM shared_prefix p JOIN session s ON s.id=p.child_id WHERE s.pk=?1 ORDER BY p.parent_id")?;
     let parents = copies.query_map([session_pk], |row| row.get::<_, String>(0))?;
     for parent in parents {
         digest.update(b"copied-prefix\0");
@@ -1417,7 +1420,7 @@ pub(crate) type StoredColumns = (
 #[cfg(test)]
 pub(crate) fn stored_columns(conn: &Connection, session_pk: i64) -> Result<StoredColumns> {
     let mut statement = conn.prepare(
-        "SELECT class, call_id, counts FROM transcript_line WHERE session_pk = ?1 ORDER BY seq",
+        "SELECT class, call_id, counts FROM transcript_line WHERE session_pk = ?1 ORDER BY position",
     )?;
     let mut rows = statement.query([session_pk])?;
     let mut out = Vec::new();

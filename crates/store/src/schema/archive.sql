@@ -10,7 +10,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE machine (
   id            TEXT NOT NULL,           -- /etc/machine-id
   host          TEXT NOT NULL,           -- host name: a label for display, never a key
-  first_seen    INTEGER NOT NULL,
+  first_seen_at INTEGER NOT NULL,
   PRIMARY KEY (id, host)
 ) STRICT, WITHOUT ROWID;
 
@@ -36,7 +36,7 @@ CREATE TABLE input (
                                          -- 32 hex digits of BLAKE3(machine, 0x00, real path bytes); a Codex rollout
                                          -- is 'codex:rollout:<session id>@<machine>'; an imported file is its full
                                          -- hex BLAKE3
-  format        TEXT NOT NULL            -- the origin's name: 'claude-code', 'codex', 'chatgpt', ...
+  origin        TEXT NOT NULL            -- the origin's name: 'claude-code', 'codex', 'chatgpt', ...
                                          -- (when it was first seen is a query over its observations, so an input
                                          --  named by content is the same row on every machine)
 ) STRICT;
@@ -124,12 +124,12 @@ CREATE INDEX observation_path_bytes ON observation(machine,path_bytes,commit_seq
 
 
 -- A query result kept as it was (cited in a note, a briefing or a page).
-CREATE TABLE kept_result (
+CREATE TABLE saved_rows (
   id            TEXT PRIMARY KEY,        -- UUIDv7; referenced as result:<id>
   name          TEXT,                    -- optional label
   query         TEXT NOT NULL,
   ran_at        INTEGER NOT NULL,
-  read_at       TEXT NOT NULL,           -- what its read transaction read (the query's resolved time), as JSON
+  read_position TEXT NOT NULL,           -- what its read transaction read (the query's resolved time), as JSON
   rows_json     TEXT NOT NULL            -- row references (notes pinned to a revision), the displayed values,
                                          -- and the match rows of each match
 ) STRICT;
@@ -151,7 +151,8 @@ CREATE TABLE delivery (
   body              BLOB NOT NULL,          -- the delivered text, zstd
   refs_json         TEXT NOT NULL,          -- references included, in order
   left_out_json     TEXT NOT NULL DEFAULT '[]',  -- references and sections left out, each with its reason
-  commit_seq        INTEGER NOT NULL
+  commit_seq        INTEGER NOT NULL,
+  prepared_position INTEGER                 -- the archive write counter its content was read at; NULL when not recorded
 ) STRICT;
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
 CREATE INDEX delivery_sender ON delivery(sender, at);   -- signal notices; the evaluator's history
@@ -161,12 +162,12 @@ CREATE INDEX delivery_commit_seq ON delivery(commit_seq);
 -- What happened to a prepared delivery: delivered | failed | not_sent | used.
 CREATE TABLE delivery_event (
   delivery          TEXT NOT NULL REFERENCES delivery(id),
-  what              TEXT NOT NULL CHECK (what IN (@names(DeliveryOutcome))),
+  outcome           TEXT NOT NULL CHECK (outcome IN (@names(DeliveryOutcome))),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
   request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (delivery, what, at)
+  PRIMARY KEY (delivery, outcome, at)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX delivery_event_commit_seq ON delivery_event(commit_seq);
 CREATE UNIQUE INDEX delivery_event_request ON delivery_event(delivery,request);
@@ -205,7 +206,7 @@ CREATE INDEX chat_action_attachment_blob ON chat_action_attachment(blob);
 -- reported (drafted, submitted, outcome_unknown, rate_limited, failed, ...).
 CREATE TABLE chat_action_event (
   action            TEXT NOT NULL REFERENCES chat_action(id),
-  n                 INTEGER NOT NULL,       -- 1, 2, ...
+  position          INTEGER NOT NULL,       -- 1, 2, ...
   at                INTEGER NOT NULL,
   kind              TEXT NOT NULL,
   phase             TEXT NOT NULL,          -- the extension's step, as it reported it
@@ -214,7 +215,7 @@ CREATE TABLE chat_action_event (
   receipt_json      TEXT,                   -- the provider's record of the result, as the extension saw it
   request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
-  PRIMARY KEY (action, n)
+  PRIMARY KEY (action, position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX chat_action_event_commit_seq ON chat_action_event(commit_seq);
 CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,request);
@@ -223,7 +224,7 @@ CREATE UNIQUE INDEX chat_action_event_request ON chat_action_event(action,reques
 CREATE TABLE observation_container (
     observation_id TEXT PRIMARY KEY REFERENCES observation(id),
     container_input TEXT NOT NULL REFERENCES input(id),
-    member_index INTEGER NOT NULL CHECK(member_index>=0),
+    member_position INTEGER NOT NULL CHECK(member_position>=0),
     kind TEXT NOT NULL,
     path_bytes BLOB NOT NULL
 ) STRICT;
@@ -248,11 +249,11 @@ CREATE INDEX import_job_commit_seq ON import_job(commit_seq);
 -- totals so far and where in the provider's conversation list to continue.
 CREATE TABLE import_job_event (
   job               TEXT NOT NULL REFERENCES import_job(id),
-  n                 INTEGER NOT NULL,       -- 1, 2, ...
+  position          INTEGER NOT NULL,       -- 1, 2, ...
   at                INTEGER NOT NULL,
   kind              TEXT NOT NULL,
   by                TEXT,                   -- the extension instance holding the claim, or the operator
-  position          TEXT,                   -- the provider's own list position, as the extension reported it
+  provider_position TEXT,                   -- the provider's own list position, as the extension reported it
   listed            INTEGER NOT NULL,       -- conversations the provider listed so far
   captured          INTEGER NOT NULL,       -- captured and stored
   unchanged         INTEGER NOT NULL,       -- already in the archive as the provider has them
@@ -260,7 +261,7 @@ CREATE TABLE import_job_event (
   detail            TEXT,
   request           TEXT NOT NULL,       -- original authored request identity
   commit_seq        INTEGER NOT NULL,
-  PRIMARY KEY (job, n)
+  PRIMARY KEY (job, position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX import_job_event_commit_seq ON import_job_event(commit_seq);
 CREATE UNIQUE INDEX import_job_event_request ON import_job_event(job,request);
@@ -269,12 +270,12 @@ CREATE UNIQUE INDEX import_job_event_request ON import_job_event(job,request);
 -- blobs, kept by the triggers below so that status does not scan the tables.
 CREATE TABLE row_count (
   name          TEXT PRIMARY KEY,        -- input | revision | stored_bytes
-  n             INTEGER NOT NULL
+  count         INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
-INSERT INTO row_count(name, n) VALUES ('input', 0), ('revision', 0), ('stored_bytes', 0);
-CREATE TRIGGER input_added AFTER INSERT ON input BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'input'; END;
-CREATE TRIGGER input_removed AFTER DELETE ON input BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'input'; END;
-CREATE TRIGGER revision_added AFTER INSERT ON revision BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'revision'; END;
-CREATE TRIGGER revision_removed AFTER DELETE ON revision BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'revision'; END;
-CREATE TRIGGER blob_added AFTER INSERT ON blob BEGIN UPDATE row_count SET n = n + new.size WHERE name = 'stored_bytes'; END;
-CREATE TRIGGER blob_removed AFTER DELETE ON blob BEGIN UPDATE row_count SET n = n - old.size WHERE name = 'stored_bytes'; END;
+INSERT INTO row_count(name, count) VALUES ('input', 0), ('revision', 0), ('stored_bytes', 0);
+CREATE TRIGGER input_added AFTER INSERT ON input BEGIN UPDATE row_count SET count = count + 1 WHERE name = 'input'; END;
+CREATE TRIGGER input_removed AFTER DELETE ON input BEGIN UPDATE row_count SET count = count - 1 WHERE name = 'input'; END;
+CREATE TRIGGER revision_added AFTER INSERT ON revision BEGIN UPDATE row_count SET count = count + 1 WHERE name = 'revision'; END;
+CREATE TRIGGER revision_removed AFTER DELETE ON revision BEGIN UPDATE row_count SET count = count - 1 WHERE name = 'revision'; END;
+CREATE TRIGGER blob_added AFTER INSERT ON blob BEGIN UPDATE row_count SET count = count + new.size WHERE name = 'stored_bytes'; END;
+CREATE TRIGGER blob_removed AFTER DELETE ON blob BEGIN UPDATE row_count SET count = count - old.size WHERE name = 'stored_bytes'; END;

@@ -1,3 +1,4 @@
+use super::compose::*;
 use super::*;
 use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
 

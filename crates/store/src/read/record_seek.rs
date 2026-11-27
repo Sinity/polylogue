@@ -17,7 +17,7 @@ row! {
     }
     statements {
         const OF_SESSION = "SELECT (SELECT count(*) FROM event e WHERE e.session_pk=s.pk) AS events,
-            (SELECT count(*) FROM session_link_identity l WHERE l.parent_id=s.id OR l.child_id=s.id) AS links
+            (SELECT count(*) FROM session_link l WHERE l.parent_id=s.id OR l.child_id=s.id) AS links
             FROM session s WHERE s.id=?1";
     }
 }

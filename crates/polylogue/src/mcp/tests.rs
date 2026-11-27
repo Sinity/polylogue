@@ -850,47 +850,185 @@ fn typed_acceptance_failure_answers_without_a_daemon() {
     assert!(error.message.contains("read: unknown argument author"));
 }
 
-/// The tool list is the shared declarations rendered from the rows: one
-/// tool per family, each row its operation, its input from the rows' typed
-/// requests.
+/// The tool list is the shared declarations rendered from the rows: the
+/// same tools with the declared descriptions; each tool offers exactly the
+/// operations of its rows and of the smaller tools' rows (the read tool also
+/// listing and showing settings), the steps within its access, and takes
+/// each row's typed arguments; `operation` is never required.
 #[test]
 fn tool_schema_from_operation_table() {
+    tools_follow_the_operation_table(&tools());
+}
+
+fn tools_follow_the_operation_table(listed: &[Value]) {
     let declarations = crate::commands::declarations();
     let declared = declarations.mcp_tools();
-    for home in &declared {
-        let entry = tools()
-            .into_iter()
-            .find(|tool| tool["name"] == home["name"])
-            .unwrap();
+    let names = |tools: &[Value]| -> Vec<String> {
+        tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(listed), names(&declared));
+    let offered = crate::daemon::verbs::offered_over_mcp();
+    for (entry, home) in listed.iter().zip(&declared) {
         assert_eq!(entry["description"], home["description"]);
-    }
-    for tool in Tool::ALL {
-        let listed = tools()
+        let tool = Tool::named(entry["name"].as_str().unwrap()).unwrap();
+        let mut rows: Vec<&str> = Tool::ALL
             .into_iter()
-            .find(|listed| listed["name"] == tool.name())
-            .unwrap();
-        let rows: Vec<&str> = operations(tool).map(|row| row.name).collect();
-        let offered: Vec<&str> = listed["inputSchema"]["properties"]["operation"]["enum"]
-            .as_array()
-            .map(|names| names.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_else(|| rows.clone());
-        for row in &rows {
-            assert!(offered.contains(row), "{} on {}", row, tool.name());
+            .filter(|smaller| smaller.access() <= tool.access())
+            .flat_map(operations)
+            .map(|row| row.name)
+            .collect();
+        if tool == Tool::Read {
+            rows.push("set");
         }
-        let family = declarations.family_schemas(
+        let mut operations: Vec<&str> = entry["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        rows.sort_unstable();
+        operations.sort_unstable();
+        assert_eq!(operations, rows, "{}", tool.name());
+        assert!(
+            !entry["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("operation")),
+            "{}",
             tool.name()
-                .strip_prefix("polylogue_")
-                .expect("product tool prefix"),
         );
-        for row in &rows {
+        let verbs: Vec<&str> = offered
+            .iter()
+            .filter(|(_, access)| *access <= tool.access())
+            .map(|(verb, _)| *verb)
+            .collect();
+        assert_eq!(
+            entry["inputSchema"]["properties"]["arguments"]["properties"]["steps"]["items"]["properties"]
+                ["verb"]["enum"],
+            json!(verbs),
+            "{}",
+            tool.name()
+        );
+        let family = declarations.family_schemas(tool.family());
+        for row in operations_of(tool) {
             let description = declarations
                 .descriptions()
                 .iter()
-                .find(|description| description.spec.name == *row)
+                .find(|description| description.spec.name == row)
                 .unwrap();
-            assert_eq!(family[*row], description.input_schema, "{row}");
+            assert_eq!(family[row], description.input_schema, "{row}");
         }
     }
+}
+
+fn operations_of(tool: Tool) -> Vec<&'static str> {
+    operations(tool).map(|row| row.name).collect()
+}
+
+/// The descriptions offer only what the build does: every verb signature
+/// and operation signature they print names declared fields, and nothing on
+/// the list of what is not built appears as an option of its verb.
+#[test]
+fn tool_descriptions_name_only_built_options() {
+    let verbs = crate::daemon::verbs::declarations();
+    for tool in tools() {
+        let description = tool["description"].as_str().unwrap();
+        for line in description.lines() {
+            let Some((verb, fields)) = line
+                .trim_start()
+                .split_once('(')
+                .filter(|(name, _)| !name.contains(' ') || name.starts_with("dev "))
+            else {
+                continue;
+            };
+            let Some(declared) = verbs
+                .verbs()
+                .iter()
+                .find(|declared| declared.verb() == verb)
+            else {
+                continue;
+            };
+            let fields = fields.split_once(')').unwrap().0;
+            for field in fields.split(", ").filter(|field| !field.is_empty()) {
+                let field = field.trim_end_matches('?');
+                assert!(
+                    declared.input_schema()["properties"].get(field).is_some(),
+                    "{verb}({field}) in {}",
+                    tool["name"]
+                );
+                assert!(
+                    crate::unbuilt::option(verb, field).is_none(),
+                    "{verb}({field}) is not built"
+                );
+            }
+            assert!(
+                line.trim_start().starts_with(&declared.signature()),
+                "{line}"
+            );
+        }
+    }
+    // Each verb a tool adds is described there, and pick, which needs a
+    // person, nowhere.
+    let all: String = tools()
+        .iter()
+        .map(|tool| tool["description"].as_str().unwrap().to_owned())
+        .collect();
+    for (verb, _) in crate::daemon::verbs::offered_over_mcp() {
+        assert!(all.contains(&format!("  {verb}(")), "{verb}");
+    }
+    assert!(!all.contains("  pick("));
+}
+
+/// docs/agents.md, The tools as they ship: the page states the server
+/// instructions and each tool's name, annotations, description and input
+/// schema; the server lists exactly these.
+#[test]
+fn the_tools_as_they_ship_equal_the_page() {
+    let page = include_str!("../../../../docs/agents.md");
+    let section = page.split_once("\n### The tools as they ship\n").unwrap().1;
+    let section = &section[..section.find("\n### ").unwrap()];
+    let blocks = |text: &str| -> Vec<String> {
+        text.split("\n```")
+            .skip(1)
+            .step_by(2)
+            .map(|block| block.split_once('\n').unwrap().1.trim_end().to_owned())
+            .collect()
+    };
+    let headings = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("**`polylogue_"))
+            .map(str::to_owned)
+            .collect()
+    };
+    // What the server lists, written as the page writes it.
+    let listed = tools();
+    let mut served = format!("\n```\n{}\n```\n", crate::manual::card().trim_end());
+    for tool in &listed {
+        served.push_str(&format!(
+            "\n**`{}`** · annotations `{}`\n\n```\n{}\n```\n\n```json\n{}\n```\n",
+            tool["name"].as_str().unwrap(),
+            tool["annotations"],
+            tool["description"].as_str().unwrap(),
+            tool["inputSchema"],
+        ));
+    }
+    println!("{served}");
+    assert_eq!(headings(section), headings(&served));
+    let (on_page, from_server) = (blocks(section), blocks(&served));
+    assert_eq!(on_page.len(), from_server.len());
+    for (page, server) in on_page.iter().zip(&from_server) {
+        match serde_json::from_str::<Value>(page) {
+            Ok(schema) => assert_eq!(schema, serde_json::from_str::<Value>(server).unwrap()),
+            Err(_) => assert_eq!(page, server),
+        }
+    }
+    let size = serde_json::to_string(&listed).unwrap().len();
+    let card = crate::manual::card().len();
+    assert!(card <= 800, "the instructions are {card} bytes");
+    println!("tool list {size} bytes as compact JSON, instructions {card} bytes");
 }
 
 #[test]

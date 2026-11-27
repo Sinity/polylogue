@@ -225,21 +225,24 @@ fn changes_continue_from_a_feed_position() {
     assert!(sql.contains(".seq > 3) OR ("), "{sql}");
     assert!(sql.contains(".seq > 12) OR"), "{sql}");
     assert!(sql.contains(".changed > 12 OR"), "{sql}");
-    assert!(compile_err("feed where after:12").contains("GENERATION:INDEX:ARCHIVE"));
+    assert!(compile_err("feed where after:12").contains("INDEX_INSTANCE:INDEX:ARCHIVE"));
 }
 
 #[test]
 fn deliveries_take_their_outcome_from_the_latest_event() {
     let p = c("deliveries where sender:signal | sort by at desc");
     let sql = statements(&p);
-    assert!(sql.contains("delivery_event"), "{sql}");
-    assert!(!sql.contains(".outcome"), "{sql}");
+    // The outcome is the latest event's, not a column of the delivery.
+    assert!(
+        sql.contains("SELECT e.outcome FROM source_delivery_event e"),
+        "{sql}"
+    );
 }
 
 #[test]
 fn every_stored_value_can_be_queried() {
     use polylogue_model::{
-        BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
+        BlockKind, LINK_KIND_NAMES, LINK_REASON_NAMES, LinkKind, PromptKind, Role, SessionKind,
     };
     let closed: &[(&str, &[&str])] = &[
         ("sessions where kind:", SessionKind::NAMES),
@@ -247,7 +250,7 @@ fn every_stored_value_can_be_queried() {
         ("messages where prompt_kind:", PromptKind::NAMES),
         ("blocks where kind:", BlockKind::NAMES),
         ("session_links where kind:", LINK_KIND_NAMES),
-        ("session_links where how:", LINK_HOW_NAMES),
+        ("session_links where reason:", LINK_REASON_NAMES),
     ];
     for (query, names) in closed {
         for name in *names {

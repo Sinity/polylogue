@@ -164,7 +164,7 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Annotation {
         match frame.event.as_str() {
             "begin" => {
                 assert!(!began);
-                let _: polylogue_model::read::ReadBegin =
+                let _: polylogue_model::read::ReadHeader =
                     serde_json::from_str(&frame.data).unwrap();
                 began = true;
             }
@@ -336,7 +336,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
                 "kept",
                 json!({"selection":"annotations where kind:question","steps":[{"verb":"save"}]})
             )
-            .await["kept"]["result"],
+            .await["saved_rows"]["result"],
             "result:kept-1"
         );
         assert_eq!(

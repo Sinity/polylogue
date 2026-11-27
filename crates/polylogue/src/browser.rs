@@ -1,5 +1,5 @@
 //! The browser extension's side of Polylogue: the capture spool and the
-//! routes the extension calls through its native messaging host,
+//! requests the extension sends through its native messaging host,
 //! `polylogue internal browser-host`. Chrome starts the host only for the extension
 //! IDs its manifest names, so no token or pairing is needed. The host
 //! writes captures into the spool, which the daemon ingests like any
@@ -16,13 +16,9 @@ pub mod actions;
 mod captures;
 pub mod import_job;
 pub mod native;
-pub(crate) mod notes;
-pub mod routes;
 
-use command_surface::Answer;
 use polylogue_engine::Config;
 use polylogue_store::Archive;
-use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
@@ -33,8 +29,6 @@ pub const HOST_NAME: &str = "com.polylogue.browser_capture";
 pub struct BrowserHost {
     /// `<state>/browser-capture`: one capture log per conversation.
     pub spool: PathBuf,
-    /// Where the daemon records its reader address.
-    pub runtime_dir: PathBuf,
     /// The daemon's socket.
     pub socket: PathBuf,
 }
@@ -42,57 +36,13 @@ pub struct BrowserHost {
 impl BrowserHost {
     /// The spool in Polylogue's state directory as the daemon's loop sees
     /// it (`config`), for the archive at `archive`.
-    pub fn at(
-        config: &Config,
-        archive: &Archive,
-        paths: &crate::config::Paths,
-    ) -> std::io::Result<Self> {
+    pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {
         let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
         fs::create_dir_all(&spool)?;
         Ok(Self {
             spool,
-            runtime_dir: paths.runtime_dir(&archive.root),
             socket: archive.socket(),
         })
-    }
-
-    /// Asks the daemon. `None` when it does not answer: callers report what
-    /// they cannot know as unknown, never as absent.
-    pub fn ask(&self, operation: &str, arguments: Value) -> Option<Answer<Value>> {
-        self.ask_as(
-            operation,
-            arguments,
-            polylogue_store::user_writes::new_request_id(),
-        )
-    }
-
-    /// Asks the daemon with the caller's own retry identity.
-    pub fn ask_as(
-        &self,
-        operation: &str,
-        arguments: Value,
-        request_id: String,
-    ) -> Option<Answer<Value>> {
-        crate::client::call(
-            &self.socket,
-            &crate::client::request(operation, arguments, request_id),
-        )
-        .ok()
-    }
-
-    /// The chat actions setting, or `None` when the daemon does not answer.
-    /// The answer also shows the daemon is serving: a cheap read, unlike
-    /// `status`, which counts the whole archive.
-    pub fn actions_setting(&self) -> Option<bool> {
-        let data = crate::protocol::into_value(
-            self.ask("set", serde_json::json!({ "key": "browser.actions" }))?,
-        )
-        .ok()?;
-        let current: polylogue_model::settings::Current = serde_json::from_value(data).ok()?;
-        match current.value {
-            Some(polylogue_model::settings::Value::Boolean(enabled)) => Some(enabled),
-            _ => None,
-        }
     }
 
     /// The capture log of one provider conversation.

@@ -107,7 +107,7 @@ pub(crate) fn write(
             false,
         )?;
     }
-    for (ordinal, event) in commit.events.iter().enumerate() {
+    for (request_position, event) in commit.events.iter().enumerate() {
         let id = event.delivery_id();
         let Some(base) = metadata(conn, source, id)? else {
             let stored: Option<i64> = conn.scalar_optional(
@@ -141,7 +141,10 @@ pub(crate) fn write(
             conn,
             &EventRecord {
                 request: request.id.clone(),
-                ordinal: crate::to_u64(ordinal, "signal event ordinal overflow")?,
+                request_position: crate::to_u64(
+                    request_position,
+                    "signal event request position overflow",
+                )?,
                 position,
                 at: request.at,
                 event: event.clone(),
@@ -161,8 +164,11 @@ fn store_checkpoint(conn: &Connection, value: &Checkpoint, counter: i64) -> Resu
     conn.execute(&source.sql("INSERT INTO @source.signal_state(owner,body,commit_seq) VALUES(?1,?2,?3) ON CONFLICT(owner) DO UPDATE SET body=excluded.body,commit_seq=excluded.commit_seq"),params![value.owner,crate::authored_records::pack(value)?,counter])?;
     Ok(())
 }
-fn ordinal(value: &EventRecord) -> Result<i64> {
-    crate::to_i64(value.ordinal, "signal event ordinal exceeds SQLite range")
+fn request_position(value: &EventRecord) -> Result<i64> {
+    crate::to_i64(
+        value.request_position,
+        "signal event request position exceeds SQLite range",
+    )
 }
 fn position(value: &EventRecord) -> Result<i64> {
     crate::to_i64(value.position, "signal event position exceeds SQLite range")
@@ -173,7 +179,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
     }
     let source = Source::of(conn)?;
     let id = value.event.delivery_id();
-    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,ordinal(value)?,id,position(value)?])?;
+    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND request_position=?2) OR (delivery=?3 AND position=?4)"),params![value.request,request_position(value)?,id,position(value)?])?;
     if let Some(old) = old {
         let old: EventRecord = crate::encoding::unpack_json(&old)?;
         return if old == *value {
@@ -182,7 +188,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
             Err(StoreError::internal("a signal event identity was reused"))
         };
     }
-    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::authored_records::pack(value)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,request_position,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,request_position(value)?,id,position(value)?,value.at.unix_ms(),crate::authored_records::pack(value)?,counter])?;
     Ok(())
 }
 pub(crate) fn capture(
@@ -254,7 +260,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
         let id = event.event.delivery_id();
         if event.position == 0
             || event.request.is_empty()
-            || !identities.insert((&event.request, event.ordinal))
+            || !identities.insert((&event.request, event.request_position))
         {
             return Err(StoreError::internal(
                 "signal event identity is empty or duplicated",
@@ -288,10 +294,10 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                     "signal checkpoint differs from recorded request",
                 ));
             }
-            for (ordinal, event) in commit.events.iter().enumerate() {
+            for (request_position, event) in commit.events.iter().enumerate() {
                 if !effect.signal_events.iter().any(|e| {
                     e.request == prepared.request.id
-                        && e.ordinal == ordinal as u64
+                        && e.request_position == request_position as u64
                         && &e.event == event
                 }) {
                     return Err(StoreError::internal(
