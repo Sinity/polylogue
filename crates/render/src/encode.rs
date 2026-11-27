@@ -613,15 +613,16 @@ impl<'a> Encoder<'a> {
                 from,
                 to,
                 relation,
-                how,
+                reason,
                 cross_link,
                 branch_point,
                 spawning_call,
                 copies_prefix,
             } => self.line(&format!(
                 "{from} → {to} · {relation}{}{}{}{}{}",
-                how.as_ref()
-                    .map(|how| format!(" ({how})"))
+                reason
+                    .as_ref()
+                    .map(|reason| format!(" ({reason})"))
                     .unwrap_or_default(),
                 if *copies_prefix {
                     " · copied prefix"

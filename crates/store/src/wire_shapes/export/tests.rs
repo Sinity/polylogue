@@ -138,7 +138,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     apply_step(&mut conn, 2, &complete).unwrap();
     let reading: Reading = serde_json::from_str(&state(&conn)).unwrap();
     assert_eq!(reading.status(), CoverageStatus::Complete);
-    assert_eq!(reading.parsed_upto, 2);
+    assert_eq!(reading.parsed_to, 2);
     assert!(matches!(
         reading.last.covered,
         ReadRange::Export {
@@ -213,7 +213,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
     let reading: Reading = serde_json::from_str(&original).unwrap();
     assert!(reading.refused_export && reading.export_cursor.is_none() && !reading.reached_end);
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
-    assert_eq!(reading.parsed_upto, 0);
+    assert_eq!(reading.parsed_to, 0);
     conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parser_version TEXT,state TEXT,parsed_to INTEGER,waiting INTEGER,failure_kind TEXT); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsed',0,0,NULL);").unwrap();
     let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
     assert_eq!(report.coverage.len(), 1);
@@ -308,7 +308,7 @@ fn header_line_failures_preserve_counts_and_allow_valid_items_and_complete() {
     let finished: Reading = serde_json::from_str(&saved).unwrap();
     assert!(!finished.refused_export);
     assert!(finished.reached_end);
-    assert_eq!(finished.parsed_upto, 2);
+    assert_eq!(finished.parsed_to, 2);
     assert_eq!(finished.export_cursor.unwrap().last_ordinal, 2);
     assert_eq!(finished.unreadable, 1);
     assert_eq!(finished.status(), CoverageStatus::Unreadable);
