@@ -193,13 +193,31 @@ fn shared_tree_keeps_boolean_modes_values_and_spans() {
 
 #[test]
 fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
-    for (text, correction) in [
-        ("messages:>=10", "messages >= 10"),
-        ("reop:morrow", "repo:morrow"),
+    for (text, correction, code, expected) in [
+        (
+            "messages:>=10",
+            "messages >= 10",
+            polylogue_model::Code::InvalidQuery,
+            ConditionKind::Compare {
+                left: Expression::field("messages"),
+                op: Op::Ge,
+                right: Expression::value(Value::scalar("10")),
+            },
+        ),
+        (
+            "reop:morrow",
+            "repo:morrow",
+            polylogue_model::Code::UnknownField,
+            ConditionKind::Match {
+                field: "repo".into(),
+                value: Value::scalar("morrow"),
+            },
+        ),
     ] {
         let error = parse(text).unwrap_err();
+        assert_eq!(error.kind(), code);
         assert_eq!(error.suggestion(), Some(correction));
-        assert!(parse(correction).is_ok());
+        assert_eq!(cond(correction), expected);
     }
 }
 
@@ -292,7 +310,34 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         panic!()
     };
     assert_eq!(aggregates[2].column(), "p90_duration");
-    assert!(parse("sessions | except (messages where chrono)").is_err());
+    let error = parse("sessions | except (messages where chrono)").unwrap_err();
+    let QueryError::Language { error, .. } = error else {
+        panic!("expected a query language error, got {error:?}");
+    };
+    assert_eq!(error.kind, query_language::ErrorKind::InvalidQuery);
+    assert_eq!(
+        error.message,
+        "except needs rows of one unit or the same projected fields and types; project both sides with `| fields …`"
+    );
+    let accepted = p("sessions | except (sessions where chrono)");
+    let TransformKind::Combine { how, query } = &accepted.transforms[0].kind else {
+        panic!("expected a combination, got {:?}", accepted.transforms);
+    };
+    assert_eq!(*how, Combination::Except);
+    let Source::Unit {
+        unit, condition, ..
+    } = &query.source
+    else {
+        panic!("expected the sessions unit, got {:?}", query.source);
+    };
+    assert_eq!(unit, "sessions");
+    assert_eq!(
+        condition.as_ref().unwrap().kind,
+        ConditionKind::Text {
+            text: "chrono".into(),
+            mode: TextMode::Word
+        }
+    );
     let nested =
         p("origin:codex | union (repo:morrow | where cost > 1) | except (sessions where chrono)");
     assert_eq!(nested.transforms.len(), 2);
