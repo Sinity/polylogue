@@ -85,6 +85,12 @@ fn a_failure_after_a_build_range_leaves_a_diagnosis_at_the_committed_cursor() {
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     }
     assert_eq!(w.texts("scratch").len(), 2);
+    let watched = w
+        .read(|reader| reader.known_watched_inputs("test-machine"))
+        .into_iter()
+        .next()
+        .unwrap();
+    let chain = watched.chain.unwrap();
     fs::remove_file(&path).unwrap();
     delete_index(&w.root);
 
@@ -95,16 +101,15 @@ fn a_failure_after_a_build_range_leaves_a_diagnosis_at_the_committed_cursor() {
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
     assert!(pass.errors[0].to_string().contains("panicked"));
     assert_eq!(w.count("SELECT count(*) AS n FROM message_parse"), 0);
-    let rows =
-        w.read(|reader| reader.query("SELECT state,parsed_to,seen_to FROM parse_state", &[]));
-    assert_eq!(
-        rows,
-        [serde_json::json!({
-            "state": "failed",
-            "parsed_to": 0,
-            "seen_to": first.len() + second.len()
-        })]
-    );
+    let state = w.read(|reader| reader.chain_state(&watched.input_id, chain));
+    let polylogue_model::chain::ChainState::Failed {
+        parsed_to, seen_to, ..
+    } = state
+    else {
+        panic!("the failed scratch reading should have a recorded diagnosis: {state:?}");
+    };
+    assert_eq!(parsed_to, 0);
+    assert_eq!(seen_to, (first.len() + second.len()) as u64);
 
     // The one-shot fault is gone, but this version's failed attempt is
     // already recorded. An idle pass should not try it again.
