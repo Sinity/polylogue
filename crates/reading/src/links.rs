@@ -27,7 +27,7 @@ struct Frame {
 enum Step {
     Node {
         session: String,
-        /// The node whose link reached it, with that link's kind and how.
+        /// The node whose link reached it, with that link's kind and reason.
         joined: Option<SessionLink>,
         references: Vec<SessionLink>,
         parents: Vec<SessionLink>,

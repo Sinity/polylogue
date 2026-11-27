@@ -59,7 +59,7 @@ pub(super) fn link_statement(link: &Link) -> Result<Vec<u8>> {
         link.parent.to_string(),
         link.child.to_string(),
         link.kind.as_str(),
-        link.reason.map(|how| how.as_str()),
+        link.reason.map(|reason| reason.as_str()),
         link.branch_point.as_ref().map(ToString::to_string),
         link.call_id.as_deref(),
     ))?)
@@ -971,7 +971,7 @@ fn write_links(
             link.parent.to_string(),
             link.child.to_string(),
             link.kind.as_str(),
-            link.reason.map(|how| how.as_str()),
+            link.reason.map(|reason| reason.as_str()),
             chain.route.as_str(),
             crate::encoding::value_hash(&merged)?.as_slice(),
             serde_json::to_vec(&merged)?,

@@ -187,20 +187,20 @@ impl Reader<'_> {
             ))
         })?;
         for row in rows {
-            let ((kind, how), parent, child, at, call_id, evidence, copies_prefix) = row?;
+            let ((kind, reason), parent, child, at, call_id, evidence, copies_prefix) = row?;
             let kind = LinkKind::from_name(&kind)
                 .ok_or_else(|| crate::StoreError::stored(0, format!("unknown link kind {kind}")))?;
-            let how = how
-                .map(|how| {
-                    polylogue_model::ReferenceReason::from_name(&how).ok_or_else(|| {
-                        crate::StoreError::stored(0, format!("unknown reference reason {how}"))
+            let reason = reason
+                .map(|reason| {
+                    polylogue_model::ReferenceReason::from_name(&reason).ok_or_else(|| {
+                        crate::StoreError::stored(0, format!("unknown reference reason {reason}"))
                     })
                 })
                 .transpose()?;
             let link = Link {
                 kind,
                 copies_prefix,
-                reason: how,
+                reason: reason,
                 parent,
                 child,
                 branch_point: at,

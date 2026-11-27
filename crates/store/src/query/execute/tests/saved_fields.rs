@@ -1792,9 +1792,9 @@ fn tree_cost_follows_spawn_links_only() {
     f.link("test:parent", "test:fork", "fork", None).unwrap();
     f.link("test:fork", "test:fork-spawned", "spawn", None)
         .unwrap();
-    let costs = |id: &str| {
+    let costs = |fixture: &Fixture, id: &str| {
         let row = rows(
-            &f,
+            fixture,
             &format!("sessions where id:test:{id}"),
             &["tree_cost", "subagent_cost"],
         )
@@ -1803,10 +1803,10 @@ fn tree_cost_follows_spawn_links_only() {
     };
     // Costs are shown in USD.
     let usd = |whole: i64| serde_json::json!(whole);
-    assert_eq!(costs("parent"), (usd(7), usd(6)));
-    assert_eq!(costs("fork"), (usd(24), usd(16)));
-    assert_eq!(costs("grandchild"), (usd(4), usd(0)));
+    assert_eq!(costs(&f, "parent"), (usd(7), usd(6)));
+    assert_eq!(costs(&f, "fork"), (usd(24), usd(16)));
+    assert_eq!(costs(&f, "grandchild"), (usd(4), usd(0)));
     f.link("test:grandchild", "test:missing", "spawn", None)
         .unwrap();
-    assert_eq!(costs("grandchild"), (usd(4), serde_json::Value::Null));
+    assert_eq!(costs(&f, "grandchild"), (usd(4), serde_json::Value::Null));
 }

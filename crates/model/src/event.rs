@@ -87,7 +87,7 @@ stored_names! {
 }
 
 pub static LINK_KIND_NAMES: &[&str] = LinkKind::NAMES;
-pub static LINK_HOW_NAMES: &[&str] = ReferenceReason::NAMES;
+pub static LINK_REASON_NAMES: &[&str] = ReferenceReason::NAMES;
 
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.

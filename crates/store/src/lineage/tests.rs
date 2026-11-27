@@ -304,7 +304,7 @@ fn link_statements_resolve_to_relations() {
         session(&mut f, id);
     }
     type Coordinates = (Option<&'static str>, Option<&'static str>);
-    // A parent, a child, a kind and how; the statements of that relation
+    // A parent, a child, a kind and reason; the statements of that relation
     // with whether each copies the prefix; the relations they give.
     type Case<'a> = (
         &'a str,
@@ -415,7 +415,7 @@ fn link_statements_resolve_to_relations() {
     ];
     let conn = db(&f);
     let mut expected_links: Vec<SessionLink> = Vec::new();
-    for (parent, child, kind, how, statements, expected) in cases {
+    for (parent, child, kind, reason, statements, expected) in cases {
         let stated: Vec<LinkStatement> = statements
             .iter()
             .enumerate()
@@ -437,7 +437,7 @@ fn link_statements_resolve_to_relations() {
             .map(|r| (r.branch_point.clone(), r.spawning_call.clone()))
             .collect();
         let expected: Vec<_> = expected.iter().map(|c| owned(*c)).collect();
-        assert_eq!(coordinates, expected, "{parent} {child} {kind} {how:?}");
+        assert_eq!(coordinates, expected, "{parent} {child} {kind} {reason:?}");
         let copies = statements.iter().any(|(_, _, copies)| *copies);
         for relation in &resolved {
             assert_eq!(relation.evidence, "field.0");
@@ -450,7 +450,7 @@ fn link_statements_resolve_to_relations() {
                     parent,
                     child,
                     kind,
-                    how,
+                    reason,
                     relation.copies_prefix,
                     relation.branch_point,
                     relation.spawning_call,
@@ -463,7 +463,7 @@ fn link_statements_resolve_to_relations() {
                 parent: (*parent).into(),
                 child: (*child).into(),
                 kind: (*kind).into(),
-                reason: how.map(str::to_owned),
+                reason: reason.map(str::to_owned),
                 copies_prefix: copies || (*parent, *child) == ("test:q", "test:b"),
                 branch_point: relation.branch_point.clone(),
                 spawning_call: relation.spawning_call.clone(),

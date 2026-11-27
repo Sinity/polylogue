@@ -653,7 +653,7 @@ pub fn rule(id: FieldId) -> Rule {
         EventsSince => Rule::NONE.custom(custom::since),
         EventsUntil => Rule::NONE.custom(custom::until),
         SessionLinksKind => Rule::NONE.sql("{r}.kind"),
-        SessionLinksHow => Rule::NONE.sql("{r}.reason"),
+        SessionLinksReason => Rule::NONE.sql("{r}.reason"),
         SessionLinksCopiesPrefix => Rule::NONE.sql("({r}.copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))"),
         SessionLinksParent => Rule::NONE.custom(custom::link_parent).sql("{r}.parent_id"),
         SessionLinksChild => Rule::NONE.custom(custom::link_child).sql("{r}.child_id"),

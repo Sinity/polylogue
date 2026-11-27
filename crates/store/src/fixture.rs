@@ -681,17 +681,23 @@ impl Fixture {
         Ok(pks)
     }
 
-    pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
+    pub fn link(
+        &mut self,
+        parent: &str,
+        child: &str,
+        kind: &str,
+        reason: Option<&str>,
+    ) -> Result<()> {
         self.index.execute(
             "INSERT INTO link_statement(parent_id, child_id, kind, reason, copies_prefix, evidence, input_pk)
              VALUES (?1, ?2, ?3, ?4, 0, 'fixture', ?5)",
-            params![parent, child, kind, how, self.input_pk],
+            params![parent, child, kind, reason, self.input_pk],
         )?;
         // As assembly resolves a relation with one statement.
         self.index.execute(
             "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, evidence, source_chain, input_pk)
              VALUES (?1, ?2, ?3, ?4, 0, 'fixture', 0, ?5)",
-            params![parent, child, kind, how, self.input_pk],
+            params![parent, child, kind, reason, self.input_pk],
         )?;
         // As the writer does: a lineage link marks its child and below.
         if crate::lineage::is_lineage(kind) {

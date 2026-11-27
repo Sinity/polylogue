@@ -202,7 +202,7 @@ pub fn visit_record(
                             from: format!("session:{}", row.link.parent),
                             to: format!("session:{}", row.link.child),
                             relation: relation.into(),
-                            reason: row.link.reason.map(|how| how.as_str().into()),
+                            reason: row.link.reason.map(|reason| reason.as_str().into()),
                             branch_point: row
                                 .link
                                 .branch_point
