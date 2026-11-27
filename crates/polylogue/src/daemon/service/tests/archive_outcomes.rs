@@ -166,7 +166,7 @@ fn a_waiting_listing_keeps_its_deadline_while_the_index_catches_up() {
             fault::release();
         }
     }
-    let _release = ReleaseParser;
+    let release = ReleaseParser;
     fault::wait_held();
 
     let selection = "sessions where id:claude-code:absent";
@@ -222,8 +222,9 @@ fn a_waiting_listing_keeps_its_deadline_while_the_index_catches_up() {
         let reply = received.recv_timeout(Duration::from_secs(6));
         drop(held);
         let reply = reply.expect("the listing must finish while the reader slots are held");
-        assert_eq!(test_answers::refusal(reply).code(), "deadline_exceeded");
+        assert_eq!(test_answers::refusal(reply).code, "deadline_exceeded");
     });
     d.wait_for(|status| status["caught_up"] == true);
+    drop(release);
     fault::clear();
 }
