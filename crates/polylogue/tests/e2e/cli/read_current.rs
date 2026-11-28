@@ -105,6 +105,8 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         ],
     ));
     assert_eq!(words(&whole), expected);
+    let compact = typed_page(&cli(&fixture, &["--json", "claude-code:typed", "read"]));
+    assert_eq!(words(&compact), expected);
     let output = cli(
         &fixture,
         &[

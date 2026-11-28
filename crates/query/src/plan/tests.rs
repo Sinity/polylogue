@@ -29,6 +29,21 @@ fn bindings() -> Bindings {
     bindings
 }
 #[test]
+fn origin_prefixed_session_reference_replays_as_a_canonical_reference() {
+    let options = Bindings {
+        origins: vec!["codex".into()],
+        ..Bindings::default()
+    };
+    let compact = prepare("codex:019d0f2a", &options, |_| Ok(())).unwrap();
+    let typed = prepare("session:codex:019d0f2a", &options, |_| Ok(())).unwrap();
+    assert_eq!(compact.question_id(), typed.question_id());
+
+    let stored = compact.query_object().unwrap();
+    let replayed = replay(&stored, catalog_fingerprint()).unwrap();
+    assert_eq!(replayed.question_id(), typed.question_id());
+}
+
+#[test]
 fn saved_object_replays_names_and_shapes_without_a_clock() {
     let plan = prepare("query:nested | where count > 1", &bindings(), |_| Ok(())).unwrap();
     let object = plan.query_object().unwrap();
