@@ -17,6 +17,30 @@ pub struct Found {
     pub origin: &'static OriginSpec,
 }
 
+/// Keep each origin's input order, giving every origin one turn before any
+/// origin takes its next input.
+pub(super) fn interleave_origins<T>(inputs: Vec<T>, origin: impl Fn(&T) -> &'static str) -> Vec<T> {
+    use std::collections::{HashMap, VecDeque};
+
+    let mut ordered = Vec::with_capacity(inputs.len());
+    let mut positions = HashMap::new();
+    let mut turns = VecDeque::<VecDeque<T>>::new();
+    for input in inputs {
+        let position = positions.entry(origin(&input)).or_insert_with(|| {
+            turns.push_back(VecDeque::new());
+            turns.len() - 1
+        });
+        turns[*position].push_back(input);
+    }
+    while let Some(mut turn) = turns.pop_front() {
+        ordered.extend(turn.pop_front());
+        if !turn.is_empty() {
+            turns.push_back(turn);
+        }
+    }
+    ordered
+}
+
 /// Reading a watched file or directory is not new input. In particular, the
 /// collector's own directory opens must not wake another collection pass.
 pub(crate) fn requires_scan(event: &notify::Event) -> bool {

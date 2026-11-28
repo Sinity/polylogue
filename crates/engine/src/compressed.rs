@@ -153,7 +153,7 @@ pub(crate) struct RolloutCapture {
     pub(crate) path: PathBuf,
     /// The input named by the rollout or, when it names none, by its location.
     pub(crate) input: String,
-    priority: pool::Priority,
+    pub(crate) priority: pool::Priority,
     found_origin: &'static OriginSpec,
     pub(crate) facts: FileFacts,
     context: crate::capture_read::SourceReadContext,

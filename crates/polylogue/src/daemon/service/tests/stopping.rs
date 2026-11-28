@@ -214,6 +214,115 @@ fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
     resumed.shutdown().unwrap();
 }
 
+#[test]
+fn a_new_archive_shows_recent_files_and_exports_before_the_older_round() {
+    use serde_json::json;
+    use std::fs::{File, FileTimes};
+    use std::time::UNIX_EPOCH;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-p");
+    let chats = home.join(".gemini/tmp/project/chats");
+    let rollouts = home.join(".codex/archived_sessions");
+    for parent in [&project, &chats, &rollouts] {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let write_at = |path: &std::path::Path, bytes: &[u8], seconds| {
+        std::fs::write(path, bytes).unwrap();
+        File::open(path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
+            .unwrap();
+    };
+    for (name, modified, text) in [
+        ("claude-new", 4, "recent needle".to_owned()),
+        ("claude-old", 3, "older text ".repeat(512)),
+    ] {
+        write_at(
+            &project.join(format!("{name}.jsonl")),
+            polylogue_testkit::claude_user(name, name, &text).as_bytes(),
+            modified,
+        );
+    }
+    for (name, modified) in [("gemini-new", 2), ("gemini-old", 1)] {
+        let file = format!(
+            r#"{{"sessionId":"{name}","projectHash":"abc","startTime":"2026-03-14T18:01:43Z",
+                "lastUpdated":"2026-03-14T18:01:43Z","messages":[{{"id":"{name}",
+                "timestamp":"2026-03-14T18:01:43Z","type":"user",
+                "content":[{{"text":"recent needle"}}]}}]}}"#
+        );
+        write_at(
+            &chats.join(format!("session-{name}.json")),
+            file.as_bytes(),
+            modified,
+        );
+    }
+    for (name, modified) in [("codex-new", 3), ("codex-next", 2), ("codex-old", 1)] {
+        let message = json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[{"type":"input_text","text":"rollout text"}]
+        }});
+        let bytes =
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{name}\"}}}}\n{message}\n");
+        let packed = zstd::stream::encode_all(bytes.as_bytes(), 1).unwrap();
+        write_at(
+            &rollouts.join(format!("rollout-{name}.jsonl.zst")),
+            &packed,
+            modified,
+        );
+    }
+
+    let root = dir.path().join("archive");
+    let mut engine = crate::test_daemon::engine_config(home);
+    engine.workers = 1;
+    engine.live_every = Duration::from_secs(3600);
+    fault::clear();
+    fault::arm("parse", "claude-old.jsonl", Action::Hold, 0, 1);
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&engine, &root),
+        engine,
+        crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
+        &Default::default(),
+    )
+    .unwrap();
+    let _release = runtime.daemon.archive.stop().on_cancel(fault::release);
+    assert!(fault::wait_held_within(Duration::from_secs(30)));
+    let reader = runtime.daemon.reads.reader().unwrap();
+    for (id, shown) in [
+        ("claude-code:claude-new", 1),
+        ("claude-code:claude-old", 0),
+        ("gemini-cli:gemini-new", 1),
+        ("gemini-cli:gemini-old", 0),
+        ("codex:codex-new", 1),
+        ("codex:codex-old", 0),
+    ] {
+        let id = SessionId::parse(id).unwrap();
+        assert_eq!(reader.messages(&id, false).unwrap().len(), shown, "{id}");
+    }
+    drop(reader);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reply = crate::test_daemon::call(
+            &runtime.daemon,
+            "rows",
+            json!({"selection": "sessions where needle"}),
+        );
+        if reply.value().is_some_and(|value| {
+            value["reply"]["rows"]
+                .as_array()
+                .is_some_and(|rows| rows.len() == 2)
+        }) {
+            assert_eq!(reply.exit_code(), 5, "{reply:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{reply:?}");
+        std::thread::yield_now();
+    }
+    runtime.shutdown().unwrap();
+    fault::clear();
+}
+
 fn stop_at_rebuild_stage(point: &str) {
     let records: String = (0..48)
         .map(|n| {

@@ -18,8 +18,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   tables, views and triggers.
 - **index rebuild**: writing a new index in the private file
   `index-rebuild/build.db`, renamed `ready.db` when it ends and then over
-  `index.db`; the first index of an archive, or one replacing an index this
-  build cannot use. Its reason is `index-rebuild/reason.json`, written first. It runs in named **stages** (parsing, keying texts, loading
+  `index.db`. Its reason is `index-rebuild/reason.json`, written first.
+  A serving daemon uses [incremental catch-up](architecture.md#one-path)
+  when there is no usable index at startup. A private bulk rebuild runs
+  in named **stages** (parsing, keying texts, loading
   parses, building parse indexes, assembling, indexing, full text, installing), which status and the
   log list by those names. Each stage leaves a **stage record**: its start
   and end, what it handled, the bytes read and written, and its peak memory
