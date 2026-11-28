@@ -1,4 +1,4 @@
-//! A second read after detected growth. Pin the planned bytes with a range
+//! A second read after detected growth. Pin the planned bytes with a
 //! reflink where supported, or check the new file facts around a fresh read.
 
 use super::{File, FileFacts, FileSnapshot, check_source, file_snapshot};
@@ -53,7 +53,7 @@ impl GrowingFile {
             return Ok(None);
         }
         let observed = file_snapshot(&metadata)?;
-        let copy = reflink(&source_file, staging, expected.size, source.size);
+        let copy = reflink(&source_file, staging, expected.size);
         if copy.is_some() {
             let at_path = FileFacts::of(&std::fs::metadata(path)?);
             if at_path.device != source.device || at_path.inode != source.inode {
@@ -89,42 +89,22 @@ impl GrowingFile {
 }
 
 #[cfg(target_os = "linux")]
-fn reflink(source: &File, staging: &Path, through: u64, available: u64) -> Option<File> {
-    use std::os::fd::AsRawFd;
-
+fn reflink(source: &File, staging: &Path, through: u64) -> Option<File> {
     if through == 0 {
         return None;
     }
-    let mut fs = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: the descriptor is live and the buffer is writable for fstatvfs.
-    if unsafe { libc::fstatvfs(source.as_raw_fd(), fs.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: fstatvfs initialized fs on success.
-    let block = unsafe { fs.assume_init() }.f_frsize;
-    #[cfg(target_pointer_width = "32")]
-    let block = u64::from(block);
-    if block == 0 {
-        return None;
-    }
     let clone = tempfile::tempfile_in(staging).ok()?;
-    let request = libc::file_clone_range {
-        src_fd: i64::from(source.as_raw_fd()),
-        src_offset: 0,
-        src_length: (through.div_ceil(block).saturating_mul(block)).min(available),
-        dest_offset: 0,
-    };
-    // SAFETY: both descriptors are live and the request has the Linux ABI.
-    if unsafe { libc::ioctl(clone.as_raw_fd(), libc::FICLONERANGE, &request) } != 0
-        || clone.metadata().ok()?.len() < through
-    {
+    rustix::fs::ioctl_ficlone(&clone, source).ok()?;
+    if clone.metadata().ok()?.len() < through {
         return None;
     }
+    // Keep only the planned sample. The clone shares the source's blocks
+    // until either file writes them.
     clone.set_len(through).ok()?;
     Some(clone)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn reflink(_: &File, _: &Path, _: u64, _: u64) -> Option<File> {
+fn reflink(_: &File, _: &Path, _: u64) -> Option<File> {
     None
 }
