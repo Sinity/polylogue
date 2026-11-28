@@ -1,3 +1,8 @@
+/// Version of the attachment byte claims all callers record.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::parse::ExtractedBlob;
 use base64::Engine as _;
 use polylogue_model::{AttachmentFailure, BlobHash};
