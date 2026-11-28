@@ -127,6 +127,7 @@ stored_names! {
         ParseVersionChanged => "parse_version_changed",
         ParserBehind => "parser_behind",
         CapturePending => "capture_pending",
+        ParsingCoveragePending => "parsing_coverage_pending",
         /// Some stored inputs failed their origin's shape check.
         Refused => "refused",
         /// Some stored inputs' bytes could not be parsed under the current parser.
@@ -166,6 +167,9 @@ impl CompletenessReason {
             Self::ParserBehind => ("has bytes not parsed yet", "have bytes not parsed yet"),
             Self::CapturePending => {
                 return Words::Index("watched inputs are still being collected");
+            }
+            Self::ParsingCoveragePending => {
+                return Words::Index("parsing coverage is still being counted");
             }
             Self::Refused => ("was refused by its parser", "were refused by their parser"),
             Self::ParseFailed => ("failed to parse", "failed to parse"),
@@ -280,9 +284,11 @@ pub struct ReadCompleteness {
     pub search: CompletenessDimension,
     pub confirmed_stream: CompletenessDimension,
     /// Deliberately retained without promising parsed products.
-    pub kept_chains: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_chains: Option<u64>,
     /// Known nonparsed chains, independently of retained raw-byte coverage.
-    pub raw_only_chains: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_only_chains: Option<u64>,
     /// Chains whose parse failed or was refused, by origin. Waiting does not
     /// end them, so a read is up to date beside them; status reports them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -296,8 +302,8 @@ impl ReadCompleteness {
             derivation: CompletenessDimension::Complete,
             search: CompletenessDimension::Complete,
             confirmed_stream: CompletenessDimension::NotApplicable,
-            kept_chains: 0,
-            raw_only_chains: 0,
+            kept_chains: Some(0),
+            raw_only_chains: Some(0),
             failed_parses: Vec::new(),
         }
     }

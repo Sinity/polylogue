@@ -34,7 +34,19 @@ fn derived_writes_count_checkpoints_across_counter_domains() {
         before.index > before.archive,
         "derivation advances only the index domain"
     );
-    assert!(pinned.completeness(&contracts).unwrap().caught_up());
+    let pending = CompletenessDimension::Unknown(vec![CountedReason::new(
+        CompletenessReason::ParsingCoveragePending,
+    )]);
+    let before_measurement = pinned.completeness_during_catch_up(&contracts).unwrap();
+    assert_eq!(before_measurement.parsing, pending);
+    assert_eq!(before_measurement.kept_chains, None);
+    assert_eq!(before_measurement.raw_only_chains, None);
+    let measured = pinned.completeness(&contracts).unwrap();
+    assert!(measured.caught_up());
+    assert_eq!(
+        pinned.completeness_during_catch_up(&contracts).unwrap(),
+        measured
+    );
 
     // Real new source bytes have no new parsed checkpoint. The old reader still
     // sees its own snapshot as complete; a fresh reader must see the lag.
@@ -52,6 +64,13 @@ fn derived_writes_count_checkpoints_across_counter_domains() {
     assert!(pinned.completeness(&contracts).unwrap().caught_up());
     drop(pinned);
     let fresh = pool.reader().unwrap();
+    assert_eq!(
+        fresh
+            .completeness_during_catch_up(&contracts)
+            .unwrap()
+            .parsing,
+        pending
+    );
     let completeness = fresh.completeness(&contracts).unwrap();
     assert!(!completeness.caught_up());
     assert_eq!(
@@ -96,8 +115,8 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         }])
         .unwrap();
     assert!(kept.caught_up());
-    assert_eq!(kept.kept_chains, 1);
-    assert_eq!(kept.raw_only_chains, 0);
+    assert_eq!(kept.kept_chains, Some(1));
+    assert_eq!(kept.raw_only_chains, Some(0));
     // The parser saw 9 bytes of the 10 stored.
     edit(
         &fixture.archive.index_db(),
@@ -211,7 +230,7 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     let pool = fixture.reads().unwrap();
     let empty = pool.reader().unwrap().completeness(&contracts).unwrap();
     assert_eq!(empty.parsing, CompletenessDimension::Complete);
-    assert_eq!(empty.raw_only_chains, 0);
+    assert_eq!(empty.raw_only_chains, Some(0));
     edit(
         &fixture.archive.archive_db(),
         "INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('raw-input',1,'first',1,12,1);",
@@ -219,8 +238,8 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     // Bytes kept with no parser are counted and leave the index complete.
     let present = pool.reader().unwrap().completeness(&contracts).unwrap();
     assert_eq!(present.parsing, CompletenessDimension::Complete);
-    assert_eq!(present.raw_only_chains, 1);
-    assert_eq!(present.kept_chains, 0);
+    assert_eq!(present.raw_only_chains, Some(1));
+    assert_eq!(present.kept_chains, Some(0));
     assert!(present.caught_up());
     assert!(matches!(
         pool.reader()
@@ -386,8 +405,8 @@ fn caught_up_equals_a_full_walk() {
             let kept = reader.completeness(contracts).unwrap();
             let answer = (
                 kept.parsing,
-                kept.kept_chains,
-                kept.raw_only_chains,
+                kept.kept_chains.unwrap(),
+                kept.raw_only_chains.unwrap(),
                 kept.failed_parses,
             );
             assert_eq!(answer, walked(&reader, contracts), "{stage}: {contracts:?}");

@@ -63,6 +63,7 @@ impl ReadServices for Daemon {
         crate::daemon::verbs::read::LineReads {
             daemon: self,
             accepted: None,
+            defer_parsing_census: false,
         }
         .continuation(request, cursor, deadline)
     }
