@@ -147,6 +147,8 @@ For a one-time standalone cutover using the current archive and index formats, f
 
 Both cuts must belong to the same native archive. Between preparation and capture, only its native writer may change it. A restored, rewritten or independently converted source needs a new proof. This procedure depends on the native writer keeping committed segment ranges and captured record rows intact. Independent sealed copies use `reuse_archive_index <earlier> <later>` to check their complete common prefix before indexing the later one.
 
+Suffix planning uses extent commits as well as revision and observation commits. A read can finish in a later commit while keeping the same revision number. A bounded read of that chain uses the extents present at its requested cut.
+
 ## Backup and restore
 
 - **Backup is the deployment's filesystem backup.** Polylogue has no backup command and keeps its stores consistent at every commit. A correct backup takes the segment log, the databases and the embeddings store together; `index.db`, its full-text files (`search-<id>/`) and the `index-rebuild/` directory may be left out, since the index is rebuilt from stored bytes.
