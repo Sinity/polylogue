@@ -1,7 +1,9 @@
 """Exercise the landing queue with real Git commits and a simulated forge."""
 
+import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,24 @@ def git(*args):
 def save():
     path.write_text(json.dumps(state))
 
+def run_record(index):
+    return {
+        "id": index + 1,
+        "run_attempt": 1,
+        "path": ".github/workflows/check.yml",
+        "event": "workflow_dispatch",
+        "head_repository": {"full_name": "synthetic/landing"},
+        "head_branch": state["branches"][index],
+        "head_sha": state["revisions"][index],
+        "display_title": "Staging " + state["revisions"][index],
+        "status": "completed",
+        "conclusion": "failure" if index == 0 else "success",
+    }
+
+def query(value):
+    expression = args[args.index("--jq") + 1]
+    subprocess.run(["jq", "-r", expression], input=json.dumps(value), text=True, check=True)
+
 if args[:2] == ["repo", "view"]:
     print("synthetic landing master")
 elif args[:2] == ["api", "graphql"]:
@@ -37,7 +57,7 @@ elif args[:2] == ["api", "graphql"]:
 elif args[:2] == ["workflow", "run"]:
     staged = next(arg[4:] for arg in args if arg.startswith("rev="))
     branch = args[args.index("--ref") + 1]
-    assert branch.startswith(f"land-queue-{staged}-")
+    assert branch.startswith(("land-queue-v1-", f"land-queue-{staged}-"))
     assert git("ls-remote", "origin", "refs/heads/" + branch).split()[0] == staged
     assert branch not in state["branches"]
     state["branches"].append(branch)
@@ -49,53 +69,70 @@ elif args[:2] == ["workflow", "run"]:
     if (state["case"] == "red-change" and count == 1) or (state["case"] == "split-change" and count == 2):
         state["heads"]["2"] = state["changed"]
     save()
+    if count == 1 and state["case"] in (
+        "resume-first", "resume-new-head", "resume-new-base", "resume-foreign-workflow",
+        "resume-parallel", "resume-failed-one", "resume-shifted-ref",
+        "resume-wrong-input", "resume-legacy-workflow", "resume-reordered",
+    ):
+        sys.exit(1)  # The forge accepted the dispatch, but its response was lost.
     if state["case"] != "split-current":
         print(f"https://github.com/synthetic/landing/actions/runs/{count}")
-elif args[:2] == ["run", "list"]:
-    branch = args[args.index("--branch") + 1]
-    assert branch == state["branches"][-1]
-    query = args[args.index("--jq") + 1]
-    assert state["revisions"][-1] in query
+elif args[:3] == ["api", "--method", "GET"]:
+    assert args[3] == "repos/synthetic/landing/actions/workflows/check.yml/runs"
+    branch = next(arg[7:] for arg in args if arg.startswith("branch="))
+    revision = next(arg[9:] for arg in args if arg.startswith("head_sha="))
+    assert "event=workflow_dispatch" in args
+    records = []
+    for index, candidate in enumerate(state["branches"]):
+        if branch == candidate and revision == state["revisions"][index]:
+            record = run_record(index)
+            if index == 0:
+                if state["case"] == "resume-foreign-workflow":
+                    record["path"] = ".github/workflows/other.yml"
+                elif state["case"] == "resume-wrong-input":
+                    record["display_title"] = "Staging " + state["changed"]
+                elif state["case"] == "resume-legacy-workflow":
+                    record["display_title"] = "check"
+            if state["reruns"]:
+                record["run_attempt"] = 2
+            records.append(record)
     state["lookups"] += 1
     save()
-    print(len(state["stages"]))
-elif args[:2] == ["run", "watch"]:
-    pass
+    query({"workflow_runs": records})
+elif args[0] == "api" and "/attempts/" in args[1]:
+    match = re.fullmatch(r"repos/synthetic/landing/actions/runs/(\d+)/attempts/(\d+)", args[1])
+    index, requested = int(match[1]) - 1, int(match[2])
+    reply = run_record(index)
+    if state["case"] in ("resume-first", "resume-running"):
+        reply["conclusion"] = "success"
+        if state["case"] == "resume-running" and not state["restart"]:
+            reply.update(status="in_progress", conclusion=None)
+    if state["reruns"]:
+        state["rerun_polls"] += 1
+        state["rerun_attempt_requests"].append(requested)
+        save()
+        if state["case"] == "rerun-change" or (
+            state["case"] not in ("rerun-missing", "resume-attempt-two", "resume-attempt-two-red")
+            and state["rerun_polls"] > 8
+        ) or state["restart"]:
+            passes = state["case"] in ("rerun-passes", "resume-attempt-two", "resume-failed-one")
+            reply.update(run_attempt=2, conclusion="success" if passes else "failure")
+            if state["rerun_polls"] == 9:
+                reply.update(status="in_progress", conclusion=None)
+    if state["case"] == "wrong-run":
+        reply.update(head_branch="another-branch", head_sha=state["changed"], conclusion="success")
+    if state["case"] == "wrong-input":
+        reply.update(display_title="Staging " + state["changed"], conclusion="success")
+    query(reply)
 elif args[:2] == ["run", "view"]:
-    field = args[args.index("--json") + 1]
-    requested = int(args[args.index("--attempt") + 1]) if "--attempt" in args else None
-    if field == "jobs":
-        print("rerun-check" if requested == 2 else "initial-check")
-    elif field in ("status", "headBranch,headSha,status,conclusion", "attempt,headBranch,headSha,status,conclusion"):
-        index = int(args[2]) - 1
-        reply = {
-            "attempt": 1,
-            "headBranch": state["branches"][index],
-            "headSha": state["revisions"][index],
-            "status": "completed",
-            "conclusion": "failure" if index == 0 else "success",
-        }
-        if state["reruns"]:
-            state["rerun_polls"] += 1
-            if requested is not None:
-                state["rerun_attempt_requests"].append(requested)
-            save()
-            if state["case"] == "rerun-change" or (
-                state["case"] != "rerun-missing" and state["rerun_polls"] > 8
-            ):
-                reply.update(attempt=2, conclusion="success" if state["case"] == "rerun-passes" else "failure")
-                if state["rerun_polls"] == 9:
-                    reply.update(status="in_progress", conclusion=None)
-        if state["case"] == "wrong-run":
-            reply.update(headBranch="another-branch", headSha=state["changed"], conclusion="success")
-        query = args[args.index("--jq") + 1]
-        subprocess.run(["jq", "-r", query], input=json.dumps(reply), text=True, check=True)
-    else:
-        raise RuntimeError(args)
+    assert args[args.index("--json") + 1] == "jobs"
+    requested = int(args[args.index("--attempt") + 1])
+    print("rerun-check" if requested == 2 else "initial-check")
 elif args[:2] == ["run", "download"]:
     pass
 elif args[:2] == ["run", "rerun"]:
     state["reruns"] += 1
+    assert state["reruns"] == 1
     if state["case"] == "rerun-change":
         state["heads"]["1"] = state["changed"]
     save()
@@ -129,8 +166,31 @@ cases = {
     "rerun-fails": ([["1"]], [], 1),
     "rerun-missing": ([["1"]], [], 1),
     "wrong-run": ([["1", "2"]], [], 0),
+    "wrong-input": ([["1", "2"]], [], 0),
     "dry-run": ([], [], 0),
+    "resume-first": ([["1", "2"]], ["1", "2"], 0),
+    "resume-running": ([["1", "2"]], ["1", "2"], 0),
+    "resume-failed-one": ([["1"]], ["1"], 1),
+    "resume-attempt-two": ([["1"]], ["1"], 1),
+    "resume-attempt-two-red": ([["1"]], [], 1),
+    "resume-new-head": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-new-base": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-parallel": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-foreign-workflow": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-shifted-ref": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-wrong-input": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-legacy-workflow": ([["1", "2"], ["1", "2"]], ["1", "2"], 0),
+    "resume-reordered": ([["1", "2"], ["2", "1"]], ["2", "1"], 0),
 }
+
+FAKE_SLEEP = """#!/usr/bin/env python3
+import json, os, signal
+from pathlib import Path
+state = json.loads(Path(os.environ["FORGE_FIXTURE"]).read_text())
+if state["case"] == "resume-running" and not state["restart"]:
+    os.kill(os.getppid(), signal.SIGKILL)
+"""
+
 
 def exercise(script, case, parent):
     folder = parent / case
@@ -145,13 +205,14 @@ def exercise(script, case, parent):
     run("git", "commit", "--allow-empty", "-qm", "Base")
     base = run("git", "rev-parse", "HEAD")
     run("git", "push", "-q", "origin", "master")
-    count = 3 if case == "red-change" else 1 if case.startswith("rerun-") else 2
+    singleton = case.startswith(("rerun-", "resume-attempt-", "resume-failed-"))
+    count = 3 if case == "red-change" else 1 if singleton else 2
     foreign_branch = "refs/heads/land-queue-foreign"
     run("git", "push", "-q", "origin", f"{base}:{foreign_branch}")
     state = {
         "case": case, "heads": {}, "stages": [], "reruns": 0, "merged": [], "comments": [],
         "branches": [], "revisions": [], "lookups": 0,
-        "rerun_polls": 0, "rerun_attempt_requests": [],
+        "rerun_polls": 0, "rerun_attempt_requests": [], "restart": False,
     }
     for number in range(1, count + 1):
         run("git", "checkout", "-q", "--detach", base)
@@ -168,7 +229,7 @@ def exercise(script, case, parent):
     fixture.write_text(json.dumps(state))
     bin_dir = folder / "bin"
     bin_dir.mkdir()
-    for name, body in {"gh": FAKE_GH, "sleep": "#!/usr/bin/env bash\nexit 0\n"}.items():
+    for name, body in {"gh": FAKE_GH, "sleep": FAKE_SLEEP}.items():
         path = bin_dir / name
         path.write_text(body)
         path.chmod(0o700)
@@ -176,7 +237,36 @@ def exercise(script, case, parent):
     command = ["bash", script, "--queue", "--once"]
     if case == "dry-run":
         command.append("--dry-run")
-    result = subprocess.run(command, cwd=folder, env=env, text=True, capture_output=True, timeout=15)
+    def controller():
+        return subprocess.run(command, cwd=folder, env=env, text=True, capture_output=True, timeout=30)
+
+    previous = None
+    if case == "resume-parallel":
+        fd = os.open(folder / ".git", os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            previous = controller()
+        finally:
+            os.close(fd)
+    elif case.startswith("resume-"):
+        previous = controller()
+    if previous is not None:
+        first = json.loads(fixture.read_text())
+        assert previous.returncode == (-9 if case == "resume-running" else 0), previous
+        assert len(first["stages"]) == 1 and not first["merged"], first
+        first["restart"] = True
+        if case == "resume-new-head":
+            first["heads"]["2"] = first["changed"]
+        if case == "resume-reordered":
+            first["heads"] = dict(reversed(list(first["heads"].items())))
+        if case == "resume-new-base":
+            newer_base = run("git", "commit-tree", f"{base}^{{tree}}", "-p", base, "-m", "Advance master")
+            run("git", "push", "-q", "origin", f"{newer_base}:refs/heads/master")
+        if case == "resume-shifted-ref":
+            ref = "refs/heads/" + first["branches"][0]
+            run("git", "push", "-q", f"--force-with-lease={ref}:{first['revisions'][0]}", "origin", f"{base}:{ref}")
+        fixture.write_text(json.dumps(first))
+    result = controller()
     actual = json.loads(fixture.read_text())
     stages, merged, reruns = cases[case]
     refs = {
@@ -186,24 +276,34 @@ def exercise(script, case, parent):
         )
     }
     expected_refs = {foreign_branch: base}
-    if case in ("wrong-run", "rerun-missing") and actual["branches"]:
-        expected_refs["refs/heads/" + actual["branches"][0]] = actual["revisions"][0]
-    expected_exit = 1 if case == "rerun-fails" else 0
-    passed = (result.returncode == expected_exit and actual["stages"] == stages and actual["merged"] == merged
-              and actual["reruns"] == reruns and refs == expected_refs
-              and actual["lookups"] == (len(stages) if case == "split-current" else 0))
-    if case == "rerun-fails" and len(actual["comments"]) == 1:
+    if (case in ("wrong-run", "wrong-input", "rerun-missing") or previous is not None and len(stages) == 2) and actual["branches"]:
+        expected_refs["refs/heads/" + actual["branches"][0]] = (
+            base if case == "resume-shifted-ref" else actual["revisions"][0]
+        )
+    red = case in ("rerun-fails", "resume-attempt-two-red")
+    passed = (result.returncode == int(red) and actual["stages"] == stages and actual["merged"] == merged
+              and actual["reruns"] == reruns and refs == expected_refs)
+    if case == "split-current":
+        passed &= actual["lookups"] == len(stages)
+    if previous is not None:
+        resumed = "resuming run https://github.com/synthetic/landing/actions/runs/1 " in result.stdout
+        passed &= resumed == (len(stages) == 1)
+        if case == "resume-parallel":
+            passed &= (actual["branches"][0].startswith(f"land-queue-{actual['revisions'][0]}-")
+                       and actual["branches"][1].startswith("land-queue-v1-")
+                       and actual["revisions"][0] != actual["revisions"][1])
+    if red and len(actual["comments"]) == 1:
         comment = actual["comments"][0]
         passed &= (comment["pr"] == "1" and comment["rerun_polls"] >= 10
                    and "/actions/runs/1/attempts/2" in comment["body"]
                    and "rerun-check" in comment["body"] and "initial-check" not in comment["body"])
     else:
-        passed &= not actual["comments"] and case != "rerun-fails"
+        passed &= not actual["comments"] and not red
     if case in ("rerun-passes", "rerun-fails", "rerun-missing"):
         passed &= actual["rerun_polls"] > 8
         passed &= actual["rerun_attempt_requests"] == [2] * actual["rerun_polls"]
     if case == "dry-run":
-        passed &= "would push land-queue-" in result.stdout
+        passed &= "would push a land-queue- branch" in result.stdout
     print(f"{case}: {'PASS' if passed else 'FAIL'}")
     if not passed:
         print(result.stdout, result.stderr)
@@ -213,6 +313,12 @@ def exercise(script, case, parent):
 
 if __name__ == "__main__":
     script = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else Path(__file__).with_name("land").resolve()
+    supports_resume = shutil.which("flock") and os.access("/etc/machine-id", os.R_OK)
+    if not supports_resume:
+        print("Skipping restart scenarios. They need a Linux machine ID and flock.")
     with tempfile.TemporaryDirectory() as folder:
-        passed = [exercise(str(script), case, Path(folder)) for case in cases]
+        passed = [
+            exercise(str(script), case, Path(folder))
+            for case in cases if supports_resume or not case.startswith("resume-")
+        ]
     sys.exit(0 if all(passed) else 1)

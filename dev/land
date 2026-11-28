@@ -257,11 +257,8 @@ land_one() {
 
 # ---- the queue -----------------------------------------------------------
 
-# One pass over every open pull request. Prints its block when it merged or
-
-# ---- the queue -----------------------------------------------------------
-
 workflow=check.yml
+resume_scope= queue_lock=
 batch_limit=8
 problems=false
 merged_this_cycle=()
@@ -309,13 +306,14 @@ listing() {
 # one squash commit, into `staging`; members that merge cleanly go into
 # `included`, the others into `left_out`. Needs no working tree.
 build_staging() {
-    local base=$1 n tree
+    local base=$1 n tree commit_time
     shift
     staging=$base included=() left_out=()
+    commit_time=$(git show -s --format=%ct "$base")
     for n in "$@"; do
         parse_row "${row_of[$n]}"
         if tree=$(git merge-tree --write-tree --no-messages "$staging" "$head" 2>/dev/null); then
-            staging=$(git commit-tree "$tree" -p "$staging" -m "#$n $title")
+            staging=$(staging_commit "$commit_time" "$tree" -p "$staging" -m "#$n" -m "Source head: $head")
             included+=("$n")
         else
             left_out+=("$n")
@@ -323,23 +321,95 @@ build_staging() {
     done
 }
 
-# Tests $staging on a branch owned by this dispatch. The branch stays on the
-# exact commit while GitHub creates the run and checks out its code.
+# A sleeping child must not keep the controller's lock after it exits.
+queue_sleep() {
+    if [ -n "$queue_lock" ]; then
+        sleep "$1" {queue_lock}<&-
+    else
+        sleep "$1"
+    fi
+}
+
+# Same base, ordered source heads and merged trees produce the same proposal
+# in every worktree. The dispatch nonce changes only its last squash commit.
+staging_commit() {
+    local seconds=$1
+    shift
+    GIT_AUTHOR_NAME='Landing queue' GIT_AUTHOR_EMAIL='landing-queue@users.noreply.github.com' \
+    GIT_COMMITTER_NAME='Landing queue' GIT_COMMITTER_EMAIL='landing-queue@users.noreply.github.com' \
+    GIT_AUTHOR_DATE="@$seconds +0000" GIT_COMMITTER_DATE="@$seconds +0000" \
+        git -c commit.gpgSign=false commit-tree "$@"
+}
+
+dispatch_commit() {
+    local proposal=$1 nonce=$2
+    staging_commit "$(git show -s --format=%ct "$proposal")" "$(git rev-parse "$proposal^{tree}")" \
+        -p "$(git rev-parse "$proposal^")" -m "$(git show -s --format=%B "$proposal")" -m "Dispatch: $nonce"
+}
+
+run_identity_filter() {
+    printf '.path == ".github/workflows/%s" and .event == "workflow_dispatch"
+        and (.head_repository.full_name // "" | ascii_downcase) == "%s/%s"
+        and .head_branch == "%s" and .head_sha == "%s" and .display_title == "Staging %s"' \
+        "$workflow" "${owner,,}" "${name,,}" "$1" "$2" "$2"
+}
+
+listed_run() {
+    gh api --method GET "repos/$owner/$name/actions/workflows/$workflow/runs" \
+        -f branch="$1" -f event=workflow_dispatch -f head_sha="$2" -F per_page=10 \
+        --jq "[.workflow_runs[] | select($(run_identity_filter "$1" "$2"))][0] |
+            if . == null or .conclusion == \"cancelled\" or (.run_attempt != 1 and .run_attempt != 2)
+            then empty else [.id, .run_attempt] | @tsv end"
+}
+
+resume_staging() {
+    local proposal=$1 prefix=$2 refs ref revision nonce found
+    refs=$(git ls-remote --refs origin "refs/heads/$prefix*") || return 2
+    while IFS=$'\t' read -r revision ref; do
+        [[ $ref == "refs/heads/$prefix"* ]] || continue
+        nonce=${ref#"refs/heads/$prefix"}
+        [[ $nonce =~ ^[0-9]+-[0-9]+$ ]] || continue
+        [ "$revision" = "$(dispatch_commit "$proposal" "$nonce")" ] || continue
+        found=$(listed_run "${ref#refs/heads/}" "$revision") || return 2
+        [ -n "$found" ] || continue
+        read -r run run_attempt <<<"$found"
+        staging=$revision staging_branch=${ref#refs/heads/}
+        return 0
+    done <<<"$refs"
+    return 1
+}
+
+# A dispatch keeps its own branch and SHA. GitHub's workflow concurrency
+# group keys on the SHA, so two independent controllers must differ in both.
 test_staging() {
-    local polls=0 dispatch
-    conclusion=missing
-    git push -q origin "$staging:refs/heads/$staging_branch" || return 0
+    local proposal=$staging polls=0 dispatch found prefix= result nonce
+    conclusion=missing run= run_attempt=1
+    if [ -n "$resume_scope" ]; then
+        prefix="${staging_prefix}v1-$resume_scope-$(printf '%s\n' "$default_branch" "$workflow" "$proposal" | git hash-object --stdin)-"
+        if resume_staging "$proposal" "$prefix"; then
+            note "resuming run https://github.com/$owner/$name/actions/runs/$run attempt $run_attempt on staging ${staging:0:10}"
+            await_run "$run_attempt"
+            return 0
+        else
+            result=$?
+            [ "$result" -ne 2 ] || return 0
+        fi
+    fi
+    nonce="$$-$RANDOM$RANDOM$RANDOM"
+    staging=$(dispatch_commit "$proposal" "$nonce")
+    staging_branch="${prefix:-$staging_prefix$staging-}$nonce"
+    git push -q --force-with-lease="refs/heads/$staging_branch:" origin "$staging:refs/heads/$staging_branch" || return 0
     dispatch=$(gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging") || return 0
     run=$(sed -nE 's|^.*/actions/runs/([0-9]+)([/?[:space:]].*)?$|\1|p' <<<"$dispatch" | head -n 1)
     while [ -z "$run" ]; do
-        sleep 15
-        run=$(gh run list -R "$owner/$name" --workflow "$workflow" --branch "$staging_branch" --event workflow_dispatch \
-            --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$staging\") | .databaseId][0] // empty") || return 0
+        queue_sleep 15
+        found=$(listed_run "$staging_branch" "$staging") || return 0
+        read -r run run_attempt <<<"$found"
         polls=$((polls + 1))
-        [ -n "$run" ] || [ $polls -lt 20 ] || { conclusion=missing; return; }
+        [ -n "$run" ] || [ $polls -lt 20 ] || return 0
     done
-    note "run https://github.com/$owner/$name/actions/runs/$run"
-    await_run 1
+    note "run https://github.com/$owner/$name/actions/runs/$run on staging ${staging:0:10}"
+    await_run "$run_attempt"
 }
 
 # A completed response for an earlier attempt is not the result of a rerun.
@@ -347,10 +417,9 @@ await_run() {
     local attempt=$1 result missing_polls=0
     conclusion=missing
     while true; do
-        result=$(gh run view "$run" -R "$owner/$name" --attempt "$attempt" \
-            --json attempt,headBranch,headSha,status,conclusion --jq "
-            if .headBranch != \"$staging_branch\" or .headSha != \"$staging\" then \"wrong run\"
-            elif .attempt != $attempt or (.status // \"\") == \"\" then \"missing\"
+        result=$(gh api "repos/$owner/$name/actions/runs/$run/attempts/$attempt" --jq "
+            if ($(run_identity_filter "$staging_branch" "$staging") | not) then \"wrong run\"
+            elif .run_attempt != $attempt or (.status // \"\") == \"\" then \"missing\"
             elif .status != \"completed\" then \"pending\"
             else .conclusion // \"missing\" end" 2>/dev/null) || result=missing
         case $result in
@@ -358,8 +427,8 @@ await_run() {
             ''|missing)
                 missing_polls=$((missing_polls + 1))
                 [ "$missing_polls" -lt 20 ] || return 0
-                sleep 15 ;;
-            pending) missing_polls=0; sleep 60 ;;
+                queue_sleep 15 ;;
+            pending) missing_polls=0; queue_sleep 60 ;;
             *)
                 run_attempt=$attempt conclusion=$result
                 finished_staging_branches[$staging_branch]=$staging
@@ -397,7 +466,7 @@ query($owner: String!, $name: String!, $number: Int!) {
         [ "$state" = UNKNOWN ] || return 0
         polls=$((polls + 1))
         [ $polls -lt 18 ] || return 0
-        sleep 10
+        queue_sleep 10
     done
 }
 
@@ -441,7 +510,7 @@ The landing queue sent this pull request back. Its head \`${head:0:10}\` passes 
 - First failure: https://github.com/$owner/$name/actions/runs/$run/attempts/1
 - Failed rerun: https://github.com/$owner/$name/actions/runs/$run/attempts/$run_attempt
 - Failed jobs on the rerun: $jobs
-- Failed tests before the rerun: ${tests:-(none named in the JUnit reports)}
+- Failed tests observed before the rerun: ${tests:-(none recorded)}
 
 Pushing a new head or updating the branch puts it back in the queue." >/dev/null
     note "sent back #$n $title: $jobs"
@@ -487,9 +556,8 @@ land_batch() {
             note "left out #$n $title: conflicts with an earlier pull request in the batch"
         done
         [ ${#included[@]} -gt 0 ] || return 0
-        staging_branch="$staging_prefix$staging-$$-$RANDOM$RANDOM$RANDOM"
-        note "batch $(printf '#%s ' "${included[@]}")as staging ${staging:0:10} on $default_branch ${base:0:10}"
-        $dry_run && { note "would push $staging_branch and dispatch $workflow on ${staging:0:10}"; return 0; }
+        note "batch $(printf '#%s ' "${included[@]}")as staging proposal ${staging:0:10} on $default_branch ${base:0:10}"
+        $dry_run && { note "would push a ${staging_prefix} branch and dispatch $workflow"; return 0; }
         test_staging
         if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
             note "the staging run was ${conclusion/missing/not found}; the batch waits for the next cycle"
@@ -498,17 +566,20 @@ land_batch() {
         refresh_members members "${included[@]}" || return 0
         [ ${#members[@]} -eq ${#included[@]} ] || continue
         if [ "$conclusion" != success ] && [ ${#included[@]} -eq 1 ]; then
-            jobs=$(failed_jobs) tests=$(failed_tests)
-            note "red alone on $default_branch: $jobs; running the failed jobs once more"
-            unset "finished_staging_branches[$staging_branch]"
-            gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || return 0
-            await_run "$((run_attempt + 1))"
-            if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
-                note "the staging rerun was ${conclusion/missing/not found}; the batch waits for the next cycle"
-                return 0
+            tests=
+            if [ "$run_attempt" -eq 1 ]; then
+                jobs=$(failed_jobs) tests=$(failed_tests)
+                note "red alone on $default_branch: $jobs; running the failed jobs once more"
+                unset "finished_staging_branches[$staging_branch]"
+                gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || return 0
+                await_run 2
+                if [ "$conclusion" = missing ] || [ "$conclusion" = cancelled ]; then
+                    note "the staging rerun was ${conclusion/missing/not found}; the batch waits for the next cycle"
+                    return 0
+                fi
+                refresh_members members "${included[@]}" || return 0
+                [ ${#members[@]} -eq ${#included[@]} ] || continue
             fi
-            refresh_members members "${included[@]}" || return 0
-            [ ${#members[@]} -eq ${#included[@]} ] || continue
             if [ "$conclusion" = success ]; then
                 note "failed once, passed on rerun (#${included[0]}): $(paste -sd' ' <<<"${tests:-unnamed}")"
             else
@@ -585,11 +656,23 @@ query($owner: String!, $name: String!) {
 }
 
 if $queue; then
+    # Only one controller in this Git directory can own recoverable runs.
+    # A concurrent controller keeps its own branches.
+    if ! $dry_run && [ -r /etc/machine-id ] && command -v flock >/dev/null; then
+        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+        exec {queue_lock}<"$common_dir"
+        if flock -n "$queue_lock"; then
+            resume_scope=$( { cat /etc/machine-id; printf '%s\n' "$common_dir" "$owner/$name"; } | git hash-object --stdin)
+        else
+            exec {queue_lock}<&-
+            queue_lock=
+        fi
+    fi
     last_block=-600
     if $once; then queue_cycle always; exit; fi
     while true; do
         queue_cycle || true
-        sleep 60
+        queue_sleep 60
     done
 fi
 land_one
