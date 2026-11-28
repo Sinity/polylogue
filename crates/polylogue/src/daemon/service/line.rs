@@ -900,7 +900,7 @@ fn rows_page(
                 page_size: rows.page_size.map(std::num::NonZeroU64::get),
                 why: rows.why,
                 session: None,
-                context,
+                context: std::sync::Arc::clone(&context),
                 embeddings,
                 ranking_identity,
                 near: Some(near),
@@ -919,7 +919,7 @@ fn rows_page(
                 let next = answer
                     .value
                     .next()
-                    .zip(call.invocation.accepted_request())
+                    .zip(context.accepted_request())
                     .map(|(cursor, request)| {
                         let mut request = request.clone();
                         request.cursor = Some(cursor.to_owned());
