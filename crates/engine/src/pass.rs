@@ -3199,12 +3199,7 @@ impl Engine {
 /// Whether the file at `path` differs from the facts its input was last
 /// read or refused at. A file that is gone is left to discovery.
 fn changed_since_read(path: &Path, st: &InputState) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| {
-        let now = FileFacts::of(&meta);
-        !st.unread
-            .or(st.facts)
-            .is_some_and(|read| read.unchanged_as(&now))
-    })
+    std::fs::metadata(path).is_ok_and(|meta| st.unread.or(st.facts) != Some(FileFacts::of(&meta)))
 }
 
 /// Whether parsing a chain from its first byte replaces the parse it has.
