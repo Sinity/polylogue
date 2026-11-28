@@ -1607,6 +1607,28 @@ impl Engine {
                 archive_counter,
             });
         }
+        if chains == RevisionChains::Newest
+            && self.recent_replay_pending
+            && self.archive.index_files()?.serves()
+            && !self.archive.stop().is_cancelled()
+            && !self.poll_request()
+        {
+            let planning = self.stored_planning.as_ref().expect("planning started");
+            if let Some(through) = &planning.through {
+                let recent = self.reads.reader()?.recent_unread_chains(
+                    &versions,
+                    through,
+                    self.config.workers.max(1),
+                )?;
+                self.reparse_chains(recent, pass)?;
+            }
+            // Unfinished plans remain due. Catch-up visits them through its
+            // ordinary finite scan even if a new request interrupted the seed.
+            self.recent_replay_pending = false;
+            if self.live_input_changed() {
+                return Ok(true);
+            }
+        }
         loop {
             if self.archive.stop().is_cancelled() || self.poll_request() {
                 return Ok(false);
@@ -1780,7 +1802,8 @@ impl Engine {
                 break;
             }
             activity::progressed();
-            let stored_source = c.imported || !self.config.reads_sources;
+            let stored_source =
+                c.imported || !self.config.reads_sources || !watched.contains_key(&c.input);
             let route = |origin: &'static OriginSpec| {
                 if c.imported {
                     origin.route.imported()
