@@ -539,7 +539,14 @@ fn resolve(
             Given::None => None,
         };
         if let Some(text) = text {
-            let (retained, query_rows) = retain_selection(&text, call)?;
+            let (retained, query_rows) = retain_selection(
+                &text,
+                matches!(
+                    given,
+                    Given::Query(_) | Given::Reference(Reference::Query { .. })
+                ),
+                call,
+            )?;
             if return_selection && query_rows.is_none() {
                 return Err(Failure::bad_request(
                     "pick needs archive rows with native identities",
@@ -602,6 +609,7 @@ fn resolve(
 /// line population. Only derived relation values remain in the journal.
 fn retain_selection(
     text: &str,
+    record_history: bool,
     call: &Call<'_>,
 ) -> Result<(polylogue_model::user::LineSelection, Option<Vec<Reference>>), Failure> {
     let reader = call.reader()?;
@@ -625,6 +633,7 @@ fn retain_selection(
                     near: Some(near),
                     fields: &[],
                 },
+                record_history.then_some(call),
             )
         },
     )
@@ -900,13 +909,13 @@ fn rows_page(
                 page_size: rows.page_size.map(std::num::NonZeroU64::get),
                 why: rows.why,
                 session: None,
-                context,
+                context: std::sync::Arc::clone(&context),
                 embeddings,
                 ranking_identity,
                 near: Some(near),
                 fields: &rows.fields,
             };
-            match crate::daemon::query::prepare(&reader, ask).and_then(|prepared| {
+            match crate::daemon::query::listing(&reader, ask, call, |prepared| {
                 let wait_again = waiting
                     && prepared.is_empty()
                     && (freshness.up_to_date() || freshness.catching_up());
@@ -916,7 +925,26 @@ fn rows_page(
                     call.hand_over("optional query count")?;
                     prepared.complete_within(call.limit)?
                 };
-                Ok((answer, wait_again))
+                let next = answer
+                    .value
+                    .next()
+                    .zip(context.accepted_request())
+                    .map(|(cursor, request)| {
+                        let mut request = request.clone();
+                        request.cursor = Some(cursor.to_owned());
+                        d.ready_call(&request).map_err(|error| Failure { error })
+                    })
+                    .transpose()?;
+                let count = answer.value.count();
+                let exact = count.is_some()
+                    && freshness.up_to_date()
+                    && answer.outcome != crate::daemon::query::Outcome::Incomplete;
+                Ok(polylogue_reading::execution::Completed {
+                    value: (answer, wait_again),
+                    count,
+                    exact,
+                    next,
+                })
             }) {
                 Ok((answer, wait_again)) => (
                     super::query_outcome(answer, &freshness)
@@ -950,11 +978,18 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
     }
     let until = Instant::now() + duration;
+    // The empty probe itself records a run. That history cannot cause the
+    // same waiting request to evaluate again without a change to its population.
+    let interests = polylogue_store::completion::Committed {
+        content: true,
+        authored: true,
+        query_records: false,
+    };
     let commits = call
         .daemon
         .writes
         .as_ref()
-        .map(|writer| writer.completion_commits());
+        .map(|writer| writer.completion_commits_with_wake(interests, || {}));
     let _wake = match (&commits, &limit) {
         (Some(commits), Some(limit)) => {
             let wake = commits.wake_handle();

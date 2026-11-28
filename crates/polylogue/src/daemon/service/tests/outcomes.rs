@@ -31,6 +31,8 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
             resolved: crate::protocol::query::Resolved {
                 context: synthetic_context().run_context(),
                 times: vec![],
+                run: None,
+                query: None,
             },
             definitions: vec![],
             unknown: Default::default(),

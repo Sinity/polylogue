@@ -156,6 +156,7 @@ pub(super) fn stream(
                 None,
                 ReadFooter::default(),
                 output,
+                true,
             )
         },
     )

@@ -26,7 +26,7 @@ use crate::staging::StoredInput;
 use crate::{Batch, OptionExt as _, Result, ResultExt as _, StoreError, WriteReport};
 use polylogue_model::LockExt as _;
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -148,7 +148,7 @@ enum UserMsg {
         Box<polylogue_model::query_objects::QueryRunOutcome>,
         SyncSender<Result<()>>,
     ),
-    History(Box<query_objects::History>),
+    History(Box<query_objects::History>, SyncSender<Result<()>>),
 }
 
 /// User writes waiting before their senders block.
@@ -714,13 +714,14 @@ impl Inner {
                     }
                     let _ = reply.send(result);
                 }
-                UserMsg::History(history) => {
-                    if let Err(error) = self
+                UserMsg::History(history, reply) => {
+                    let result = self
                         .check_user_parent(history.run.id.as_str(), None)
-                        .and_then(|()| self.write_history(&history))
-                    {
-                        self.failed(format_args!("query history {}", history.run.id), &error);
+                        .and_then(|()| self.write_history(&history));
+                    if let Err(error) = &result {
+                        self.failed(format_args!("query history {}", history.run.id), error);
                     }
+                    let _ = reply.send(result);
                 }
             }
         }
@@ -768,15 +769,16 @@ impl Inner {
         let scope = scope.or(prepared_scope.as_ref());
         let tx = self.begin()?;
         scoped::require_current(&location, scope)?;
-        let known = crate::ConnExt::exists(
-            &*tx,
-            "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
-            [&request.id],
-        )?;
-        let seq = if known {
-            crate::write_counter(&tx)?
-        } else {
-            bump_counter(&tx)?
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT commit_seq FROM client_request WHERE id=?1",
+                [&request.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let seq = match previous {
+            Some(seq) => seq,
+            None => bump_counter(&tx)?,
         };
         let outcome = {
             let source_snapshot = rusqlite::Transaction::new_unchecked(
@@ -792,8 +794,14 @@ impl Inner {
             )?
         };
         scoped::require_current(&location, scope)?;
-        if known || (matches!(request.write, UserWrite::MarkSeen { .. }) && outcome.outcome.repeat)
-        {
+        if let Some(seq) = previous {
+            // A retry requires the original write to be visible in the index.
+            // Later query-only commits do not advance the index's position.
+            tx.rollback()?;
+            let position = Position(u64::try_from(seq).or_stored("negative commit sequence")?);
+            return Ok(Committed { position, outcome });
+        }
+        if matches!(request.write, UserWrite::MarkSeen { .. }) && outcome.outcome.repeat {
             tx.rollback()?;
             return Ok(Committed {
                 position: self.position()?,

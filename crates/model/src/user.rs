@@ -37,6 +37,8 @@ impl RequestMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LineSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::RunId>,
     pub binding: crate::query_objects::ExecutionBinding,
     pub relation: Option<serde_json::Value>,
     pub matches: Option<serde_json::Value>,

@@ -472,42 +472,7 @@ fn attachment_call(
     })
 }
 
-/// First pages queue their run after reading; an answer stands without its run record.
-fn record_run(
-    reader: &Reader<'_>,
-    services: &impl ReadServices,
-    operation: &Arc<Context>,
-    request: &ReadRequest,
-    reading: &Reading,
-    history: Option<HistorySlot>,
-) -> Result<(), Error> {
-    if history.is_none() {
-        return Ok(());
-    }
-    services.compiled(reader, operation, &reading.target, |compile| {
-        let target = reading
-            .target
-            .strip_prefix("root:")
-            .unwrap_or(&reading.target);
-        let selection = reader.prepare_selection(target, &compile.options)?;
-        record_compiled(
-            reader,
-            services,
-            operation,
-            request,
-            reading,
-            &Compiled {
-                selection: &selection,
-                options: &compile.options,
-                ranking_identity: compile.ranking_identity,
-                history: None,
-            },
-            history,
-        )
-    })
-}
-
-/// Record a reading's run from its compiled target, as [`record_run`] says.
+/// Commit the traced query and its completed presentation together.
 fn record_compiled(
     reader: &Reader<'_>,
     services: &impl ReadServices,
@@ -517,13 +482,49 @@ fn record_compiled(
     compiled: &Compiled<'_>,
     history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Result<(), Error> {
-    use polylogue_model::query_objects::{
-        ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
-    };
-    let ReadRequest { delivery, .. } = request;
+    use polylogue_model::query_objects::{QueryRunOutcome, RunOutcome};
     let Some(history) = history else {
         return Ok(());
     };
+    let (object, run) = compiled_run(reader, operation, request, reading, compiled)?;
+    let outcome = QueryRunOutcome {
+        run: run.id.clone(),
+        binding_hash: run.binding_hash().map_err(Error::internal)?,
+        run_hash: run.record_hash().map_err(Error::internal)?,
+        at: services.requests().now(),
+        outcome: RunOutcome::Ok,
+        count: None,
+        exact: false,
+        next: None,
+    };
+    history.record(object, run, outcome).map_err(Error::from)
+}
+
+/// Direct addresses and an already accepted population read stored records.
+fn executes_query(reading: &Reading, compiled: &Compiled<'_>) -> bool {
+    reading.references.is_none()
+        && compiled.selection.direct_target().is_none()
+        && !matches!(
+            polylogue_model::Reference::parse(&reading.target),
+            Ok(reference) if !matches!(reference, polylogue_model::Reference::Query { .. })
+        )
+}
+
+fn compiled_run(
+    reader: &Reader<'_>,
+    operation: &Arc<Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    compiled: &Compiled<'_>,
+) -> Result<
+    (
+        polylogue_model::query_objects::QueryObject,
+        polylogue_model::query_objects::QueryRun,
+    ),
+    Error,
+> {
+    use polylogue_model::query_objects::{ExecutionPresentation, QueryRun, RunBinding};
+    let ReadRequest { delivery, .. } = request;
     let Compiled {
         selection,
         options,
@@ -568,17 +569,108 @@ fn record_compiled(
             execution: Box::new(binding),
         },
     };
-    let outcome = QueryRunOutcome {
-        run: run.id.clone(),
-        binding_hash: run.binding_hash().map_err(Error::internal)?,
-        run_hash: run.record_hash().map_err(Error::internal)?,
-        at: services.requests().now(),
-        outcome: RunOutcome::Ok,
-        count: None,
-        exact: false,
-        next: None,
-    };
-    history.record(object, run, outcome).map_err(Error::from)
+    Ok((object, run))
+}
+
+/// A read execution acknowledges its inputs before producing its records.
+fn record_read<T>(
+    reader: &Reader<'_>,
+    services: &impl ReadServices,
+    operation: &Arc<Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    compiled: &Compiled<'_>,
+    execute: impl FnOnce() -> Result<execution::Completed<T>, Error>,
+) -> Result<T, Error> {
+    let writer = services
+        .writer()
+        .ok_or_else(|| Error::not_yet_available("the read's run record is unavailable"))?;
+    let (object, run) = compiled_run(reader, operation, request, reading, compiled)?;
+    let hash = run.binding_hash().map_err(Error::internal)?;
+    writer
+        .archive()
+        .query_object(object, operation.parent_lifetime())?;
+    execution::record(
+        writer,
+        operation.parent_lifetime(),
+        run,
+        hash,
+        || services.requests().now(),
+        execute,
+    )
+}
+
+fn record_stream(
+    reader: &Reader<'_>,
+    services: &impl ReadServices,
+    operation: &Arc<Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    compiled: &Compiled<'_>,
+    execute: impl FnOnce() -> Result<ReadFooter, Error>,
+) -> Result<ReadFooter, Error> {
+    record_read(
+        reader,
+        services,
+        operation,
+        request,
+        reading,
+        compiled,
+        || {
+            let footer = execute()?;
+            Ok(execution::Completed {
+                next: footer.next.clone(),
+                value: footer,
+                count: None,
+                exact: false,
+            })
+        },
+    )
+}
+
+fn addressed_source(scope: &session::Scope) -> polylogue_model::Reference {
+    match scope.range.as_ref() {
+        None => polylogue_model::Reference::Session(scope.session.clone()),
+        Some((first, last)) if first == last => polylogue_model::Reference::Message(first.clone()),
+        Some((first, last)) => polylogue_model::Reference::MessageRange {
+            first: first.clone(),
+            last: last.clone(),
+        },
+    }
+}
+
+/// Use the resolved source address for an individual session reading. The
+/// accepted request retains any logical scope or item the caller named.
+fn record_addressed_page(
+    reader: &Reader<'_>,
+    services: &impl ReadServices,
+    operation: &Arc<Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    reference: polylogue_model::Reference,
+    history: Option<HistorySlot>,
+) -> Result<(), Error> {
+    if history.is_none() {
+        return Ok(());
+    }
+    let target = reference.to_string();
+    services.compiled(reader, operation, &target, |compile| {
+        let selection = reader.prepare_selection(&target, &compile.options)?;
+        record_compiled(
+            reader,
+            services,
+            operation,
+            request,
+            reading,
+            &Compiled {
+                selection: &selection,
+                options: &compile.options,
+                ranking_identity: compile.ranking_identity,
+                history: None,
+            },
+            history,
+        )
+    })
 }
 
 /// A reading's seed is its target's, so a sampled or shuffled reading
@@ -774,11 +866,22 @@ pub fn page(
     let (reading, cursor) = reading(request)?;
     require_page_delivery(&reading)?;
     let page = match route {
-        Route::Session(scope) => session::page(reader, services, request, operation, scope)?,
-        Route::Links(scope) => (
-            links::page(reader, services, request, operation, scope)?,
-            vec![],
-        ),
+        Route::Session(scope) => {
+            let addressed = addressed_source(&scope);
+            let page = session::page(reader, services, request, operation, scope)?;
+            record_addressed_page(
+                reader, services, operation, request, &reading, addressed, history,
+            )?;
+            page
+        }
+        Route::Links(scope) => {
+            let addressed = addressed_source(&scope);
+            let page = links::page(reader, services, request, operation, scope)?;
+            record_addressed_page(
+                reader, services, operation, request, &reading, addressed, history,
+            )?;
+            (page, vec![])
+        }
         Route::Trace | Route::Object(_) | Route::Rows => {
             return prepared(
                 reader,
@@ -786,42 +889,62 @@ pub fn page(
                 operation,
                 &reading,
                 |compiled, snapshot, header, near| {
-                    let page = rows_page(
-                        reader,
-                        services,
-                        request,
-                        operation,
-                        &reading,
-                        &match compiled.history {
-                            Some(history) => rows::Rows::SavedQuery(compiled.selection, history),
-                            None => rows::Rows::Selection(compiled.selection),
-                        },
-                        snapshot,
-                        header,
-                        ReadFraming::Query {
-                            query_id: compiled.selection.question_id(),
-                        },
-                        compiled.history.map_or_else(
-                            || Ok(PageCursor::version(&[])),
-                            |history| history.version(),
-                        )?,
-                        near,
-                        None,
-                        ReadFooter::default(),
-                    )?;
-                    if cursor.is_none() {
-                        let _ = record_compiled(
-                            reader, services, operation, request, &reading, compiled, history,
-                        );
+                    let execute = || {
+                        rows_page(
+                            reader,
+                            services,
+                            request,
+                            operation,
+                            &reading,
+                            &match compiled.history {
+                                Some(history) => {
+                                    rows::Rows::SavedQuery(compiled.selection, history)
+                                }
+                                None => rows::Rows::Selection(compiled.selection),
+                            },
+                            snapshot,
+                            header,
+                            ReadFraming::Query {
+                                query_id: compiled.selection.question_id(),
+                            },
+                            compiled.history.map_or_else(
+                                || Ok(PageCursor::version(&[])),
+                                |history| history.version(),
+                            )?,
+                            near,
+                            None,
+                            ReadFooter::default(),
+                        )
+                    };
+                    if cursor.is_none() && executes_query(&reading, compiled) {
+                        // The beginning and outcome use the writer's ordinary
+                        // acknowledged queue. Release the completed-read slot.
+                        drop(history);
+                        record_read(
+                            reader,
+                            services,
+                            operation,
+                            request,
+                            &reading,
+                            compiled,
+                            || {
+                                let page = execute()?;
+                                Ok(execution::Completed {
+                                    next: page.document.footer.next.clone(),
+                                    value: page,
+                                    count: None,
+                                    exact: false,
+                                })
+                            },
+                        )
+                        .map(|page| (page, vec![]))
+                    } else {
+                        execute().map(|page| (page, vec![]))
                     }
-                    Ok((page, vec![]))
                 },
             );
         }
     };
-    if cursor.is_none() {
-        let _ = record_run(reader, services, operation, request, &reading, history);
-    }
     Ok(page)
 }
 
@@ -1051,35 +1174,50 @@ pub fn stream(
         }
         route => route,
     };
+    let query_route = matches!(&route, Route::Rows);
     let (reading, _) = reading(request)?;
     prepared(
         reader,
         services,
         operation,
         &reading,
-        |compiled, snapshot, header, near| match route {
-            Route::Session(scope) => session::stream(
-                reader, services, request, operation, scope, snapshot, output,
-            ),
-            Route::Links(scope) => links::stream(
-                reader, services, request, operation, scope, snapshot, output,
-            ),
-            Route::Trace | Route::Object(_) | Route::Rows => rows_stream(
-                reader,
-                services,
-                request,
-                &reading,
-                &match compiled.history {
-                    Some(history) => rows::Rows::SavedQuery(compiled.selection, history),
-                    None => rows::Rows::Selection(compiled.selection),
-                },
-                snapshot,
-                header,
-                near,
-                None,
-                ReadFooter::default(),
-                output,
-            ),
+        |compiled, snapshot, header, near| {
+            let record = query_route && executes_query(&reading, compiled);
+            let execute = || match route {
+                Route::Session(scope) => session::stream(
+                    reader, services, request, operation, scope, snapshot, output,
+                ),
+                Route::Links(scope) => links::stream(
+                    reader, services, request, operation, scope, snapshot, output,
+                ),
+                Route::Trace | Route::Object(_) | Route::Rows => rows_stream(
+                    reader,
+                    services,
+                    request,
+                    &reading,
+                    &match compiled.history {
+                        Some(history) => rows::Rows::SavedQuery(compiled.selection, history),
+                        None => rows::Rows::Selection(compiled.selection),
+                    },
+                    snapshot,
+                    header,
+                    near,
+                    None,
+                    ReadFooter::default(),
+                    output,
+                    !record,
+                ),
+            };
+            if record {
+                let footer = record_stream(
+                    reader, services, operation, request, &reading, compiled, execute,
+                )?;
+                reader.check()?;
+                output::complete(output, &footer)?;
+                Ok(footer)
+            } else {
+                execute()
+            }
         },
     )
 }
@@ -1097,6 +1235,7 @@ fn rows_stream(
     object_facts: Option<&LayoutFacts>,
     mut footer: ReadFooter,
     output: &mut dyn Write,
+    complete: bool,
 ) -> Result<ReadFooter, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(services, message, block, index, input)
@@ -1156,5 +1295,9 @@ fn rows_stream(
         },
     )?;
     check()?;
-    stream.finish(footer)
+    if complete {
+        stream.finish(footer)
+    } else {
+        Ok(stream.footer(footer))
+    }
 }

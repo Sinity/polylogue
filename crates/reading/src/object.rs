@@ -300,6 +300,7 @@ pub(super) fn stream(
                 Some(facts),
                 footer,
                 output,
+                true,
             )?;
             let next = footer.next.clone();
             Ok((footer, next))

@@ -5,7 +5,9 @@
 //! JSON continuation, and a 32-byte keyed signature. An index instance read here is
 //! unauthenticated and only distinguishes a cursor sealed by an earlier index
 //! instance from one that was never a cursor.
-use query_language::cursor::{Continuation, CursorContext, CursorSeal, SealedCursor};
+use query_language::cursor::{
+    AuthenticatedCursor, Continuation, CursorContext, CursorSeal, SealedCursor,
+};
 use query_language::identity::QuestionId;
 use query_language::time::ClockWire;
 use query_language::{Error, ErrorKind};
@@ -26,7 +28,16 @@ pub fn open_cursor(
     resolve_zone: impl FnOnce(&str) -> Result<jiff::tz::TimeZone, Error>,
     available: impl FnOnce(&CursorContext) -> bool,
 ) -> Result<Continuation, Error> {
-    match seal.open(cursor, question, resolve_zone, available) {
+    authenticate(seal, current, cursor)?.bind(question, resolve_zone, available)
+}
+
+/// Authenticate a cursor before resolving the run that owns its question.
+pub fn authenticate(
+    seal: &CursorSeal,
+    current: &str,
+    cursor: &SealedCursor,
+) -> Result<AuthenticatedCursor, Error> {
+    match seal.authenticate(cursor) {
         Err(error) if error.kind == ErrorKind::InvalidQuery => match sealed_index_instance(cursor) {
             Some(instance) if instance != current => Err(Error::new(
                 ErrorKind::StaleCursor,

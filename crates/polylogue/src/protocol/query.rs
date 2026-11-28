@@ -21,6 +21,11 @@ pub struct Resolved {
     pub context: polylogue_model::context::RunContext,
     #[serde(default)]
     pub times: Vec<query_language::time::ResolvedTime>,
+    /// The archive record of the original evaluation, shared by all its pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<polylogue_model::Reference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<polylogue_model::Reference>,
 }
 
 pub use polylogue_store::query::execute::Explanation;
@@ -53,6 +58,30 @@ impl Answer {
             | Self::Measure(Measure { measure, .. }) => Err(crate::daemon::Failure::bad_request(
                 format!("the query measures {measure}, where rows were expected"),
             )),
+        }
+    }
+
+    pub fn next(&self) -> Option<&str> {
+        match self {
+            Self::Rows(rows) => rows.next.as_deref(),
+            Self::PagedMeasure(measure) => measure.next.as_deref(),
+            Self::Measure(_) => None,
+        }
+    }
+
+    pub fn count(&self) -> Option<u64> {
+        match self {
+            Self::Rows(rows) => rows.count,
+            Self::PagedMeasure(measure) => measure.count,
+            Self::Measure(_) => None,
+        }
+    }
+
+    pub fn set_count(&mut self, count: Option<u64>) {
+        match self {
+            Self::Rows(rows) => rows.count = count,
+            Self::PagedMeasure(measure) => measure.count = count,
+            Self::Measure(_) => {}
         }
     }
 

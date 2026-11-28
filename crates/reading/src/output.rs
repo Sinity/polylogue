@@ -161,16 +161,7 @@ impl<'a> Stream<'a> {
 
     fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Error> {
         (self.check)()?;
-        let frame = command_surface::SseEvent {
-            id: None,
-            event: name.into(),
-            data: serde_json::to_string(payload).map_err(Error::internal)?,
-            retry: None,
-        }
-        .encode()
-        .map_err(Error::Operation)?;
-        self.output.write_all(frame.as_bytes()).map_err(Error::io)?;
-        self.output.flush().map_err(Error::io)
+        emit(self.output, name, payload)
     }
 
     pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Error> {
@@ -208,11 +199,33 @@ impl<'a> Stream<'a> {
         self.emit("blob", chunk)
     }
 
-    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<ReadFooter, Error> {
-        footer.shown = self.shown;
-        footer.count = ValueState::known(self.shown);
-        footer.counts = self.counts;
+    pub(super) fn finish(mut self, footer: ReadFooter) -> Result<ReadFooter, Error> {
+        let footer = self.footer(footer);
         self.emit("complete", &footer)?;
         Ok(footer)
     }
+
+    pub(super) fn footer(&self, mut footer: ReadFooter) -> ReadFooter {
+        footer.shown = self.shown;
+        footer.count = ValueState::known(self.shown);
+        footer.counts = self.counts;
+        footer
+    }
+}
+
+pub(super) fn complete(output: &mut dyn Write, footer: &ReadFooter) -> Result<(), Error> {
+    emit(output, "complete", footer)
+}
+
+fn emit(output: &mut dyn Write, name: &str, payload: &impl serde::Serialize) -> Result<(), Error> {
+    let frame = command_surface::SseEvent {
+        id: None,
+        event: name.into(),
+        data: serde_json::to_string(payload).map_err(Error::internal)?,
+        retry: None,
+    }
+    .encode()
+    .map_err(Error::Operation)?;
+    output.write_all(frame.as_bytes()).map_err(Error::io)?;
+    output.flush().map_err(Error::io)
 }

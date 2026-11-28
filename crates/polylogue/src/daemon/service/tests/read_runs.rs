@@ -359,3 +359,137 @@ fn object_read_runs_have_no_invented_question_or_followup() {
     ));
     assert!(page.document.footer.next.is_none());
 }
+
+#[test]
+fn a_listing_continuation_reuses_its_durable_original_run() {
+    let mut daemon = test_daemon::start_over_morrow(&|_| {});
+    daemon.pause_signals();
+    let save = |d: &Daemon, question: &str, request: &str| {
+        crate::test_answers::step(
+            Call::new(
+                "rows",
+                json!({"selection":question,"all":true,"steps":[{"verb":"save","name":"paging"}]}),
+            )
+            .id(request)
+            .answer(d),
+        )
+    };
+    save(
+        &daemon.daemon,
+        "sessions | sort by id",
+        "save-paging-original",
+    );
+    let listing = |selection: &str, cursor: Option<&str>| {
+        Call::new("rows", json!({"selection":selection, "page_size":1}))
+            .authorship(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            })
+            .cursor(cursor)
+            .answer(&daemon.daemon)
+    };
+    let first = crate::test_answers::listing(listing("query:paging", None));
+    let first = first
+        .value()
+        .unwrap_or_else(|| panic!("first page: {first:?}"));
+    let run_ref = first["resolved"]["run"].as_str().expect("run reference");
+    let Reference::Run(id) = Reference::parse(run_ref).unwrap() else {
+        panic!("expected a run reference");
+    };
+    let next = first["next"].as_str().expect("more than one session");
+    save(
+        &daemon.daemon,
+        "messages | sort by id",
+        "save-paging-changed",
+    );
+    let second = crate::test_answers::listing(listing("query:paging", Some(next)));
+    let second = second
+        .value()
+        .unwrap_or_else(|| panic!("second page: {second:?}"));
+    assert_eq!(second["resolved"]["run"], run_ref);
+    assert_eq!(second["unit"], "sessions");
+    assert_eq!(second["resolved"]["query"], first["resolved"]["query"]);
+    assert_eq!(second["count"], first["count"]);
+    assert_ne!(second["rows"], first["rows"]);
+    let count_before_restart = {
+        let read = daemon.daemon.reads.reader().unwrap();
+        let run = read.query_run(&id).unwrap().unwrap();
+        assert_eq!(run.authorship.author, polylogue_model::Author::Operator);
+        assert_eq!(
+            run.authorship.via,
+            polylogue_model::authorship::Channel::Cli
+        );
+        assert_eq!(
+            read.query_run_outcome(&id).unwrap().unwrap().outcome,
+            RunOutcome::Ok
+        );
+        // Both pages use the same immutable run, with a completed first-page outcome.
+        let completion = read.query_run_outcome(&id).unwrap().unwrap();
+        assert_eq!(
+            completion.next.unwrap().request.cursor.as_deref(),
+            Some(next)
+        );
+        completion.count
+    };
+    assert_eq!(count_before_restart, first["count"].as_u64());
+    daemon.restart();
+    let read = daemon.daemon.reads.reader().unwrap();
+    assert_eq!(
+        read.query_run_outcome(&id).unwrap().unwrap().count,
+        count_before_restart
+    );
+}
+
+#[test]
+fn saving_an_executed_query_records_one_run_and_copying_its_result_does_not() {
+    let mut daemon = test_daemon::start("Save this session");
+    daemon.pause_signals();
+    let step = crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":"sessions","steps":[{"verb":"save","name":"original"}]}),
+        )
+        .id("record-the-save")
+        .answer(&daemon.daemon),
+    );
+    let crate::protocol::line::StepAnswer::Saved(receipt) = step else {
+        panic!("saved query receipt");
+    };
+    let result = receipt.saved_rows.result;
+    crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":result,"steps":[{"verb":"save","name":"copy"}]}),
+        )
+        .id("copy-the-saved-rows")
+        .answer(&daemon.daemon),
+    );
+    let runs = crate::test_answers::listing(
+        Call::new("rows", json!({"selection":"runs"})).answer(&daemon.daemon),
+    );
+    let runs = runs
+        .value()
+        .unwrap_or_else(|| panic!("run history: {runs:?}"));
+    assert_eq!(runs["count"], 1, "one evaluation of the original question");
+    let Reference::Run(id) = Reference::parse(runs["rows"][0]["id"].as_str().unwrap()).unwrap()
+    else {
+        panic!("recorded Save evaluation");
+    };
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
+    let request = reader.user_request("record-the-save-1").unwrap().unwrap();
+    let polylogue_model::user::UserWrite::Save(save) = request.write else {
+        panic!("durable Save request");
+    };
+    let kept: serde_json::Value = serde_json::from_str(&save.rows_json).unwrap();
+    assert_eq!(kept["run"], Reference::Run(id.clone()).to_string());
+    let binding = run.binding.original().unwrap();
+    assert_eq!(
+        binding.accepted_request.as_ref().unwrap()["arguments"]["steps"][0]["verb"],
+        "save"
+    );
+    assert_eq!(
+        reader.query_run_outcome(&id).unwrap().unwrap().count,
+        Some(1)
+    );
+}

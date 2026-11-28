@@ -56,11 +56,6 @@ pub fn record<T>(
                 .recv()
                 .map_err(|_| polylogue_store::StoreError::WriterGone)?
         });
-    match result {
-        Ok(completed) => {
-            committed?;
-            Ok(completed.value)
-        }
-        Err(error) => Err(error),
-    }
+    committed?;
+    result.map(|completed| completed.value)
 }

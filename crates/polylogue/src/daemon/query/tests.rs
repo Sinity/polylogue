@@ -9,7 +9,7 @@ use query_language::time::Clock;
 
 /// Exercise the same resolution and Keep producer used by a Save step.
 fn save_rows(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let (retained, references) = capture_selection(reader, &ask)?;
+    let (retained, references) = capture_selection(reader, &ask, None)?;
     save_selected(reader, ask, &retained, references.as_deref())
 }
 

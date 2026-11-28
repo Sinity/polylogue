@@ -33,7 +33,7 @@ mod completeness;
 pub use completeness::ReadingContract;
 mod captured;
 mod cursor_index_instance;
-pub use cursor_index_instance::open_cursor;
+pub use cursor_index_instance::{authenticate as authenticate_cursor, open_cursor};
 mod chain_state;
 mod hook_fields;
 mod import_counts;

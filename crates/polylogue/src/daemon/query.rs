@@ -14,6 +14,7 @@ use super::Failure;
 
 pub(crate) mod annotations;
 pub(crate) mod feed;
+pub(super) mod history;
 mod page;
 use query_language::cursor::CursorSeal;
 
@@ -365,6 +366,7 @@ fn save_with_rows(
 pub(crate) fn capture_selection(
     reader: &Reader<'_>,
     ask: &Ask<'_>,
+    history: Option<&super::handler::Call<'_>>,
 ) -> Result<
     (
         polylogue_model::user::LineSelection,
@@ -377,59 +379,101 @@ pub(crate) fn capture_selection(
     let mut options = options(reader, ask, uuid::Uuid::now_v7().as_u128() as u64)?;
     options.page_size = None;
     let prepared = reader.prepare_query_selection(ask.text, &options)?;
-    let measure = prepared.program().measure.is_some();
-    let derived = measure || matches!(prepared.program().statements, Statements::Derived(_));
-    // The Store owns which rows have readable references. A row-shaped feed
-    // or query history is still a retainable relation, not a readable object.
-    let mut references = (prepared.program().shape == Shape::Rows && !measure).then(Vec::new);
-    let mut rows = Vec::new();
-    let mut identities =
-        matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
-    if !measure {
-        reader.visit_selection(
-            &prepared,
-            polylogue_store::read::VisitFrom::First,
-            ask.near,
-            |row| {
-                match (&mut references, row.target) {
-                    (Some(references), Some(target)) => references.push(target.reference()),
-                    _ => references = None,
-                }
-                if let Some(identities) = &mut identities {
-                    let Some(polylogue_store::selection::RowIdentity::Entity { key, .. }) =
-                        row.identity
-                    else {
-                        return Err(Failure::internal("a native result has no identity"));
-                    };
-                    identities.push(key);
-                }
-                rows.push(row.values);
-                Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
-            },
-        )?;
-    }
-    let mut retained = polylogue_model::user::LineSelection {
-        binding: prepared.execution_binding(
-            polylogue_store::query::execute::options_snapshot(
-                &options,
-                false,
-                ask.ranking_identity.clone(),
-            )?,
-            ExecutionPresentation::Query,
-            None,
+    let accepted = ask
+        .context
+        .accepted_request()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(Failure::internal)?;
+    let mut binding = prepared.execution_binding(
+        polylogue_store::query::execute::options_snapshot(
+            &options,
+            false,
+            ask.ranking_identity.clone(),
         )?,
-        relation: None,
-        matches: None,
+        ExecutionPresentation::Query,
+        accepted,
+    )?;
+    binding
+        .replay
+        .context
+        .versions
+        .extend(ask.context.cursor_versions());
+    let history = history
+        .map(|call| {
+            Ok::<_, Failure>(history::RecordedQuery::from_binding(
+                call,
+                ask,
+                prepared.query_object()?,
+                binding.clone(),
+                reader.change_position()?,
+            ))
+        })
+        .transpose()?;
+    let run = history.as_ref().map(|history| history.id().clone());
+    let execute = || {
+        let measure = prepared.program().measure.is_some();
+        let derived = measure || matches!(prepared.program().statements, Statements::Derived(_));
+        // The Store owns which rows have readable references. A row-shaped feed
+        // or query history is still a retainable relation, not a readable object.
+        let mut references = (prepared.program().shape == Shape::Rows && !measure).then(Vec::new);
+        let mut rows = Vec::new();
+        let mut identities =
+            matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
+        if !measure {
+            reader.visit_selection(
+                &prepared,
+                polylogue_store::read::VisitFrom::First,
+                ask.near,
+                |row| {
+                    match (&mut references, row.target) {
+                        (Some(references), Some(target)) => references.push(target.reference()),
+                        _ => references = None,
+                    }
+                    if let Some(identities) = &mut identities {
+                        let Some(polylogue_store::selection::RowIdentity::Entity { key, .. }) =
+                            row.identity
+                        else {
+                            return Err(Failure::internal("a native result has no identity"));
+                        };
+                        identities.push(key);
+                    }
+                    rows.push(row.values);
+                    Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
+                },
+            )?;
+        }
+        let mut retained = polylogue_model::user::LineSelection {
+            run,
+            binding,
+            relation: None,
+            matches: None,
+        };
+        let value = save_captured(reader, ask.clone(), &retained, rows, identities)?;
+        let count = if measure {
+            None
+        } else {
+            value["rows"].as_array().map(|rows| rows.len() as u64)
+        };
+        let exact = count.is_some() && prepared.program().incomplete.is_empty();
+        if derived || references.as_ref().is_none_or(Vec::is_empty) {
+            retained.relation = Some(value);
+        } else if value.get("matches").is_some() {
+            retained.matches = Some(
+                serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
+            );
+        }
+        Ok(polylogue_reading::execution::Completed {
+            value: (retained, references),
+            count,
+            exact,
+            next: None,
+        })
     };
-    let value = save_captured(reader, ask.clone(), &retained, rows, identities)?;
-    if derived || references.as_ref().is_none_or(Vec::is_empty) {
-        retained.relation = Some(value);
-    } else if value.get("matches").is_some() {
-        retained.matches = Some(
-            serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
-        );
+    match history {
+        Some(history) => history.record(execute),
+        None => execute().map(|completed| completed.value),
     }
-    Ok((retained, references))
 }
 
 /// The accepted population uses the same current hydration or retained
@@ -469,6 +513,14 @@ pub(crate) fn accepted_population(
         resolved: crate::protocol::query::Resolved {
             context: context.run_context(),
             times: retained.binding.replay.context.resolved_times.clone(),
+            run: retained.run.clone().map(polylogue_model::Reference::Run),
+            query: retained
+                .run
+                .as_ref()
+                .map(|_| polylogue_model::Reference::Query {
+                    key: retained.binding.replay.context.question.to_string(),
+                    parameters: Vec::new(),
+                }),
         },
         definitions: serde_json::from_value(value["definitions"].clone())
             .map_err(Failure::internal)?,
@@ -531,6 +583,8 @@ fn save_measure(
             .replay_clock(program.clock.clone())?
             .run_context(),
         times: program.resolved_times.clone(),
+        run: None,
+        query: None,
     };
     let mut after = None;
     let mut data = None;
@@ -740,16 +794,61 @@ fn cursor_failure(mut failure: Failure, text: &str) -> Failure {
     failure
 }
 
-pub fn prepare<'read, 'pool>(
+fn prepare<'read, 'pool>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
 ) -> Result<PreparedQuery<'read, 'pool>, Failure> {
+    prepare_with(reader, ask, None, |page| {
+        Ok(polylogue_reading::execution::Completed {
+            value: page,
+            count: None,
+            exact: false,
+            next: None,
+        })
+    })
+}
+
+/// Execute a public listing; continuations carry its initial execution identity.
+pub(super) fn listing<'read, 'pool, T>(
+    reader: &'read Reader<'pool>,
+    ask: Ask<'_>,
+    call: &super::handler::Call<'_>,
+    finish: impl FnOnce(
+        PreparedQuery<'read, 'pool>,
+    ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
+) -> Result<T, Failure> {
+    prepare_with(reader, ask, Some(call), finish)
+}
+
+fn prepare_with<'read, 'pool, T>(
+    reader: &'read Reader<'pool>,
+    ask: Ask<'_>,
+    call: Option<&super::handler::Call<'_>>,
+    finish: impl FnOnce(
+        PreparedQuery<'read, 'pool>,
+    ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
+) -> Result<T, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
     let index_file = reader.index_identity()?;
     let mut opts = execution_options(reader, &ask, 0)?;
-    let plan = reader.prepare_query_plan(ask.text, &opts)?;
+    let mut original_count = None;
+    let plan = if let Some(cursor) = ask.cursor.filter(|_| call.is_some()) {
+        let authenticated = polylogue_store::read::authenticate_cursor(
+            &seal,
+            &position.index_instance,
+            &query_language::cursor::SealedCursor::from_wire(cursor),
+        )
+        .map_err(|failure| cursor_failure(failure.into(), ask.text))?;
+        let (plan, options, count) = history::replay(reader, &authenticated, &ask, &opts)
+            .map_err(|failure| cursor_failure(failure, ask.text))?;
+        original_count = count;
+        opts = options;
+        plan
+    } else {
+        reader.prepare_query_plan(ask.text, &opts)?
+    };
     let question = plan.question_id();
     let cursor = ask
         .cursor
@@ -790,12 +889,6 @@ pub fn prepare<'read, 'pool>(
     let mut program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let similarity = program.ranking(reader, ask.near)?;
-    let ready = |_: &str| {
-        similarity.clone().ok_or_else(|| {
-            polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
-        })
-    };
     let after = cursor
         .as_ref()
         .map(|cursor| {
@@ -810,41 +903,81 @@ pub fn prepare<'read, 'pool>(
         )?,
     };
     context.versions.extend(operation_versions);
-    let paging = page::Paging {
-        seal: &seal,
-        context,
-    };
     let evaluation = ask.context.replay_clock(program.clock.clone())?;
-    let resolved = crate::protocol::query::Resolved {
-        context: evaluation.run_context(),
-        times: program.resolved_times.clone(),
+    let history = call
+        .filter(|_| ask.cursor.is_none())
+        .map(|call| {
+            history::RecordedQuery::new(call, &ask, &opts, &plan, &program, &context, position)
+        })
+        .transpose()?;
+    if let Some(history) = &history {
+        context
+            .versions
+            .insert("run".into(), history.id().to_string());
+    }
+    let run = context
+        .versions
+        .get("run")
+        .map(|id| polylogue_model::RunId::parse(id).map(polylogue_model::Reference::Run))
+        .transpose()
+        .map_err(Failure::internal)?;
+    let execute = || {
+        let paging = page::Paging {
+            seal: &seal,
+            context,
+        };
+        let resolved = crate::protocol::query::Resolved {
+            context: evaluation.run_context(),
+            times: program.resolved_times.clone(),
+            query: run.as_ref().map(|_| polylogue_model::Reference::Query {
+                key: question.to_string(),
+                parameters: Vec::new(),
+            }),
+            run,
+        };
+        let similarity = program.ranking(reader, ask.near)?;
+        let ready = |_: &str| {
+            similarity.clone().ok_or_else(|| {
+                polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+            })
+        };
+        let mut answer = with_similarity(
+            reader,
+            &program,
+            ask.near.map(|_| &ready as &NearFn<'_>),
+            || {
+                answer(
+                    reader,
+                    &program,
+                    &program.clock.day,
+                    after,
+                    &paging,
+                    ask.why,
+                    resolved,
+                )
+            },
+        )?;
+        if ask.cursor.is_some() && call.is_some() {
+            answer.value.set_count(original_count);
+        }
+        let count_program = if (call.is_some() && ask.cursor.is_some())
+            || matches!(answer.value, crate::protocol::query::Answer::Measure(_))
+        {
+            None
+        } else {
+            Some(program)
+        };
+        finish(PreparedQuery {
+            reader,
+            answer,
+            count_program,
+            similarity,
+        })
     };
-    let answer = with_similarity(
-        reader,
-        &program,
-        ask.near.map(|_| &ready as &NearFn<'_>),
-        || {
-            answer(
-                reader,
-                &program,
-                &program.clock.day,
-                after,
-                &paging,
-                ask.why,
-                resolved,
-            )
-        },
-    )?;
-    let count_program = match &answer.value {
-        crate::protocol::query::Answer::Measure(_) => None,
-        _ => Some(program),
-    };
-    Ok(PreparedQuery {
-        reader,
-        answer,
-        count_program,
-        similarity,
-    })
+    match history {
+        Some(history) => history.record(execute),
+        None => execute().map(|completed| completed.value),
+    }
 }
 
 /// Prepare one page after `after`, before its optional population count.

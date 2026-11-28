@@ -551,7 +551,14 @@ pub(crate) fn save_selection(
             )
         },
     );
-    let kept = kept?;
+    let mut kept = kept?;
+    if let Some(run) = selection
+        .retained
+        .as_ref()
+        .and_then(|selection| selection.run.clone())
+    {
+        kept["run"] = serde_json::json!(polylogue_model::Reference::Run(run));
+    }
     drop(reader);
     let read_position =
         serde_json::json!({ "now": kept["now"], "position":kept["read_position"] }).to_string();
