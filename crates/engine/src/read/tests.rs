@@ -53,18 +53,11 @@ fn stored_bytes_are_opened_at_their_first_read() {
 }
 
 #[test]
-fn detects_a_changed_tail() {
+fn reads_the_selected_file_range() {
     let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().join("f");
-    std::fs::write(&p, b"hello world\nmore\n").unwrap();
-    assert!(tail_intact(&p, 12, b"world\n").unwrap());
-    assert!(!tail_intact(&p, 12, b"WORLD\n").unwrap());
-    assert_eq!(read_range(&p, 6, 11).unwrap(), b"world");
-    assert_eq!(tail_of(b"abc"), b"abc");
-    // Longer than the tail: only the last 4096 bytes are kept.
-    let long: Vec<u8> = (0..4096 + 5).map(|i| (i % 251) as u8).collect();
-    assert_eq!(tail_of(&long), long[5..].to_vec());
-    assert_eq!(tail_of(&long).len(), 4096);
+    let path = dir.path().join("native");
+    std::fs::write(&path, b"hello world\nmore\n").unwrap();
+    assert_eq!(read_range(&path, 6, 11).unwrap(), b"world");
 }
 
 #[test]
@@ -490,7 +483,7 @@ fn source_range_binds_opened_file_and_rejects_swaps() {
     std::fs::write(&path, b"original body").unwrap();
     let metadata = std::fs::metadata(&path).unwrap();
     let facts = polylogue_store::FileFacts::of(&metadata);
-    let (bytes, observed) = read_source_range(&path, 0, facts.size, Some(facts), None).unwrap();
+    let (bytes, observed) = read_source_range(&path, 0, facts.size, Some(facts)).unwrap();
     assert_eq!(bytes, b"original body");
     {
         use polylogue_store::capture_read::{FileSnapshot, FileTime};
@@ -515,73 +508,30 @@ fn source_range_binds_opened_file_and_rejects_swaps() {
     let replacement = dir.path().join("replacement");
     std::fs::write(&replacement, b"different body").unwrap();
     std::fs::rename(replacement, &path).unwrap();
-    assert!(read_source_range(&path, 0, facts.size, Some(facts), None).is_err());
+    assert!(read_source_range(&path, 0, facts.size, Some(facts)).is_err());
 }
 
-/// A file that only grew since its read was planned is read up to the
-/// planned length (docs/capture.md, one file never fails a pass).
 #[test]
-fn source_range_reads_a_grown_file_to_its_sampled_length() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("native");
-    std::fs::write(&path, b"stored line\nplanned line\n").unwrap();
-    let facts = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
-    let proven = ProvenTail {
-        end: 12,
-        bytes: b"stored line\n".to_vec(),
-    };
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(b"appended after planning\n").unwrap();
-    }
-    let (bytes, _) = read_source_range(&path, 12, facts.size, Some(facts), Some(&proven)).unwrap();
-    assert_eq!(bytes, b"planned line\n");
-}
-
-/// A same-inode file that changed other than by growing since its read was
-/// planned is refused: shorter, rewritten at the same size, or grown over a
-/// changed tail of what the reader already holds.
-#[test]
-fn source_range_refuses_a_file_changed_other_than_by_growing() {
+fn source_range_refuses_a_file_changed_since_planning() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native");
     let original = b"stored line\nplanned line\n";
-    let proven = ProvenTail {
-        end: 12,
-        bytes: b"stored line\n".to_vec(),
-    };
-    let rewrites: [&[u8]; 3] = [
+    let rewrites: [&[u8]; 4] = [
         b"stored line\n",
         b"STORED LINE\nplanned line\n",
         b"STORED LINE\nplanned line\nand more after it\n",
+        b"stored line\nplanned line\nand more after it\n",
     ];
     for rewrite in rewrites {
         std::fs::write(&path, original).unwrap();
-        let facts = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
-        // Rewritten in place: the same inode, later times.
+        let facts = FileFacts::of(&std::fs::metadata(&path).unwrap());
         std::thread::sleep(std::time::Duration::from_millis(10));
-        {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(&path)
-                .unwrap();
-            file.write_all(rewrite).unwrap();
-        }
-        let now = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
+        std::fs::write(&path, rewrite).unwrap();
+        let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
         assert_eq!(now.inode, facts.inode);
-        let refused = read_source_range(&path, 12, facts.size, Some(facts), Some(&proven))
-            .expect_err("a file changed other than by growing is refused");
-        assert!(
-            crate::EngineError::from(refused).source_changed(),
-            "{}",
-            String::from_utf8_lossy(rewrite)
-        );
+        let refused = read_source_range(&path, 12, facts.size, Some(facts))
+            .expect_err("a changed source must be compared again");
+        assert!(crate::EngineError::from(refused).source_changed());
     }
 }
 

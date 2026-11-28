@@ -48,58 +48,6 @@ impl<F: FnMut() -> R, R: std::io::Read> export::Input for Counted<F, R> {
     }
 }
 
-/// A tail match is only a negative filter. Reuse requires every kept
-/// prefix byte and unchanged descriptor and path file facts through the read.
-fn prefix_matches(
-    file: &mut std::fs::File,
-    path: &Path,
-    expected: FileFacts,
-    length: u64,
-    mut prior: impl std::io::Read,
-    mut observed: impl FnMut(u64),
-) -> std::io::Result<bool> {
-    use std::io::{Read, Seek};
-    if FileFacts::of(&file.metadata()?) != expected || length > expected.size {
-        return Err(std::io::Error::other(
-            polylogue_store::StoreError::SourceChanged(
-                "source changed before export prefix comparison",
-            ),
-        ));
-    }
-    file.rewind()?;
-    let matched = (|| {
-        let mut current = [0; 65536];
-        let mut previous = [0; 65536];
-        let mut remaining = length;
-        while remaining > 0 {
-            let want = remaining.min(current.len() as u64) as usize;
-            let n = file.read(&mut current[..want])?;
-            if n == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "source ended during export prefix comparison",
-                ));
-            }
-            observed(n as u64);
-            if prior.read_exact(&mut previous[..n]).is_err() || current[..n] != previous[..n] {
-                return Ok(false);
-            }
-            remaining -= n as u64;
-        }
-        Ok(true)
-    })();
-    if FileFacts::of(&file.metadata()?) != expected
-        || FileFacts::of(&std::fs::metadata(path)?) != expected
-    {
-        return Err(std::io::Error::other(
-            polylogue_store::StoreError::SourceChanged(
-                "source changed during export prefix comparison",
-            ),
-        ));
-    }
-    matched
-}
-
 struct ItemWriter<'a>(&'a mut ExportItems);
 impl export::ItemSink for ItemWriter<'_> {
     fn push(
@@ -225,55 +173,12 @@ impl Engine {
             )
             .into());
         }
-        if matches!(plan.change, Change::Appended { .. }) {
-            // Capture kept descriptors in a short source snapshot, then
-            // release it before provider IO.
-            let prior = {
-                let reader = self.reads.reader()?;
-                match reader.latest_chain(&plan.input.id)? {
-                    Some(progress)
-                        if progress.stored == plan.stored_upto
-                            && self
-                                .inputs
-                                .get(&plan.path)
-                                .and_then(|state| state.chain)
-                                .is_none_or(|chain| chain == progress.chain) =>
-                    {
-                        reader
-                            .stored_chain(&plan.input.id, progress.chain, plan.stored_upto)
-                            .ok()
-                    }
-                    _ => None,
-                }
-            };
-            let matched = match prior {
-                Some(prior) => prefix_matches(
-                    &mut file,
-                    &plan.path,
-                    before,
-                    plan.stored_upto,
-                    prior.reader(Arc::clone(&self.blobs)),
-                    |n| pass.bytes_read += n,
-                )?,
-                None => false,
-            };
-            if !matched {
-                plan.change = Change::Rewritten;
-                plan.stored_upto = 0;
-                plan.parse_pos = 0;
-                plan.parser_state = None;
-                plan.parser_chain = None;
-            }
-        }
-        let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
-        file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
-        file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.stored_upto))?;
         let prepared = self
             .archive
             .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
         let bytes = prepared.len();
-        pass.bytes_read += bytes + tail.len() as u64;
+        pass.bytes_read += bytes;
         if FileFacts::of(&file.metadata()?) != before
             || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
             || prepared.len() != plan.size - plan.stored_upto
@@ -357,7 +262,6 @@ impl Engine {
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;
-        plan.tail = Some(tail);
         Ok(())
     }
 

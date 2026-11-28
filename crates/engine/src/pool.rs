@@ -41,9 +41,6 @@ pub struct Job {
     pub change: Change,
     pub observation: Option<Observation>,
     pub(crate) source_read: Option<crate::capture_read::SourceReadContext>,
-    /// Bytes of the file this plan already holds, ending where its stored
-    /// bytes end: a file that grows while it is read must still hold them.
-    pub(crate) proven_tail: Option<read::ProvenTail>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -108,8 +105,6 @@ pub struct Done {
     /// input starts here.
     pub parsed_upto: u64,
     pub parser_state: Option<Json>,
-    /// The last bytes read, kept to check the next growth.
-    pub tail: Vec<u8>,
     /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
     pub error: Option<EngineError>,
@@ -570,7 +565,6 @@ fn work(
                 plan.source = Bytes::File;
                 if !plan.tracked {
                     plan.parser_state = None;
-                    plan.tail = None;
                 }
                 // A replacement that is not ended is dropped: nothing of it
                 // reaches the index.
@@ -1037,7 +1031,6 @@ pub(crate) fn run(
         end: job.end,
         parsed_upto: job.start,
         parser_state: job.parser_state.take(),
-        tail: Vec::new(),
         stored: 0,
         error: None,
         cancelled: false,
@@ -1061,18 +1054,12 @@ pub(crate) fn run(
             .read_range(store, job.start, job.end)
             .map_err(EngineError::from),
         Bytes::File => match &job.source_read {
-            Some(context) => read::read_source_range(
-                &job.path,
-                job.start,
-                job.end,
-                context.facts,
-                job.proven_tail.as_ref(),
-            )
-            .map(|(bytes, observed)| {
-                file_snapshot = Some(observed);
-                bytes
-            })
-            .map_err(EngineError::from),
+            Some(context) => read::read_source_range(&job.path, job.start, job.end, context.facts)
+                .map(|(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                })
+                .map_err(EngineError::from),
             None => read::read_range(&job.path, job.start, job.end).map_err(EngineError::from),
         },
         Bytes::Unloaded { .. } => Err(EngineError::internal(
@@ -1091,7 +1078,6 @@ pub(crate) fn run(
             return (None, out);
         }
     };
-    out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
     // A document its source saves whole is stored as content-defined chunks,
     // so a revision that changes one place stores only the chunks around it.

@@ -155,7 +155,7 @@ fn gemini_cli_and_hermes_files_are_read_and_so_are_their_changes_found_during_a_
     append(&atof, &atof_mark(3));
     let claude = home.file("big.jsonl");
     let facts = FileFacts::of(&std::fs::metadata(&claude).unwrap());
-    let claude_plan = engine.plan(&claude, facts).unwrap().unwrap();
+    let claude_plan = engine.plan(&claude, facts, &mut 0).unwrap().unwrap();
     let mut live = Pass::default();
     engine
         .execute_pool(vec![claude_plan], Vec::new(), &[], &mut live)

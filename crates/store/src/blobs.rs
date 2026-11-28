@@ -83,8 +83,8 @@ pub enum Change {
     /// stored byte at its place: seen back holding a prefix of it, with no
     /// new revision and no new chain.
     Shorter { chain: i64 },
-    /// The same file grew: only the bytes from `from` on are new. The caller
-    /// confirms the old tail is intact before trusting this.
+    /// Only the bytes from `from` on are new. File facts can suggest this
+    /// change, but reusing the stored prefix requires a byte comparison.
     Appended { from: u64 },
     /// Content changed in place (a head rewrite or a full rewrite), or the
     /// path now names another file: a new revision chain.
@@ -105,7 +105,7 @@ pub fn classify(last: Option<FileFacts>, now: Option<FileFacts>) -> Change {
         }
         (Some(l), Some(n)) if l.device == n.device && l.inode == n.inode && n.size == l.size => {
             // Same size, new times: touched or rewritten in place. Only a
-            // rewrite changes bytes; the caller compares the tail window.
+            // rewrite changes bytes; the caller compares the stored prefix.
             Change::Rewritten
         }
         _ => Change::Rewritten,

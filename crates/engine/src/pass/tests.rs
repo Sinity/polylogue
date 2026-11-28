@@ -111,7 +111,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
     file.write_at(b" ", 0).unwrap();
     let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
-    let plan = engine.plan(&path, now).unwrap().unwrap();
+    let plan = engine.plan(&path, now, &mut 0).unwrap().unwrap();
     assert_eq!(plan.change, Change::Rewritten);
     file.write_at(&[first], 0).unwrap();
     drop(file);
@@ -170,6 +170,55 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
             .query("SELECT count(DISTINCT chain) AS n FROM a.revision", &[])
             .unwrap()[0]["n"],
         if edit_tail { 2 } else { 1 },
+    );
+}
+
+#[test]
+fn a_growing_native_file_keeps_early_edits_in_a_new_chain() {
+    let home = ClaudeHome::new();
+    let original = claude_user("u1", "edited", "old word")
+        + &claude_user("u2", "edited", &"same suffix ".repeat(450));
+    home.append("edited.jsonl", &original);
+    let path = home.file("edited.jsonl");
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    let first = engine.run_pass().unwrap();
+    assert!(first.errors.is_empty(), "{first:?}");
+
+    let updated =
+        original.replacen("old word", "new word", 1) + &claude_user("u3", "edited", "new suffix");
+    assert_eq!(
+        &updated.as_bytes()[original.len() - 4096..original.len()],
+        &original.as_bytes()[original.len() - 4096..]
+    );
+    std::fs::write(&path, &updated).unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+
+    let input = engine.location_id(&path);
+    let reader = engine.reads.reader().unwrap();
+    let latest = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(latest.chain, 2);
+    assert_eq!(
+        reader
+            .stored_range(&input, 1, 0, original.len() as u64, &engine.blobs)
+            .unwrap(),
+        original.as_bytes()
+    );
+    assert_eq!(
+        reader
+            .stored_range(&input, 2, 0, updated.len() as u64, &engine.blobs)
+            .unwrap(),
+        updated.as_bytes()
+    );
+    assert_eq!(
+        home.texts("edited"),
+        [
+            "new word".to_string(),
+            "same suffix ".repeat(450),
+            "new suffix".to_string()
+        ]
     );
 }
 
@@ -324,7 +373,7 @@ fn first_byte_read_failure_retries_after_restart() {
         origin,
     });
     let now = FileFacts::of(&std::fs::metadata(&path).unwrap());
-    let plan = engine.plan(&path, now).unwrap().unwrap();
+    let plan = engine.plan(&path, now, &mut 0).unwrap().unwrap();
     let held = home.dir.path().join("held-original");
     std::fs::rename(&path, &held).unwrap();
     let mut failed = Pass::default();

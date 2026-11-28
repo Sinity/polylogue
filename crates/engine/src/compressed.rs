@@ -264,31 +264,7 @@ impl RolloutCapture {
         // The copy ends inside the stored chain and every byte it holds is
         // the chain's byte at its place: how many bytes it holds.
         let mut shorter = None;
-        // What was read of the file and of the stored chain to decide.
-        let mut file_read = facts.size;
-        // A plain rollout that grew is proven an append by the stored bytes
-        // just before its old end, as any appended file is, and only the
-        // appended bytes are read. A compressed file does not grow in place.
-        let grown = match (&chain, &previous) {
-            (Some(chain), Some(previous))
-                if !compressed && previous.stored > 0 && facts.size > previous.stored =>
-            {
-                let tail = chain.read_range(
-                    blobs,
-                    previous.stored.saturating_sub(read::TAIL as u64),
-                    previous.stored,
-                )?;
-                read::tail_intact(path, previous.stored, &tail)?.then_some(previous.stored)
-            }
-            _ => None,
-        };
-        if let Some(from) = grown {
-            let mut file = source.try_clone()?;
-            file.seek(std::io::SeekFrom::Start(from))?;
-            stream = Box::new(BufReader::new(file));
-            appended = true;
-            file_read = (facts.size - from) + read::TAIL.min(from as usize) as u64;
-        } else if let Some(chain) = chain {
+        if let Some(chain) = chain {
             let mut stored = chain.reader(Arc::clone(blobs));
             let mut left = [0; 65536];
             let mut right = [0; 65536];
@@ -467,7 +443,7 @@ impl RolloutCapture {
                 previous,
                 original_added,
                 added,
-                read: file_read,
+                read: facts.size,
             },
             reply,
         )))

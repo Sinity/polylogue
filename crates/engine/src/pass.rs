@@ -1269,7 +1269,12 @@ impl Engine {
     /// The chain a file holds fewer bytes of, each equal to the stored byte
     /// at its place: its input's current chain when it is longer than the
     /// file and begins with the file's bytes (an empty file included).
-    fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
+    fn shorter_prefix(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        bytes_read: &mut u64,
+    ) -> Result<Option<i64>, EngineError> {
         let st = &self.inputs[path];
         let reader = self.reads.reader()?;
         let Some(progress) = reader.latest_chain(&st.input_id)? else {
@@ -1278,15 +1283,14 @@ impl Engine {
         if progress.stored <= now.size || progress.stored < st.stored {
             return Ok(None);
         }
-        // An emptied file holds no byte that differs: the chain seen back
-        // holding nothing, never a new, empty current chain.
-        let intact = now.size == 0
-            || reader
-                .stored_chain(&st.input_id, progress.chain, now.size)
-                .ok()
-                .is_some_and(|chain| {
-                    read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
-                });
+        let prefix = reader
+            .stored_chain(&st.input_id, progress.chain, now.size)
+            .ok();
+        drop(reader);
+        let intact = match prefix {
+            Some(prefix) => read::stored_prefix_intact(path, now, prefix, &self.blobs, bytes_read)?,
+            None => false,
+        };
         Ok(intact.then_some(progress.chain))
     }
 
@@ -1359,7 +1363,11 @@ impl Engine {
         now: FileFacts,
         pass: &mut Pass,
     ) -> Result<Option<Plan>, EngineError> {
-        match self.plan(path, now) {
+        match self.plan(path, now, &mut pass.bytes_read) {
+            Err(error) if error.source_changed() => {
+                pass.capture_pending = true;
+                Ok(None)
+            }
             Err(error @ EngineError::Io(_)) => {
                 pass.errors
                     .push(polylogue_model::Failure::new(path.display(), &error).doing("plan"));
@@ -1370,7 +1378,12 @@ impl Engine {
     }
 
     /// Decides what to read for one tracked path.
-    fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
+    pub(crate) fn plan(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        bytes_read: &mut u64,
+    ) -> Result<Option<Plan>, EngineError> {
         let origin = self.inputs[path].origin;
         let source = self
             .source_read_context(
@@ -1389,90 +1402,59 @@ impl Engine {
         }
         let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
-        let mut back = false;
-        if matches!(change, Change::First | Change::Rewritten)
-            && !source_uncertain
-            && let Some(chain) = self.shorter_prefix(path, now)?
-        {
+        if change == Change::Unchanged && st.stored < now.size {
+            // A previous pass stored only part of the file.
+            change = Change::Appended { from: st.stored };
+        }
+        let was_grown = matches!(change, Change::Appended { .. });
+        let may_rejoin = matches!(change, Change::First | Change::Rewritten) && !source_uncertain;
+        if may_rejoin && let Some(chain) = self.shorter_prefix(path, now, bytes_read)? {
             return self.observe_shorter(path, now, chain);
         }
         let st = self.inputs.get_mut(path).expect("tracked input");
-        if matches!(change, Change::First | Change::Rewritten) && !source_uncertain {
-            // Another inode at the path, or the file back after it was gone:
-            // when it still begins with every stored byte, it continues its
-            // chain (observed back, or appended) instead of starting one.
+        if may_rejoin || was_grown {
             let reader = self.reads.reader()?;
-            if let Some(progress) = reader.latest_chain(&st.input_id)?
-                && progress.stored > 0
-                && progress.stored <= now.size
-                // An index behind this engine's own stored length has
-                // writes still to commit; continuing from it would start
-                // the append before them.
-                && progress.stored >= st.stored
-                // A file or stored chain that cannot be read is not shown to
-                // hold the stored bytes; the file then starts a new chain.
-                && reader
+            let progress = reader.latest_chain(&st.input_id)?.filter(|progress| {
+                progress.stored > 0
+                    && progress.stored <= now.size
+                    // A snapshot behind this engine's stored cursor cannot
+                    // prove the bytes the engine would reuse.
+                    && progress.stored >= st.stored
+            });
+            let prefix = progress.as_ref().and_then(|progress| {
+                reader
                     .stored_chain(&st.input_id, progress.chain, progress.stored)
                     .ok()
-                    .is_some_and(|chain| {
-                        read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
-                    })
+            });
+            drop(reader);
+            if let (Some(progress), Some(prefix)) = (progress, prefix)
+                && read::stored_prefix_intact(path, now, prefix, &self.blobs, bytes_read)?
             {
                 if st.chain != Some(progress.chain) {
-                    // The chain this path last read may not be the input's
-                    // latest (another path of a provider-named input read a
-                    // later one): take that chain's parser position, and its
-                    // state from its committed checkpoint below.
+                    // Another path can have read a later chain of this input.
                     (st.parsed_upto, st.parsed, st.waiting) =
                         crate::plan::cursor(&progress.state, progress.stored);
                 }
                 st.stored = progress.stored;
                 st.chain = Some(progress.chain);
                 if progress.stored == now.size {
-                    back = true;
-                    change = Change::Unchanged;
-                } else {
-                    change = Change::Appended {
-                        from: progress.stored,
-                    };
+                    return self.observe_back(path, now);
                 }
+                change = Change::Appended {
+                    from: progress.stored,
+                };
+            } else if was_grown {
+                // An empty chain has no prefix to compare; its first bytes
+                // can extend it as long as the empty chain is already recorded.
+                change = if st.stored == 0 && st.chain.is_some() {
+                    Change::Appended { from: 0 }
+                } else {
+                    Change::Rewritten
+                };
             }
         }
-        if change == Change::Unchanged && st.facts != Some(now) && !back {
+        if change == Change::Unchanged && st.facts != Some(now) {
             st.facts = Some(now);
-        }
-        if back {
-            return self.observe_back(path, now);
-        }
-        if change == Change::Unchanged && st.stored < now.size {
-            // Stored only in part (a stop in the middle of a large file).
-            change = Change::Appended { from: st.stored };
-        }
-        let mut proven_tail = None;
-        if let Change::Appended { from } = &mut change {
-            // The source observation may describe a larger file than the
-            // committed prefix after an interrupted import.
-            *from = st.stored;
-            let tail = if *from > 0 {
-                let reader = self.reads.reader()?;
-                let progress = reader.latest_chain(&st.input_id)?.ok_or_else(|| {
-                    polylogue_store::StoreError::invalid("append has no stored prefix")
-                })?;
-                reader.stored_range(
-                    &st.input_id,
-                    progress.chain,
-                    from.saturating_sub(read::TAIL as u64),
-                    *from,
-                    &self.blobs,
-                )?
-            } else {
-                Vec::new()
-            };
-            if read::tail_intact(path, *from, &tail)? {
-                proven_tail = Some(tail);
-            } else {
-                change = Change::Rewritten;
-            }
         }
         let never_parsed = parsed && !st.parsed;
         let (stored_upto, parse_pos, parser_state, priority) = match &change {
@@ -1534,7 +1516,6 @@ impl Engine {
             storing_only: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             parser_chain,
-            tail: proven_tail,
             span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,
             priority,
@@ -2267,6 +2248,10 @@ impl Engine {
                     return Ok(());
                 }
                 if let Err(error) = self.store_plan(&mut plan, pass) {
+                    if error.source_changed() {
+                        pass.capture_pending = true;
+                        continue;
+                    }
                     pass.errors.push(
                         polylogue_model::Failure::new(plan.path.display(), &error)
                             .doing("store before re-parse"),
@@ -2317,6 +2302,10 @@ impl Engine {
             // A stop is no failure of the export: its committed
             // deliveries stay and the next parse continues after them.
             Err(EngineError::Stopped) => return Err(EngineError::Stopped),
+            Err(error) if error.source_changed() => {
+                pass.capture_pending = true;
+                return Ok(());
+            }
             Err(error) => self.chain_failed(&mut plan, "parse", error, pass),
         }
         self.finish_plan(plan);
@@ -2767,7 +2756,7 @@ impl Engine {
             let new_chain = matches!(plan.change, Change::First | Change::Rewritten);
             if new_chain && plan.failed && !plan.storing_started {
                 // Planning a rewrite does not replace the committed checkpoint.
-                // A failed first read leaves its facts, tail and parser intact.
+                // A failed first read leaves its facts and parser intact.
                 st.unread = plan.facts;
                 return;
             }

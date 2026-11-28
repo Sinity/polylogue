@@ -121,7 +121,6 @@ pub(crate) struct Plan {
     pub(crate) parser_state: Option<Json>,
     /// The chain the parse continues, kept across jobs.
     pub(crate) parser_chain: Option<i64>,
-    pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
     pub(crate) priority: Priority,
@@ -185,7 +184,6 @@ impl Plan {
             storing_only: false,
             parser_state: None,
             parser_chain,
-            tail: None,
             chunk,
             priority: Priority::Bulk,
             tracked,
@@ -245,10 +243,6 @@ impl Plan {
         };
         Job {
             source_read: None,
-            proven_tail: self.tail.clone().map(|bytes| crate::read::ProvenTail {
-                end: self.stored_upto,
-                bytes,
-            }),
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -281,7 +275,6 @@ impl Plan {
                 self.stored_upto = d.end;
                 self.storing_started = true;
             }
-            self.tail = Some(d.tail);
         }
         if d.restart {
             // Without the reading it continues, the chain is read again

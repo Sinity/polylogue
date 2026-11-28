@@ -32,7 +32,7 @@ fn an_unreadable_returning_file_plans_a_new_chain() {
         // Permissions do not apply to this user (root); nothing to show.
         return;
     }
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     // The file was gone, so the new chain is planned as a first reading.
     assert_eq!(plan.change, Change::First);
@@ -47,7 +47,7 @@ fn a_returning_file_does_not_continue_from_an_index_behind_the_engine() {
     let grown = stored.clone() + &claude_user("u2", "back", "grown body");
     let (_home, mut engine, _lock, path) = gone_and_back(&grown);
     engine.inputs.get_mut(&path).unwrap().stored = stored.len() as u64 + 1;
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     // The file was gone, so the new chain is planned as a first reading.
     assert_eq!(plan.change, Change::First);
 }
@@ -62,7 +62,7 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     let st = engine.inputs.get_mut(&path).unwrap();
     st.chain = Some(99);
     st.parsed_upto = 1;
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     assert_eq!(
         plan.change,
         Change::Appended {

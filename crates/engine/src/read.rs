@@ -1,14 +1,11 @@
 //! Reading input bytes. Unchanged file facts mean
-//! nothing is read; a grown file has its old tail compared before only the
-//! appended bytes are read. Hashing and compression happen on the parse
-//! pool, never on the writer thread.
+//! nothing is read. A changed file only extends its chain after the whole
+//! stored prefix has been compared.
 
+use polylogue_store::FileFacts;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
-
-/// How many bytes before the old end are compared on growth.
-pub const TAIL: usize = 4096;
 
 /// Bytes `[start, end)` of a file. A file that shrank below `end` since it
 /// was looked at is an error; the next pass sees it as rewritten.
@@ -30,123 +27,110 @@ fn read_exact_checked(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<()
     Ok(())
 }
 
-/// Bytes a reader already holds of a file: `bytes` end at offset `end`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProvenTail {
-    pub end: u64,
-    pub bytes: Vec<u8>,
-}
-
-/// Reads `[start, end)` from one opened file and checks it against the file
-/// facts sampled when the read was planned. A file that only grew since
-/// then is read up to the sampled length, since bytes appended past `end`
-/// leave the range as it was. Growth is the same file (device and inode)
-/// with a larger size whose `proven` tail, and the last bytes of the range
-/// just read, are still in place afterwards; anything else (another inode,
-/// a shorter file, a write that did not grow it, a changed tail) is a
-/// changed source and the read is refused.
+/// Reads from the file version the plan compared. A changed descriptor or
+/// path invalidates that comparison, including when the file grew.
 pub(crate) fn read_source_range(
     path: &Path,
     start: u64,
     end: u64,
-    expected: Option<polylogue_store::FileFacts>,
-    proven: Option<&ProvenTail>,
+    expected: Option<FileFacts>,
 ) -> io::Result<(Vec<u8>, polylogue_store::capture_read::FileSnapshot)> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
-    let observed = file_snapshot(&metadata)?;
-    let before = polylogue_store::FileFacts::of(&metadata);
-    let sampled = expected.unwrap_or(before);
-    if !same_or_grown(&sampled, &before) {
+    let facts = FileFacts::of(&metadata);
+    if expected.is_some_and(|expected| facts != expected) {
         return Err(source_changed("source file changed before reading"));
     }
+    let observed = file_snapshot(&metadata)?;
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0; (end - start) as usize];
-    read_exact_checked(&mut file, &mut bytes)?;
+    let result = read_exact_checked(&mut file, &mut bytes);
     polylogue_store::fault::check("read.source_range", &path.to_string_lossy())
         .map_err(io::Error::other)?;
-    let held = polylogue_store::FileFacts::of(&file.metadata()?);
-    let at_path = polylogue_store::FileFacts::of(&std::fs::metadata(path)?);
-    if !same_or_grown(&before, &held) || !same_or_grown(&held, &at_path) {
-        return Err(source_changed("source file changed during reading"));
-    }
-    if at_path != sampled {
-        // Grown: what the reader holds must still be where it was.
-        let range_tail = ProvenTail {
-            end,
-            bytes: tail_of(&bytes),
-        };
-        for tail in proven.into_iter().chain([&range_tail]) {
-            if !tail_intact(path, tail.end, &tail.bytes)? {
-                return Err(source_changed("source file changed during reading"));
-            }
-        }
-    }
+    check_source(&file, path, facts)?;
+    result?;
     Ok((bytes, observed))
 }
 
-/// The same file, unchanged or longer than when `then` was taken.
-fn same_or_grown(then: &polylogue_store::FileFacts, now: &polylogue_store::FileFacts) -> bool {
-    then == now || (then.device == now.device && then.inode == now.inode && now.size > then.size)
+pub(crate) fn check_source(file: &File, path: &Path, expected: FileFacts) -> io::Result<()> {
+    let at_path = std::fs::metadata(path);
+    if FileFacts::of(&file.metadata()?) != expected
+        || at_path
+            .as_ref()
+            .is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+        || FileFacts::of(&at_path?) != expected
+    {
+        return Err(source_changed("source file changed during reading"));
+    }
+    Ok(())
 }
 
 fn source_changed(reason: &'static str) -> io::Error {
     io::Error::other(polylogue_store::StoreError::SourceChanged(reason))
 }
 
-/// Whether the bytes just before `from` still equal `tail`, the end of what
-/// was stored. False means the file changed in place, not only grew.
-pub fn tail_intact(path: &Path, from: u64, tail: &[u8]) -> io::Result<bool> {
-    // A file shorter than the old end cannot hold it: changed, not grown.
-    if std::fs::metadata(path)?.len() < from {
-        return Ok(false);
-    }
-    let len = tail.len() as u64;
-    if len == 0 || from < len {
-        return Ok(true);
-    }
-    Ok(read_range(path, from - len, from)? == tail)
-}
-
-/// Whether the file at `path` begins with exactly the stored bytes of
-/// `chain`. A file whose identity changed (another inode, or gone and back)
-/// continues its chain only when every stored byte is still there.
-pub fn stored_prefix_intact(
+/// Compare the opened file with exactly the archived prefix. An unreadable
+/// archived prefix cannot establish continuity. Refuse a moving source
+/// before returning either comparison result.
+pub(crate) fn prefix_matches(
+    file: &mut File,
     path: &Path,
-    chain: &polylogue_store::blobs::StoredChain,
-    blobs: &std::sync::Arc<polylogue_store::blobs::Blobs>,
+    expected: FileFacts,
+    mut length: u64,
+    mut prior: impl Read,
+    mut observed: impl FnMut(u64),
 ) -> io::Result<bool> {
-    let mut file = File::open(path)?.take(chain.length);
-    let mut stored = chain.reader(std::sync::Arc::clone(blobs));
-    let mut left = vec![0u8; 1 << 20];
-    let mut right = vec![0u8; 1 << 20];
-    let mut compared = 0u64;
-    loop {
-        let n = read_full(&mut file, &mut left)?;
-        if n == 0 {
-            return Ok(compared == chain.length);
-        }
-        if read_full(&mut stored, &mut right[..n])? != n || left[..n] != right[..n] {
-            return Ok(false);
-        }
-        compared += n as u64;
+    if FileFacts::of(&file.metadata()?) != expected || length > expected.size {
+        return Err(source_changed(
+            "source file changed before comparing its prefix",
+        ));
     }
+    file.rewind()?;
+    let result = (|| {
+        let mut current = [0; 65536];
+        let mut previous = [0; 65536];
+        while length > 0 {
+            let size = length.min(current.len() as u64) as usize;
+            read_exact_checked(file, &mut current[..size])?;
+            observed(size as u64);
+            let available = prior.read_exact(&mut previous[..size]).is_ok();
+            polylogue_store::cancellation::check_current().map_err(io::Error::other)?;
+            if !available || current[..size] != previous[..size] {
+                return Ok(false);
+            }
+            length -= size as u64;
+        }
+        Ok(true)
+    })();
+    check_source(file, path, expected)?;
+    result
 }
 
-fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match reader.read(&mut buf[filled..])? {
-            0 => break,
-            n => filled += n,
+pub(crate) fn stored_prefix_intact(
+    path: &Path,
+    expected: FileFacts,
+    chain: polylogue_store::blobs::StoredChain,
+    blobs: &std::sync::Arc<polylogue_store::blobs::Blobs>,
+    bytes_read: &mut u64,
+) -> io::Result<bool> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(source_changed(
+                "source file disappeared before comparing its prefix",
+            ));
         }
-    }
-    Ok(filled)
-}
-
-/// The last [`TAIL`] bytes of `bytes`, kept to check the next growth.
-pub fn tail_of(bytes: &[u8]) -> Vec<u8> {
-    bytes[bytes.len().saturating_sub(TAIL)..].to_vec()
+        Err(error) => return Err(error),
+    };
+    prefix_matches(
+        &mut file,
+        path,
+        expected,
+        chain.length,
+        chain.reader(std::sync::Arc::clone(blobs)),
+        |size| *bytes_read += size,
+    )
 }
 
 /// One imported blob, verified once and decoded forward. Only an incomplete

@@ -104,12 +104,10 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
     );
 }
 
-/// A live transcript appended to while its planned range is being read
-/// stores and reads that range in the same pass, with no error; the bytes
-/// appended during the read are read by the next pass (docs/capture.md, one
-/// file never fails a pass).
+/// A write concurrent with a planned read invalidates that read. The
+/// next pass compares the committed prefix before continuing the chain.
 #[test]
-fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
+fn a_file_appended_to_while_its_range_is_read_is_retried() {
     fault::clear();
     let home = ClaudeHome::new();
     home.append("grows.jsonl", &claude_user("g1", "grows", "first record"));
@@ -117,8 +115,9 @@ fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     engine.config.workers = 1;
     let first = engine.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{:?}", first.errors);
+    let path = home.file("grows.jsonl");
+    let committed = std::fs::metadata(&path).unwrap().len();
     home.append("grows.jsonl", &claude_user("g2", "grows", "second record"));
-    let planned = std::fs::metadata(home.file("grows.jsonl")).unwrap().len();
     fault::arm("read.source_range", "grows.jsonl", Action::Hold, 0, 1);
     let pass = std::thread::scope(|scope| {
         let running = scope.spawn(|| engine.run_pass());
@@ -136,9 +135,9 @@ fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     fault::clear();
     let pass = pass.unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(home.texts("grows"), ["first record", "second record"]);
-    let path = home.file("grows.jsonl");
-    assert_eq!(engine.inputs[&path].stored, planned);
+    assert!(pass.capture_pending);
+    assert_eq!(home.texts("grows"), ["first record"]);
+    assert_eq!(engine.inputs[&path].stored, committed);
     let next = engine.run_pass().unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
     assert_eq!(
