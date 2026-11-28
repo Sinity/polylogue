@@ -37,7 +37,7 @@ Primary mode adds three parts beside the record. Each moves data one way, and no
 - **A resend is never a second write.** A frame's name is derived from this host and the record position it carries, so sending it again after any crash or outage gets the answer Sinex recorded the first time.
 - **An outage only delays.** The shipper retries without a limit of attempts or age. Meanwhile nothing else waits ([Visibility and status](#visibility-and-status)).
 - **A record Sinex refuses stays in Polylogue.** A refusal of a frame's content is recorded with its reason against the record rows it carried and shown in `status`, and the shipper goes on: the rows are already this host's truth, and a refusal is a difference between the two products to be fixed in a declaration, not a reason to hold capture.
-- **A Sinex that was reset or restored to an earlier backup is sent again what it lacks.** The shipper checks its position against the identity of the Sinex store it shipped to, and ships again from the record whatever that store no longer holds. Bytes that were handed over after the backup exist nowhere; `status` names their chains, their rows stay readable from the index, and no build can reproduce them. That exposure is the price of keeping bytes once: Sinex's backup is their backup.
+- **A Sinex that was reset or restored to an earlier backup is sent again what it lacks.** The shipper checks its position against the identity of the Sinex store it shipped to, and resends missing records and any material it still holds. If a material was handed over after the restored backup and neither store holds its bytes, `status` names the affected chains. Existing index rows remain readable under the current grant, but rebuilding those chains requires a copy of the original bytes.
 
 ## What Sinex decides
 
@@ -75,7 +75,7 @@ What a host keeps in primary mode:
 - `index.db` and its full-text files, the same as in standalone;
 - the embeddings store, local and backed up, since recomputing it costs money.
 
-A backup of a primary host is a backup of these files; nothing has to be paused or pinned for it, because nothing is deleted from the record when it is shipped. NATS connections to non-loopback endpoints require built-in TLS before authentication, protecting original bytes as well as producer credentials. The Sinex adapter is the Cargo feature `sinex`, off in a plain `cargo build` and included in the Nix package; a build without it has no primary mode and no code that asks for one.
+Back up the local record, its unacknowledged bytes and the paid embeddings together. An atomic filesystem snapshot captures them at one instant. For a file copy, stop the daemon so that the shipper cannot remove a held file after the record has been copied, and include any SQLite WAL files. Sinex owns the backup of materials already handed over. NATS connections to non-loopback endpoints require built-in TLS before authentication, protecting original bytes as well as producer credentials. The Sinex adapter is the Cargo feature `sinex`, off in a plain `cargo build` and included in the Nix package; a build without it has no primary mode and no code that asks for one.
 
 ## Write identity
 
