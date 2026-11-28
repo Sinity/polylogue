@@ -107,6 +107,9 @@ struct Inner {
     /// `None` in a process that does not hold the archive, which derives
     /// them from disk on each use.
     files: Option<IndexFiles>,
+    /// The checked installed index, handed to the writer at startup so
+    /// SQLite need not reconstruct the write-ahead log again.
+    prepared_index: Option<Connection>,
     install_failure: Option<polylogue_model::Failure>,
     chains: u64,
     chains_read: u64,
@@ -195,11 +198,16 @@ impl State {
 
     /// Sets the files as the archive's open found or made them.
     /// The counts and measurements start again with the open.
-    fn opened(&self, files: IndexFiles) {
+    fn opened(&self, files: IndexFiles, prepared_index: Option<Connection>) {
         *self.inner.locked() = Inner {
             files: Some(files),
+            prepared_index,
             ..Inner::default()
         };
+    }
+
+    pub(crate) fn take_prepared_index(&self) -> Option<Connection> {
+        self.inner.locked().prepared_index.take()
     }
 
     /// Moves the files to their next state. A rebuild that starts, or starts
@@ -208,6 +216,9 @@ impl State {
         let mut inner = self.inner.locked();
         let starting = matches!(to, Transition::Start(_));
         let installing = matches!(to, Transition::Install);
+        if starting || installing {
+            drop(inner.prepared_index.take());
+        }
         let files = inner.files.as_mut().ok_or_else(|| {
             StoreError::internal("only the archive's holder changes its index files")
         })?;
@@ -433,13 +444,15 @@ impl Archive {
 /// rebuild is installed only if it belongs to this record. With no usable
 /// index, a serving daemon installs the ordinary schema for catch-up.
 pub(crate) fn prepare(archive: &Archive, install_for_catch_up: bool) -> Result<()> {
+    drop(archive.index_build.take_prepared_index());
     let root = &archive.root;
     let paths = Paths::of(root);
     let (id, position) =
         file::archive_identity(&crate::archive::open_read(&archive.archive_db())?)?;
-    let mut files = IndexFiles::at(root, &id, position)?;
+    let (mut files, mut inspected) = IndexFiles::inspect(root, &id, position)?;
     match files.rebuilding {
         Rebuilding::Ready if file::installed(&paths.ready, Some((&id, position)))?.is_current() => {
+            drop(inspected.take());
             files.step(root, Transition::Install)?;
         }
         Rebuilding::Ready => files.step(root, Transition::Discard)?,
@@ -451,10 +464,11 @@ pub(crate) fn prepare(archive: &Archive, install_for_catch_up: bool) -> Result<(
     if install_for_catch_up && !files.serves() {
         let record = IndexRebuild::new(
             files.reason().unwrap_or(RebuildReason::NoIndex),
-            crate::archive::open_read(&paths.index)
-                .and_then(|index| crate::schema::index_identity(&index))
-                .ok(),
+            inspected
+                .as_ref()
+                .and_then(|index| crate::schema::index_identity(index).ok()),
         )?;
+        drop(inspected.take());
         files.step(root, Transition::Start(record.clone()))?;
         {
             let index = open_setup(&paths.build)?;
@@ -471,11 +485,13 @@ pub(crate) fn prepare(archive: &Archive, install_for_catch_up: bool) -> Result<(
         (Installed::Current { .. }, _) => {
             let index =
                 crate::archive::open_runtime_writer(&paths.index, crate::archive::cache::SETUP)?;
+            drop(inspected.take());
             match archive.ensure_index(&index, false) {
                 Ok(()) => {
-                    archive.index_build.opened(files);
                     crate::fault::check("index.after_creation", "")?;
-                    return crate::archive::generation::open(archive, &index);
+                    crate::archive::generation::open(archive, &index)?;
+                    archive.index_build.opened(files, Some(index));
+                    return Ok(());
                 }
                 Err(error) => {
                     let Some(reason) = RebuildReason::of(&error) else {
@@ -487,16 +503,17 @@ pub(crate) fn prepare(archive: &Archive, install_for_catch_up: bool) -> Result<(
         }
         (Installed::None, _) => IndexRebuild::new(RebuildReason::NoIndex, None)?,
         (Installed::Unusable { why }, _) => {
-            let previous = crate::archive::open_read(&paths.index)
-                .and_then(|index| crate::schema::index_identity(&index))
-                .ok();
+            let previous = inspected
+                .as_ref()
+                .and_then(|index| crate::schema::index_identity(index).ok());
             IndexRebuild::new(why.clone(), previous)?
         }
     };
+    drop(inspected);
     files.step(root, Transition::Start(record.clone()))?;
     crate::fault::check("index.after_reason", &root.to_string_lossy())?;
     let build = create_build_file(archive, &record, &id)?;
-    archive.index_build.opened(files);
+    archive.index_build.opened(files, None);
     crate::fault::check("index.after_creation", "")?;
     crate::archive::generation::open(archive, &build)
 }

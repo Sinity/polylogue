@@ -134,6 +134,11 @@ and a private bulk rebuild can defer their creation. An index that belongs
 to another archive, uses an incompatible schema, or is ahead of its
 archive cannot serve reads.
 
+When an installed index is usable, its SQLite connections overlap during
+startup. The writer uses the prepared connection so SQLite does not have
+to scan the committed write-ahead log again between checking and serving
+the index.
+
 When there is no usable index, the daemon creates the current empty
 schema in a private file and installs it atomically. The ordinary writer
 fills it from live captures and the archive's stored inputs. Sessions and

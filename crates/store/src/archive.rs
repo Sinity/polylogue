@@ -152,6 +152,13 @@ pub struct Archive {
 #[derive(Debug)]
 pub struct ArchiveLock {
     _file: File,
+    index_build: std::sync::Arc<index_build::State>,
+}
+
+impl Drop for ArchiveLock {
+    fn drop(&mut self) {
+        drop(self.index_build.take_prepared_index());
+    }
 }
 
 impl Archive {
@@ -279,7 +286,7 @@ impl Archive {
 
     fn open_configured(archive: Self, install_for_catch_up: bool) -> Result<(Self, ArchiveLock)> {
         metadata::check(&archive)?;
-        let lock = Self::lock(&archive.root)?;
+        let lock = archive.lock()?;
         metadata::check(&archive)?;
         metadata::create(&archive)?;
         fs::create_dir_all(archive.blobs_dir())?;
@@ -312,7 +319,8 @@ impl Archive {
         Self::open_configured(archive, false)
     }
 
-    fn lock(root: &Path) -> Result<ArchiveLock> {
+    fn lock(&self) -> Result<ArchiveLock> {
+        let root = &self.root;
         let fresh = !root.exists();
         fs::create_dir_all(root)?;
         if fresh {
@@ -339,7 +347,10 @@ impl Archive {
         // The holder's pid, so a refused second start can name it.
         file.set_len(0)?;
         file.write_all(format!("{}\n", std::process::id()).as_bytes())?;
-        Ok(ArchiveLock { _file: file })
+        Ok(ArchiveLock {
+            _file: file,
+            index_build: self.index_build.clone(),
+        })
     }
 
     /// Private prepared output, cleared after the archive lock is taken on open.
