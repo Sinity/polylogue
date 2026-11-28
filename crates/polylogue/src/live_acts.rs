@@ -4,7 +4,8 @@
 //! protocol and holds a connection to. The acts themselves are in
 //! `daemon::service::acts`.
 
-use crate::live_events::CodexConnection;
+use crate::hosting::SendFailure;
+use crate::live_events::{CodexConnection, CodexRefusal};
 use polylogue_model::JsonExt as _;
 use polylogue_model::LockExt as _;
 use polylogue_model::SessionId;
@@ -221,9 +222,18 @@ pub(crate) enum Hosted {
 impl Hosted {
     /// `true` when written now; `false` when it waits for the running
     /// ACP prompt, its outcome then reported when it is written.
-    fn send(&mut self, text: &str, delivery: Option<&str>) -> std::io::Result<bool> {
+    fn send(&mut self, text: &str, delivery: Option<&str>) -> Result<bool, SendFailure> {
         match self {
-            Self::Codex(h) => h.send(text).map(|()| true),
+            Self::Codex(h) => h.send(text).map(|()| true).map_err(|error| {
+                if error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<CodexRefusal>())
+                {
+                    SendFailure::NotSent(error.to_string())
+                } else {
+                    SendFailure::Unknown(error.to_string())
+                }
+            }),
             Self::Stdio(h) => h.send(text, delivery),
         }
     }
@@ -273,7 +283,7 @@ pub(crate) enum Report {
     /// A message that waited for a running prompt was written, or dropped.
     Sent {
         delivery: String,
-        sent: Result<(), String>,
+        sent: Result<(), SendFailure>,
     },
     /// How many messages of a hosted session wait behind its running turn.
     Queued { session: SessionId, queued: usize },
@@ -631,8 +641,19 @@ impl Acts {
         session: &SessionId,
         text: &str,
         delivery: Option<&str>,
-    ) -> Result<bool, String> {
-        self.with_hosted(session, |h| h.send(text, delivery))
+    ) -> Result<bool, SendFailure> {
+        let handle = self
+            .handle(session)
+            .ok_or_else(|| SendFailure::NotSent("the session is not hosted".into()))?;
+        handle.locked().send(text, delivery)
+    }
+
+    pub(crate) fn host_queued(&self, session: &SessionId, delivery: &str) -> bool {
+        self.handle(session)
+            .is_some_and(|handle| match &*handle.locked() {
+                Hosted::Stdio(host) => host.queued(delivery),
+                Hosted::Codex(_) => false,
+            })
     }
 
     pub(crate) fn host_answer(

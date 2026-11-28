@@ -4,7 +4,7 @@
 //! directly from their committed body; restored records apply recorded
 //! effects without selecting targets, families or claims again.
 mod records;
-pub(crate) use records::insert_kept;
+pub(crate) use records::{delivery_events_from, insert_kept};
 
 use crate::source::Source;
 use crate::{OptionExt as _, ResultExt as _};

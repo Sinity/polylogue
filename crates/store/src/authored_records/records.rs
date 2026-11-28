@@ -57,7 +57,7 @@ fn delivery_events(
 ) -> Result<Vec<DeliveryEvent>> {
     delivery_events_from(conn, Source::reading(conn)?, id, counter)
 }
-fn delivery_events_from(
+pub(crate) fn delivery_events_from(
     conn: &Connection,
     source: Source,
     id: &str,

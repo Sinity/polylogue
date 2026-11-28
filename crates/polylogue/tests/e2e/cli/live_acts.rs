@@ -245,3 +245,141 @@ printf '%s\n' '{"type":"result"}'
         1
     );
 }
+
+#[test]
+fn hosted_send_replays_the_receipt_and_submits_each_request_once() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, daemon) = fixture(
+        root.path(),
+        "gemini",
+        r#"#!/bin/sh
+n=0
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"session/new"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"sessionId":"morrow"}}\n' "$id" ;;
+        *'"session/prompt"'*)
+            case "$line" in *'finish the fixture'*) exit 0 ;; esac
+            printf '%s\n' "$line" >> prompts.jsonl
+            n=$((n+1)); prompt=$id
+            printf '{"jsonrpc":"2.0","id":%s,"method":"session/request_permission","params":{"sessionId":"morrow","options":[{"optionId":"yes","kind":"allow_once"}]}}\n' "$n" ;;
+        *'"optionId":"yes"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
+    esac
+done
+"#,
+    );
+    let started = cli(
+        &env,
+        &[
+            "--json",
+            "start",
+            "Begin",
+            "--in",
+            "gemini-cli",
+            "--cwd",
+            root.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+
+    let sent = |id: &str, expected_exit: i32| {
+        let out = cli(
+            &env,
+            &[
+                "--json",
+                "--request-id",
+                id,
+                "session:gemini-cli:morrow",
+                "send",
+                "continue the work",
+            ],
+        );
+        assert_eq!(out.status.code(), Some(expected_exit), "{out:?}");
+        step(&json(&out))["reached"][0]["deliveries"][0].clone()
+    };
+    let release_prompt = || {
+        let result = cli(
+            &env,
+            &["--json", "session:gemini-cli:morrow", "answer", "allow"],
+        );
+        assert_eq!(result.status.code(), Some(0), "{result:?}");
+    };
+    let log = root.path().join("prompts.jsonl");
+    let prompt_count = || std::fs::read_to_string(&log).unwrap().lines().count();
+    let wait_for_state = |wanted: &str| {
+        wait_status(&env, |status| {
+            status["running"]["sessions"]
+                .as_array()
+                .is_some_and(|sessions| {
+                    sessions.iter().any(|session| {
+                        session["session"] == "gemini-cli:morrow" && session["state"] == wanted
+                    })
+                })
+        });
+    };
+    let wait_for_prompt = |n| {
+        wait_status(&env, |status| {
+            prompt_count() == n && status["pending_writes"]["delivery_outcomes"] == 0
+        });
+        wait_for_state("waiting");
+    };
+
+    let queued = sent("queued", 0);
+    assert_eq!(queued["outcome"], "prepared");
+    assert_eq!(sent("queued", 0), queued);
+    assert_eq!(prompt_count(), 1);
+    release_prompt();
+    wait_for_prompt(2);
+
+    let lost = sent("lost", 0);
+    assert_eq!(lost["outcome"], "prepared");
+    drop(daemon);
+    let mut command = env.command();
+    command.env(
+        "XDG_RUNTIME_DIR",
+        root.path().join("runtime").join("r".repeat(108)),
+    );
+    let _daemon = start_daemon_with(&env, command);
+    let replay = sent("lost", 5);
+    assert_eq!(replay["outcome"], "unknown");
+    assert_eq!(replay["delivery"], lost["delivery"]);
+    assert_eq!(prompt_count(), 2);
+
+    let claim = cli(
+        &env,
+        &[
+            "--json",
+            "internal",
+            "mail-claim",
+            "--session",
+            "gemini-cli:morrow",
+        ],
+    );
+    assert_eq!(claim.status.code(), Some(0), "{claim:?}");
+    assert_eq!(json(&claim)["deliveries"], json!([]));
+
+    let completed = sent("queued", 0);
+    assert_eq!(completed["outcome"], "delivered");
+    assert_eq!(completed["delivery"], queued["delivery"]);
+    release_prompt();
+    wait_for_state("idle");
+    let intentional = sent("new", 0);
+    assert_eq!(intentional["outcome"], "delivered");
+    assert_ne!(intentional["delivery"], completed["delivery"]);
+    assert_eq!(sent("new", 0), intentional);
+    wait_for_prompt(3);
+    release_prompt();
+    wait_for_state("idle");
+
+    let stopped = cli(
+        &env,
+        &[
+            "--json",
+            "session:gemini-cli:morrow",
+            "send",
+            "finish the fixture",
+        ],
+    );
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+}
