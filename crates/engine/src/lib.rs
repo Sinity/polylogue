@@ -545,6 +545,10 @@ pub struct ImportClassification {
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportPackage {
     pub path: PathBuf,
+    /// The content address of the original file stored by this request.
+    /// A directory or a dry run does not store a single original file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<polylogue_model::BlobHash>,
     pub sessions: u64,
     pub documents: u64,
     pub assets: u64,
