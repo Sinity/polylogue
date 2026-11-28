@@ -228,7 +228,7 @@ pub(crate) fn page(
     let services = &LineReads {
         daemon: call.daemon,
         accepted: context.accepted_request(),
-        defer_parsing_census: request.options.view == View::Transcript,
+        defer_parsing_census: matches!(request.options.view, View::Transcript | View::Dialogue),
     };
     let request = polylogue_reading::with_alternates(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
