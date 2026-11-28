@@ -248,6 +248,22 @@ fn the_files_of_a_capture_name_their_message_by_its_provider_id() {
 }
 
 #[test]
+fn a_capture_keeps_malformed_bytes_visible_on_the_attachment() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider":"chatgpt", "provider_session_id":"c1", "turns":[],
+            "attachments":[{"provider_attachment_id":"file-Pic","message_provider_id":"m1",
+                "content_base64":"invalid!!"}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    assert!(step.output.blobs.is_empty());
+    assert!(step.output.messages.iter().flat_map(|row| &row.message.blocks).any(|block|
+        matches!(block, Block::Image(attachment) | Block::File(attachment)
+            if attachment.failure == Some(AttachmentFailure::InvalidBase64) && attachment.blob.is_none())
+    ));
+}
+
+#[test]
 fn a_capture_is_temporary_when_its_session_kind_says_so() {
     for (kind, temporary) in [("temporary", true), ("standard", false)] {
         let bytes = capture(

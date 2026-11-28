@@ -654,12 +654,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         10
                     } else {
                         match *product {
-                            "message" => 11,
+                            "message" => 12,
                             "request" | "restored_request" => 12,
                             "session" | "parse_progress" => 9,
                             "link" => 10,
                             "input" => 8,
-                            "document" | "event" | "background" | "repository" => 8,
+                            "document" => 9,
+                            "event" | "background" | "repository" => 8,
                             "fragment" => 6,
                             "query_run" => 12,
                             "tool_call" | "prefix_copy" | "prefix_member" => 4,

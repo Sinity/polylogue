@@ -1,4 +1,6 @@
 use super::*;
+use base64::Engine as _;
+use polylogue_model::{AttachmentFailure, BlobHash};
 use serde_json::json;
 
 fn result(record: Json, item: Json) -> ToolOutcome {
@@ -95,14 +97,18 @@ fn tool_use_result_applies_only_to_a_sole_result() {
 #[test]
 fn inline_images_become_blobs() {
     let data = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG fake");
-    let content =
-        json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":data}}]);
+    let content = json!([
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":data}},
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"invalid!!"}},
+    ]);
     let mut blobs = Vec::new();
     let b = blocks(&json!({}), &content, &mut blobs);
     assert_eq!(blobs.len(), 1);
     let Block::Image(a) = &b[0] else { panic!() };
     assert_eq!(a.blob, Some(BlobHash::of(b"\x89PNG fake")));
     assert_eq!(a.size, Some(9));
+    assert!(matches!(&b[1], Block::Image(a)
+        if a.failure == Some(AttachmentFailure::InvalidBase64) && a.blob.is_none()));
 }
 
 #[test]

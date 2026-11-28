@@ -68,6 +68,7 @@ pub mod grok;
 pub mod grok_cli;
 pub mod hermes;
 pub mod hook_spool;
+mod inline_bytes;
 pub mod lines;
 pub mod locations;
 pub mod openai_chat;

@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::{AttachmentFailure, BlobHash};
 use serde_json::json;
 
 #[test]
@@ -122,7 +123,7 @@ fn data_url_images_become_blobs() {
 }
 
 #[test]
-fn data_urls_that_are_not_base64_stay_references() {
+fn plain_data_urls_stay_references_and_malformed_base64_records_a_failure() {
     let mut blobs = Vec::new();
     let b = message_blocks(
         &json!([
@@ -131,21 +132,14 @@ fn data_urls_that_are_not_base64_stay_references() {
         ]),
         &mut blobs,
     );
-    let urls: Vec<_> = b
-        .iter()
-        .map(|block| {
-            let Block::Image(a) = block else { panic!() };
-            assert_eq!(a.blob, None);
-            a.url.as_deref()
-        })
-        .collect();
-    assert_eq!(
-        urls,
-        [
-            Some("data:image/png,plain"),
-            Some("data:image/png;base64,!!")
-        ]
-    );
+    let [Block::Image(reference), Block::Image(malformed)] = &b[..] else {
+        panic!("expected two images")
+    };
+    assert_eq!(reference.url.as_deref(), Some("data:image/png,plain"));
+    assert_eq!(reference.failure, None);
+    assert_eq!(malformed.media_type.as_deref(), Some("image/png"));
+    assert_eq!(malformed.failure, Some(AttachmentFailure::InvalidBase64));
+    assert_eq!(malformed.blob, None);
     assert!(blobs.is_empty());
 }
 

@@ -161,18 +161,15 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 11,
+                "polylogue.message" => 12,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 12,
-                "polylogue.session" | "polylogue.parse_progress" => 9,
+                "polylogue.session" | "polylogue.parse_progress" | "polylogue.document" => 9,
                 "polylogue.link" => 10,
                 "polylogue.input_observation" => 8,
-                "polylogue.document"
-                | "polylogue.event"
-                | "polylogue.background"
-                | "polylogue.repository" => 8,
+                "polylogue.event" | "polylogue.background" | "polylogue.repository" => 8,
                 "polylogue.query_run" => 12,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
@@ -562,14 +559,15 @@ fn stored_keys_version_every_changed_declaration() {
     assert_versioned_transition(&source16, &recorded_kinds(&source17), &[], &[]);
 }
 
-/// Source 18 names the reason for a reference link and adds message windows.
+/// Source 18 names link reasons and adds message windows. Source 19 adds
+/// attachment failures to the previously unchanged message and document kinds.
 #[test]
-fn source18_versions_its_changed_declarations() {
+fn current_source_versions_declarations_that_changed_after_source17() {
     let previous: serde_json::Value =
         serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
-        previous["source"]["version"].as_u64().unwrap() + 1
+        previous["source"]["version"].as_u64().unwrap() + 2
     );
     let current: Vec<_> = declarations("polylogue")
         .iter()

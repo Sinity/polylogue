@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 parser_modules! {
     mod fields;
@@ -24,7 +24,6 @@ use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
-use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, MessageId, PromptKind,
     Role, Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
@@ -674,7 +673,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
     })
 }
 
-fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
+fn inline_bytes(block: &Json) -> Option<Result<Vec<u8>, polylogue_model::AttachmentFailure>> {
     if !matches!(
         block.str("type").filter(|s| !s.is_empty()),
         Some("image" | "document")
@@ -682,14 +681,13 @@ fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
     {
         return None;
     }
-    base64::engine::general_purpose::STANDARD
-        .decode(block.pointer("/source/data")?.as_str()?)
-        .ok()
+    Some(crate::inline_bytes::decode_bytes(
+        block.pointer("/source/data").and_then(Json::as_str),
+    ))
 }
 
 fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment {
-    let bytes = inline_bytes(block);
-    Attachment {
+    let mut attachment = Attachment {
         name: block
             .str("name")
             .filter(|s| !s.is_empty())
@@ -708,15 +706,22 @@ fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment 
             .pointer("/source/url")
             .and_then(Json::as_str)
             .map(str::to_owned),
-        blob: bytes.as_ref().map(|b| BlobHash::of(b)),
-        size: bytes.as_ref().map(|b| b.len() as u64),
         direction,
         ..Attachment::default()
+    };
+    match inline_bytes(block) {
+        Some(Ok(bytes)) => {
+            attachment.blob = Some(BlobHash::of(&bytes));
+            attachment.size = Some(bytes.len() as u64);
+        }
+        Some(Err(failure)) => attachment.failure = Some(failure),
+        None => {}
     }
+    attachment
 }
 
 fn collect_inline(value: &Json, blobs: &mut Vec<ExtractedBlob>) {
-    if let Some(bytes) = inline_bytes(value) {
+    if let Some(Ok(bytes)) = inline_bytes(value) {
         let hash = BlobHash::of(&bytes);
         if !blobs.iter().any(|blob| blob.hash == hash) {
             blobs.push(ExtractedBlob {
