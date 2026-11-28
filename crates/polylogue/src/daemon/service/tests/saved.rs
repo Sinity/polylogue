@@ -70,6 +70,7 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
         assert!(repeated.repeat);
         assert_eq!(repeated.saved.unwrap().id, format!("{id}-1"));
     }
+    d.wait_for(|status| status["caught_up"] == true);
     let current = crate::test_answers::ok(query(&d, "query:everything"));
     assert_eq!(current["unit"], "messages");
     assert_eq!(current["definitions"][0]["revision"], "second-1");
