@@ -1,12 +1,12 @@
 //! The typed read page in the shared frame. Selection and ready calls are
 //! already resolved by the operation; this module formats no cursors.
 use crate::ready::reader_url;
-use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
+use command_surface::{Failure, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
 use polylogue_model::JsonExt;
 use polylogue_model::{
     freshness::IndexFreshness,
-    read::{ReadError, ReadOptions, ReadPage, ReadyCall, View},
+    read::{ReadPage, ReadyCall, View},
 };
 use serde_json::Value;
 
@@ -14,6 +14,7 @@ pub fn read(
     page: &ReadPage,
     table: &OperationDeclarations,
     request: &RunnableRequest,
+    view_url: impl Fn(View) -> Result<String, Failure>,
 ) -> Result<String, Failure> {
     let title = page
         .document
@@ -30,7 +31,7 @@ pub fn read(
     )?;
     let selection = request
         .arguments
-        .str("target")
+        .str("selection")
         .unwrap_or(&page.snapshot.query);
     // JSON escapes keep controls visible as `\uXXXX` in the query field.
     let selection_display = crate::terminal::json(&Value::String(selection.into()), false);
@@ -39,7 +40,7 @@ pub fn read(
     frame.status = freshness(&page.snapshot.freshness.sinex);
     let body = html! {
         (freshness_notice(&page.snapshot.freshness, &frame.command))
-        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(table,request,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
+        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page, table)?)
         (crate::html::document(&page.document, Some(table))?)
         (navigation(page, table)?)
@@ -112,72 +113,6 @@ pub fn navigation_entries() -> &'static [web_shell::Navigation<'static>] {
         },
     ];
     &ENTRIES
-}
-
-/// A view switch is a new invocation. The model's own validation decides
-/// which view options must return to their defaults; cursor state is reset.
-fn view_url(
-    table: &OperationDeclarations,
-    request: &RunnableRequest,
-    view: View,
-) -> Result<String, Failure> {
-    let mut args =
-        request.arguments.as_object().cloned().ok_or_else(|| {
-            Failure::new(FailureKind::BadRequest, "read arguments must be an object")
-        })?;
-    args.remove("cursor");
-    args.insert("view".into(), Value::String(view.name().into()));
-    let schema = serde_json::to_value(schemars::schema_for!(ReadOptions))
-        .expect("read options schema serializes");
-    loop {
-        let options = args
-            .iter()
-            .filter(|(name, value)| {
-                schema["properties"].get(name.as_str()).is_some() && !value.is_null()
-            })
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect();
-        let options: ReadOptions = serde_json::from_value(Value::Object(options))
-            .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
-        match options.validate() {
-            Ok(()) => break,
-            Err(ReadError::UnsupportedOption { option, .. }) => {
-                // A refused item kind leaves the show and hide words that
-                // name it; any other refused option leaves the arguments.
-                let kind = if option == "context_meter" {
-                    "context"
-                } else {
-                    option.as_str()
-                };
-                let mut removed = args.remove(&option).is_some();
-                for words in ["show", "hide"] {
-                    if let Some(Value::Array(list)) = args.get_mut(words) {
-                        let before = list.len();
-                        list.retain(|word| {
-                            word.as_str()
-                                .is_none_or(|word| word.split(':').next() != Some(kind))
-                        });
-                        removed |= list.len() != before;
-                    }
-                }
-                if !removed {
-                    return Err(Failure::new(
-                        FailureKind::BadRequest,
-                        format!("view {view} does not accept {option}"),
-                    ));
-                }
-            }
-            Err(error) => return Err(Failure::new(FailureKind::BadRequest, error.to_string())),
-        }
-    }
-    reader_url(
-        table,
-        &RunnableRequest {
-            arguments: Value::Object(args),
-            cursor: None,
-            ..request.clone()
-        },
-    )
 }
 
 fn freshness_notice(

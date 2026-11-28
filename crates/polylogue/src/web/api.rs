@@ -16,7 +16,7 @@ use axum::Router;
 use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use command_surface::Answer;
+use command_surface::{Answer, Failure, FailureKind};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -57,7 +57,7 @@ pub fn routes() -> Router<Arc<Web>> {
                     Ok(request) => {
                         respond(&web, request, lifetime.caller(&Default::default())).await
                     }
-                    Err(error) => refused(&web, error, unbuilt_in_query(c, &pairs)),
+                    Err(failure) => json_answer(&web, Answer::error(failure)),
                 }
             },
         );
@@ -154,22 +154,30 @@ fn body_request(
 
 /// A GET runs only what reads and leaves the archive unchanged, as its
 /// policy says.
-fn get_request(
+pub(super) fn get_request(
     c: &Command,
     pairs: &[(String, String)],
-) -> Result<command_surface::RunnableRequest, String> {
-    let request = query_request(c, pairs)?;
+) -> Result<command_surface::RunnableRequest, Failure> {
+    let request = query_request(c, pairs).map_err(|message| {
+        unbuilt_in_query(c, pairs).unwrap_or_else(|| Failure::new(FailureKind::BadRequest, message))
+    })?;
     if request.operation != c.name {
-        return Err("route does not match operation".into());
+        return Err(Failure::new(
+            FailureKind::BadRequest,
+            "route does not match operation",
+        ));
     }
     let policy = crate::daemon::handler::policy(
         c,
         &request.arguments,
         polylogue_model::authorship::Channel::Web,
     )
-    .map_err(|failure| failure.error.message)?;
+    .map_err(|failure| failure.error)?;
     if !policy.takes_get() {
-        return Err(format!("use POST /api/v1{}", c.http_path()));
+        return Err(Failure::new(
+            FailureKind::BadRequest,
+            format!("use POST /api/v1{}", c.http_path()),
+        ));
     }
     Ok(request)
 }
@@ -177,7 +185,7 @@ fn get_request(
 /// A request from query pairs. A row with declared steps takes one step's
 /// arguments as query values under their own names, beside the row's own
 /// and the envelope's; `steps` names its verb.
-pub(super) fn query_request(
+fn query_request(
     c: &Command,
     pairs: &[(String, String)],
 ) -> Result<command_surface::RunnableRequest, String> {
@@ -293,7 +301,7 @@ fn step_query_declarations(row: &Command) -> &'static command_surface::Operation
 enum Piece {
     Bytes(Vec<u8>),
     /// A reply with no events, and the failure its reply carries inside it.
-    Answer(Box<(Answer<Value>, Option<command_surface::FailureKind>)>),
+    Answer(Box<Answer<Value>>, Option<StatusCode>),
 }
 
 /// The response side of a reply as a [`Sink`].
@@ -341,21 +349,29 @@ impl Output for Reply {
             spill.finish().map(drop)
         } else {
             let Channel(sender) = spill.finish()?;
+            let step_status = inside
+                .and_then(FailureKind::http_status)
+                .and_then(|status| StatusCode::from_u16(status).ok());
             sender
-                .blocking_send(Piece::Answer(Box::new((answer, inside))))
+                .blocking_send(Piece::Answer(Box::new(answer), step_status))
                 .map_err(|_| gone())
         }
     }
 }
 
-/// Answers one request in a blocking task. The response is the answer as
-/// JSON, or the stream of its events once the first one is written.
-/// Dropping the response before the reply ends cancels the request.
-pub(super) async fn respond(
+/// A complete answer or the stream already in progress.
+pub(super) enum HttpReply {
+    Answer(Box<Answer<Value>>, Option<StatusCode>),
+    Stream(HttpResponse),
+}
+
+/// Answers one request in a blocking task. Dropping the response before
+/// the reply ends cancels the request.
+pub(super) async fn execute(
     web: &Arc<Web>,
     request: command_surface::RunnableRequest,
     caller: crate::operation::Caller,
-) -> HttpResponse {
+) -> HttpReply {
     let (sender, mut pieces) = mpsc::channel(16);
     let cancel = polylogue_store::cancellation::CancelOnDrop::new(caller.stop.clone());
     let daemon = Arc::clone(&web.daemon);
@@ -368,36 +384,51 @@ pub(super) async fn respond(
         crate::daemon::handler::answer(&daemon, &request, &caller, &mut reply);
     });
     match pieces.recv().await {
-        Some(Piece::Answer(answer)) => {
+        Some(Piece::Answer(answer, step_status)) => {
             let mut cancel = cancel;
             cancel.disarm();
-            let (answer, inside) = *answer;
-            let (status, bytes) = super::prepare_json_answer(web, answer);
-            // A line whose step failed answers with that failure's status.
-            let status = inside
-                .and_then(|kind| kind.http_status())
-                .and_then(|status| StatusCode::from_u16(status).ok())
-                .unwrap_or(status);
-            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+            HttpReply::Answer(answer, step_status)
         }
-        Some(Piece::Bytes(first)) => (
-            [
-                (header::CONTENT_TYPE, "text/event-stream"),
-                (header::CACHE_CONTROL, "no-cache"),
-            ],
-            axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(EventBody {
-                pieces,
-                pending: first,
-                offset: 0,
-                _cancel: cancel,
-            })),
-        )
-            .into_response(),
-        None => json_answer(
-            web,
-            crate::daemon::Failure::internal("the request ended without an answer")
-                .answer::<Value>(),
+        Some(Piece::Bytes(first)) => HttpReply::Stream(
+            (
+                [
+                    (header::CONTENT_TYPE, "text/event-stream"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(EventBody {
+                    pieces,
+                    pending: first,
+                    offset: 0,
+                    _cancel: cancel,
+                })),
+            )
+                .into_response(),
         ),
+        None => HttpReply::Answer(
+            Box::new(
+                crate::daemon::Failure::internal("the request ended without an answer").answer(),
+            ),
+            None,
+        ),
+    }
+}
+
+pub(super) async fn respond(
+    web: &Arc<Web>,
+    request: command_surface::RunnableRequest,
+    caller: crate::operation::Caller,
+) -> HttpResponse {
+    match execute(web, request, caller).await {
+        HttpReply::Answer(answer, step_status) => {
+            let (status, bytes) = super::prepare_json_answer(web, *answer);
+            (
+                step_status.unwrap_or(status),
+                [(header::CONTENT_TYPE, "application/json")],
+                bytes,
+            )
+                .into_response()
+        }
+        HttpReply::Stream(response) => response,
     }
 }
 
@@ -432,7 +463,7 @@ impl tokio::io::AsyncRead for EventBody {
                     this.pending = bytes;
                     this.offset = 0;
                 }
-                Some(Piece::Answer(_)) | None => return std::task::Poll::Ready(Ok(())),
+                Some(Piece::Answer(..)) | None => return std::task::Poll::Ready(Ok(())),
             }
         }
     }

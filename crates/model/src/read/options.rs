@@ -418,6 +418,43 @@ impl ReadOptions {
         }
     }
 
+    /// Start a new view with the options it can display.
+    pub fn set_view(&mut self, view: View) -> Result<(), ReadError> {
+        self.view = view;
+        loop {
+            match self.validate() {
+                Ok(()) => return Ok(()),
+                Err(ReadError::UnsupportedOption {
+                    option,
+                    accepted_by,
+                    ..
+                }) => {
+                    if option == "diff" {
+                        self.diff = None;
+                        continue;
+                    }
+                    let kind = if option == "context_meter" {
+                        ShowKind::Context.name()
+                    } else {
+                        option.as_str()
+                    };
+                    let words = self.show.len() + self.hide.len();
+                    self.show
+                        .retain(|word| word.split(':').next() != Some(kind));
+                    self.hide.retain(|word| word != kind);
+                    if self.show.len() + self.hide.len() == words {
+                        return Err(ReadError::UnsupportedOption {
+                            view,
+                            option,
+                            accepted_by,
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ReadError> {
         self.check_words()?;
         let prose = matches!(self.view, View::Transcript | View::Context);
