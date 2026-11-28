@@ -355,9 +355,13 @@ The daemon reaches the index two ways, which must agree. At startup, a
 daemon with no usable index installs a complete empty index schema. Its
 ordinary index writer fills that index by capture, replay and derivation.
 Committed readings survive a stop and are available without waiting for
-older inputs. A restart resumes at the committed parser positions. A
-daemon with a usable index can keep serving it during a private bulk
-rebuild.
+older inputs. At the start of replay, a bounded batch takes the most
+recent unread current chains from each origin, using recorded observation
+times. An origin with no known time still gets a turn. This priority is
+about observed inputs and does not claim that a date range of sessions is
+complete. The ordinary traversal then catches up the remaining chains.
+A restart resumes at the committed parser positions. A daemon with a
+usable index can keep serving it during a private bulk rebuild.
 
 - **Upkeep** keeps the installed index current as the record grows: for each
   chain whose state is behind, it reads on, and commits the new rows with
