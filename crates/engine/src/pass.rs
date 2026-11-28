@@ -798,10 +798,21 @@ impl Engine {
         let (fresh, found): (Vec<_>, Vec<_>) = found
             .into_iter()
             .partition(|f| !self.inputs.contains_key(&f.path));
-        let fresh = self.plan_found(fresh, &mut pass, &mut seen)?;
+        let mut fresh = self.plan_found(fresh, &mut pass, &mut seen)?;
         if building {
             seen.extend(found.into_iter().map(|f| f.path));
             return self.store_for_build(fresh, pass, seen, progress);
+        }
+        // These paths have no captured observation yet. Their modification
+        // times order discovery work, not the sessions inside the files.
+        if walked {
+            fresh.sort_by(|a, b| {
+                b.facts
+                    .map(|facts| facts.mtime_ns)
+                    .cmp(&a.facts.map(|facts| facts.mtime_ns))
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+            fresh = collect::interleave_origins(fresh, |plan| plan.origin.name);
         }
         let mut changed_inputs = (fresh.len() + self.rollout_captures.len()) as u64;
         if !fresh.is_empty() || !self.rollout_captures.is_empty() {
@@ -814,7 +825,7 @@ impl Engine {
                 ),
             );
             progress.enter("storing and reading new files");
-            self.execute(fresh, &mut pass)?;
+            self.execute_plans(fresh, &mut pass, walked)?;
             progress.enter("planning file reads");
         }
         // Known files that changed since they were read (sessions being
@@ -2256,7 +2267,7 @@ impl Engine {
         if !self.archive.index_files()?.serves() {
             self.store_without_parsing(&mut plans);
         }
-        // The recent replay seed already interleaves origins by age.
+        // Recent discovery and replay already interleave origins by age.
         if !recent_first && self.archive.index_build().is_some() {
             let key = |plan: &Plan| {
                 let stores =
@@ -2334,7 +2345,13 @@ impl Engine {
             }
             if let Some(parser) = export_parser(&plan) {
                 let later = later_paths(&plan, &plans);
-                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
+                self.execute_pool_with_captures(
+                    std::mem::take(&mut pooled),
+                    Vec::new(),
+                    &later,
+                    pass,
+                    recent_first,
+                )?;
                 if self.yielding() {
                     return Ok(());
                 }
@@ -2389,6 +2406,17 @@ impl Engine {
         chains: Vec<Plan>,
         later: &[&Path],
         pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        self.execute_pool_with_captures(plans, chains, later, pass, false)
+    }
+
+    fn execute_pool_with_captures(
+        &mut self,
+        plans: Vec<Plan>,
+        chains: Vec<Plan>,
+        later: &[&Path],
+        pass: &mut Pass,
+        early_export: bool,
     ) -> Result<(), EngineError> {
         if plans.is_empty() && chains.is_empty() && self.rollout_captures.is_empty() {
             return Ok(());
@@ -2446,6 +2474,13 @@ impl Engine {
             // the parse backlog and parsing does not wait for every input to
             // be stored.
             let capture_room = (self.config.workers / 2).max(1);
+            // Let the newest rollouts start before a serial export without
+            // delaying that export for the entire compressed backlog.
+            let mut bulk_captures = if early_export {
+                capture_room
+            } else {
+                usize::MAX
+            };
             let mut progress = build_log::Progress::start(pass, pool.worker_cpu_seconds());
             // Rollout captures on workers, by path, with the input each names.
             let mut capturing: HashMap<PathBuf, String> = HashMap::new();
@@ -2519,7 +2554,8 @@ impl Engine {
                 {
                     // One input is captured or read by one worker at a time.
                     let Some(index) = self.rollout_captures.iter().position(|capture| {
-                        !capturing.contains_key(&capture.path)
+                        (bulk_captures > 0 || capture.priority == Priority::Live)
+                            && !capturing.contains_key(&capture.path)
                             && !capturing.values().any(|input| *input == capture.input)
                             && !self.reparsing.contains_key(&capture.path)
                             && !running.contains_key(&capture.path)
@@ -2532,6 +2568,9 @@ impl Engine {
                         .remove(index)
                         .expect("a queued capture");
                     let (path, input) = (capture.path.clone(), capture.input.clone());
+                    if capture.priority == Priority::Bulk {
+                        bulk_captures -= 1;
+                    }
                     if !pool.submit_capture(capture) {
                         break;
                     }

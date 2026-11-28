@@ -104,12 +104,16 @@ impl Databases {
                         continue;
                     }
                 };
+                let observation = Observation {
+                    seen_at_ms: source.source_read.clock.now_ms(),
+                    ..source.observation.clone()
+                };
                 let outcome = polylogue_model::caught(|| {
                     reader.read(
                         &source.path,
                         &archive,
                         &source.input,
-                        &source.observation,
+                        &observation,
                         due,
                         |bytes, observation| queue.append(bytes, observation),
                     )
@@ -466,7 +470,9 @@ impl Engine {
                 .map(|(path, origin)| (path.clone(), *origin))
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
-            for (path, origin) in sources {
+            // Each path is one consistent snapshot. File modification time
+            // cannot order database activity (especially in WAL mode).
+            for (path, origin) in collect::interleave_origins(sources, |(_, origin)| origin.name) {
                 let source_read = self.source_read_context(
                     &path,
                     origin.name,
