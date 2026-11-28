@@ -63,6 +63,37 @@ fn import_every_structure_keeps_package_assets_and_refuses_unknown() {
 }
 
 #[test]
+fn import_receipt_names_the_stored_original_on_first_import_and_repeat() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let path = home.dir.path().join("export.zip");
+    zip(&path, &[("conversations.json", CHAT.as_bytes())]);
+    let original = polylogue_model::BlobHash::of(&std::fs::read(&path).unwrap());
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let paths = std::slice::from_ref(&path);
+
+    let preview = engine
+        .import_with_options(
+            paths,
+            &crate::ImportOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(preview.packages[0].original, None);
+
+    let first = engine.import(paths).unwrap();
+    assert!(first.pass.errors.is_empty(), "{first:?}");
+    assert!(first.imported.contains(&path), "{first:?}");
+    assert_eq!(first.packages[0].original, Some(original));
+
+    let repeated = engine.import(paths).unwrap();
+    assert!(repeated.pass.errors.is_empty(), "{repeated:?}");
+    assert!(repeated.already_stored.contains(&path), "{repeated:?}");
+    assert_eq!(repeated.packages[0].original, Some(original));
+}
+
+#[test]
 fn nested_tar_and_compressed_tar_keep_originals_and_decoded_members() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("nested.zip");
