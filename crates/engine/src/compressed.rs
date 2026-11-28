@@ -194,7 +194,15 @@ impl RolloutCapture {
         let (found_origin, priority, storing_only) =
             (self.found_origin, self.priority, self.storing_only);
         let stored = polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-            self.store(archive, blobs, writer, read_memory)
+            let first = self.store(archive, blobs, writer, read_memory, None)?;
+            if first.is_some() || self.found_origin.compressed_form_of.is_some() {
+                return Ok(first);
+            }
+            let frozen = read::freeze_after_growth(&self.path, self.facts, &archive.staging_dir())?;
+            match frozen {
+                Some(frozen) => self.store(archive, blobs, writer, read_memory, Some(&frozen)),
+                None => Ok(None),
+            }
         });
         let (outcome, reply) = match stored {
             Ok(Some((captured, reply))) => (Ok(Some(captured)), Some(reply)),
@@ -214,31 +222,49 @@ impl RolloutCapture {
     }
 
     fn store(
-        self,
+        &self,
         archive: &polylogue_store::Archive,
         blobs: &Arc<polylogue_store::blobs::Blobs>,
         writer: &polylogue_store::writer::WriterSender,
         read_memory: u64,
+        frozen: Option<&read::FrozenFile>,
     ) -> Result<Option<(Captured, GroupReply)>, EngineError> {
-        let RolloutCapture {
-            path,
-            input: id,
-            found_origin,
-            facts,
-            context,
-            original_context,
-            mut observation,
-            ..
-        } = self;
-        let path = &path;
+        let path = &self.path;
+        let id = &self.input;
+        let found_origin = self.found_origin;
+        let facts = self.facts;
+        let context = &self.context;
+        let original_context = &self.original_context;
+        let mut observation = self.observation.clone();
         let origin = read_as(found_origin);
         let compressed = found_origin.compressed_form_of.is_some();
         let reads = polylogue_store::ReadPool::with_budget(archive, 1, read_memory)?;
-        let mut source = std::fs::File::open(path)?;
-        if FileFacts::of(&source.metadata()?) != facts {
-            return Ok(None);
-        }
-        let observed = crate::read::file_snapshot(&source.metadata()?)?;
+        let (mut source, observed) = match frozen {
+            Some(frozen) => {
+                let source = frozen.open()?;
+                let polylogue_sources::InputIdentity::ProviderId(provider) =
+                    found_origin.input_identity
+                else {
+                    unreachable!("a captured rollout has a provider ID");
+                };
+                let native = (provider.read)(&mut decoded(&source, false)?)?;
+                if !native.is_some_and(|native| {
+                    polylogue_sources::InputIdentity::provider_named(&native, &observation.machine)
+                        == *id
+                }) {
+                    return Ok(None);
+                }
+                (source, frozen.observed.clone())
+            }
+            None => {
+                let source = std::fs::File::open(path)?;
+                let metadata = source.metadata()?;
+                if FileFacts::of(&metadata) != facts {
+                    return Ok(None);
+                }
+                (source, read::file_snapshot(&metadata)?)
+            }
+        };
         // The compressed file itself, with the read context taken before it.
         let original = match original_context {
             Some(context) => Some((archive.prepare_bytes(&mut source)?, context)),
@@ -248,11 +274,9 @@ impl RolloutCapture {
         // read ends before the file's bytes are compared or prepared.
         let (previous, chain) = {
             let reader = reads.reader()?;
-            let previous = reader.latest_chain(&id)?;
+            let previous = reader.latest_chain(id)?;
             let chain = match &previous {
-                Some(previous) => {
-                    Some(reader.stored_chain(&id, previous.chain, previous.stored)?)
-                }
+                Some(previous) => Some(reader.stored_chain(id, previous.chain, previous.stored)?),
                 _ => None,
             };
             (previous, chain)
@@ -295,7 +319,7 @@ impl RolloutCapture {
                 // A copy ending where a stored revision ends is that
                 // revision seen again; one ending between revisions is the
                 // chain seen back holding a prefix.
-                historical = matching_revision(&reads.reader()?, blobs, &id, &source, compressed)?;
+                historical = matching_revision(&reads.reader()?, blobs, id, &source, compressed)?;
                 if historical.is_some() {
                     shorter = None;
                 }
@@ -313,8 +337,9 @@ impl RolloutCapture {
                 stream
             })?),
         };
-        if FileFacts::of(&source.metadata()?) != facts
-            || std::fs::metadata(path).map(|m| FileFacts::of(&m))? != facts
+        if frozen.is_none()
+            && (FileFacts::of(&source.metadata()?) != facts
+                || std::fs::metadata(path).map(|m| FileFacts::of(&m))? != facts)
         {
             return Ok(None);
         }
@@ -355,7 +380,7 @@ impl RolloutCapture {
                 },
                 original_observation,
                 Some(original.clone()),
-                &original_context,
+                original_context,
                 original_context.observed_file(
                     InputKey {
                         id: original_id.clone(),
@@ -422,7 +447,7 @@ impl RolloutCapture {
             change,
             observation,
             prepared,
-            &context,
+            context,
             context.observed_file(
                 InputKey {
                     id: id.clone(),

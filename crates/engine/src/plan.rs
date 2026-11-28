@@ -140,6 +140,8 @@ pub(crate) struct Plan {
     pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
+    /// A private view of the sampled bytes, acquired after concurrent growth.
+    pub(crate) frozen_file: Option<crate::read::FrozenFile>,
     /// The end of the last range parsed: once it reaches a copy's stop, the
     /// parse has read every complete record the shared bytes hold.
     pub(crate) read_to: u64,
@@ -194,6 +196,7 @@ impl Plan {
             waiting: false,
             input_finished: false,
             source,
+            frozen_file: None,
             read_to: parse_pos,
         }
     }
@@ -243,6 +246,7 @@ impl Plan {
         };
         Job {
             source_read: None,
+            frozen_file: self.frozen_file.clone(),
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -264,6 +268,9 @@ impl Plan {
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        if let Some(file) = d.frozen_file {
+            self.frozen_file = Some(file);
+        }
         if let Some(chain) = d.chain {
             self.parser_chain = Some(chain);
         }

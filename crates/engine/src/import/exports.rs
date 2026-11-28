@@ -162,29 +162,24 @@ impl Engine {
             plan.origin.name,
             polylogue_store::capture_read::ReadRoute::NativeCapture,
         );
-        let mut file = std::fs::File::open(&plan.path)?;
-        let before = FileFacts::of(&file.metadata()?);
-        if Some(before) != plan.facts
-            || before.size != plan.size
-            || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
-        {
-            return Err(polylogue_store::StoreError::SourceChanged(
-                "source changed before export capture",
-            )
-            .into());
+        let mut file = match &plan.frozen_file {
+            Some(snapshot) => snapshot.open()?,
+            None => std::fs::File::open(&plan.path)?,
+        };
+        if let (None, Some(expected)) = (&plan.frozen_file, plan.facts) {
+            read::check_source(&file, &plan.path, expected)?;
         }
         file.seek(SeekFrom::Start(plan.stored_upto))?;
         let prepared = self
             .archive
             .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
-        let bytes = prepared.len();
-        pass.bytes_read += bytes;
-        if FileFacts::of(&file.metadata()?) != before
-            || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
-            || prepared.len() != plan.size - plan.stored_upto
-        {
+        pass.bytes_read += prepared.len();
+        if let (None, Some(expected)) = (&plan.frozen_file, plan.facts) {
+            read::check_source(&file, &plan.path, expected)?;
+        }
+        if prepared.len() != plan.size - plan.stored_upto {
             return Err(polylogue_store::StoreError::SourceChanged(
-                "source changed during export capture",
+                "source ended during export capture",
             )
             .into());
         }
@@ -244,6 +239,7 @@ impl Engine {
                 state.chain = known.chain;
             }
         }
+        plan.frozen_file = None;
         plan.source = if matches!(
             (plan.origin.open)(&plan.path),
             Some(polylogue_sources::Parse::Export(_))

@@ -60,6 +60,7 @@ fn job(
 ) -> crate::pool::Job {
     crate::pool::Job {
         source_read: None,
+        frozen_file: None,
         path: path.to_path_buf(),
         origin,
         input: polylogue_store::InputKey {

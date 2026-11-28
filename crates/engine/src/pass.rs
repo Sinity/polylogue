@@ -1288,7 +1288,17 @@ impl Engine {
             .ok();
         drop(reader);
         let intact = match prefix {
-            Some(prefix) => read::stored_prefix_intact(path, now, prefix, &self.blobs, bytes_read)?,
+            Some(prefix) => {
+                read::stored_prefix_intact(
+                    path,
+                    now,
+                    prefix,
+                    &self.blobs,
+                    &self.archive.staging_dir(),
+                    bytes_read,
+                )?
+                .0
+            }
             None => false,
         };
         Ok(intact.then_some(progress.chain))
@@ -1412,6 +1422,7 @@ impl Engine {
             return self.observe_shorter(path, now, chain);
         }
         let st = self.inputs.get_mut(path).expect("tracked input");
+        let mut frozen_file = None;
         if may_rejoin || was_grown {
             let reader = self.reads.reader()?;
             let progress = reader.latest_chain(&st.input_id)?.filter(|progress| {
@@ -1427,8 +1438,22 @@ impl Engine {
                     .ok()
             });
             drop(reader);
-            if let (Some(progress), Some(prefix)) = (progress, prefix)
-                && read::stored_prefix_intact(path, now, prefix, &self.blobs, bytes_read)?
+            let matches = if let Some(prefix) = prefix {
+                let (equal, frozen) = read::stored_prefix_intact(
+                    path,
+                    now,
+                    prefix,
+                    &self.blobs,
+                    &self.archive.staging_dir(),
+                    bytes_read,
+                )?;
+                frozen_file = frozen;
+                equal
+            } else {
+                false
+            };
+            if let Some(progress) = progress
+                && matches
             {
                 if st.chain != Some(progress.chain) {
                     // Another path can have read a later chain of this input.
@@ -1527,6 +1552,7 @@ impl Engine {
             waiting: false,
             input_finished: false,
             source: pool::Bytes::File,
+            frozen_file,
             read_to: parse_pos,
         }))
     }
@@ -2637,6 +2663,7 @@ impl Engine {
                     continue;
                 }
                 pass.bytes_stored += d.stored;
+                pass.bytes_read += d.extra_source_read;
                 match &d.error {
                     // Replaced or rewritten since it was planned: the file is
                     // planned again, from what it then holds, by the next

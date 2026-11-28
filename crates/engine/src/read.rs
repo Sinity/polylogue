@@ -2,7 +2,11 @@
 //! nothing is read. A changed file only extends its chain after the whole
 //! stored prefix has been compared.
 
-use polylogue_store::FileFacts;
+mod growing;
+
+pub(crate) use growing::FrozenFile;
+use growing::GrowingFile;
+use polylogue_store::{FileFacts, capture_read::FileSnapshot};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -76,34 +80,41 @@ pub(crate) fn prefix_matches(
     file: &mut File,
     path: &Path,
     expected: FileFacts,
-    mut length: u64,
-    mut prior: impl Read,
-    mut observed: impl FnMut(u64),
+    length: u64,
+    prior: impl Read,
+    observed: impl FnMut(u64),
 ) -> io::Result<bool> {
     if FileFacts::of(&file.metadata()?) != expected || length > expected.size {
         return Err(source_changed(
             "source file changed before comparing its prefix",
         ));
     }
-    file.rewind()?;
-    let result = (|| {
-        let mut current = [0; 65536];
-        let mut previous = [0; 65536];
-        while length > 0 {
-            let size = length.min(current.len() as u64) as usize;
-            read_exact_checked(file, &mut current[..size])?;
-            observed(size as u64);
-            let available = prior.read_exact(&mut previous[..size]).is_ok();
-            polylogue_store::cancellation::check_current().map_err(io::Error::other)?;
-            if !available || current[..size] != previous[..size] {
-                return Ok(false);
-            }
-            length -= size as u64;
-        }
-        Ok(true)
-    })();
+    let result = compare_prefix(file, length, prior, observed);
     check_source(file, path, expected)?;
     result
+}
+
+fn compare_prefix(
+    file: &mut File,
+    mut length: u64,
+    mut prior: impl Read,
+    mut observed: impl FnMut(u64),
+) -> io::Result<bool> {
+    file.rewind()?;
+    let mut current = [0; 65536];
+    let mut previous = [0; 65536];
+    while length > 0 {
+        let size = length.min(current.len() as u64) as usize;
+        read_exact_checked(file, &mut current[..size])?;
+        observed(size as u64);
+        let available = prior.read_exact(&mut previous[..size]).is_ok();
+        polylogue_store::cancellation::check_current().map_err(io::Error::other)?;
+        if !available || current[..size] != previous[..size] {
+            return Ok(false);
+        }
+        length -= size as u64;
+    }
+    Ok(true)
 }
 
 pub(crate) fn stored_prefix_intact(
@@ -111,11 +122,12 @@ pub(crate) fn stored_prefix_intact(
     expected: FileFacts,
     chain: polylogue_store::blobs::StoredChain,
     blobs: &std::sync::Arc<polylogue_store::blobs::Blobs>,
+    staging: &Path,
     bytes_read: &mut u64,
-) -> io::Result<bool> {
+) -> io::Result<(bool, Option<FrozenFile>)> {
     let mut file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok((false, None)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(source_changed(
                 "source file disappeared before comparing its prefix",
@@ -123,14 +135,89 @@ pub(crate) fn stored_prefix_intact(
         }
         Err(error) => return Err(error),
     };
-    prefix_matches(
+    let compare = prefix_matches(
         &mut file,
         path,
         expected,
         chain.length,
         chain.reader(std::sync::Arc::clone(blobs)),
         |size| *bytes_read += size,
-    )
+    );
+    match compare {
+        Ok(equal) => Ok((equal, None)),
+        Err(error) if changed(&error) => {
+            let Some(mut source) = GrowingFile::open(path, expected, staging)? else {
+                return Err(error);
+            };
+            let compared = compare_prefix(
+                &mut source.file,
+                chain.length,
+                chain.reader(std::sync::Arc::clone(blobs)),
+                |size| *bytes_read += size,
+            );
+            let snapshot = source.finish(path)?;
+            Ok((compared?, snapshot))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn changed(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|error| {
+        matches!(
+            error.downcast_ref::<polylogue_store::StoreError>(),
+            Some(polylogue_store::StoreError::SourceChanged(_))
+        )
+    })
+}
+
+pub(crate) fn freeze_after_growth(
+    path: &Path,
+    expected: FileFacts,
+    staging: &Path,
+) -> io::Result<Option<FrozenFile>> {
+    match GrowingFile::open(path, expected, staging)? {
+        Some(source) => source.finish(path),
+        None => Ok(None),
+    }
+}
+
+pub(crate) struct RangeAfterGrowth {
+    pub(crate) data: Vec<u8>,
+    pub(crate) observed: FileSnapshot,
+    pub(crate) snapshot: Option<FrozenFile>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_after_growth<R: Read>(
+    path: &Path,
+    expected: FileFacts,
+    range: std::ops::Range<u64>,
+    committed: u64,
+    chain: impl FnOnce() -> io::Result<R>,
+    staging: &Path,
+    bytes_read: &mut u64,
+) -> io::Result<Option<RangeAfterGrowth>> {
+    let Some(mut source) = GrowingFile::open(path, expected, staging)? else {
+        return Ok(None);
+    };
+    if committed > 0
+        && !compare_prefix(&mut source.file, committed, chain()?, |size| {
+            *bytes_read += size;
+        })?
+    {
+        return Ok(None);
+    }
+    let observed = source.observed.clone();
+    let data = source.read_range(range.start, range.end);
+    let snapshot = source.finish(path)?;
+    let data = data?;
+    *bytes_read += data.len() as u64;
+    Ok(Some(RangeAfterGrowth {
+        data,
+        observed,
+        snapshot,
+    }))
 }
 
 /// One imported blob, verified once and decoded forward. Only an incomplete

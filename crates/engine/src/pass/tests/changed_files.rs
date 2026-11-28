@@ -104,10 +104,10 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
     );
 }
 
-/// A write concurrent with a planned read invalidates that read. The
-/// next pass compares the committed prefix before continuing the chain.
+/// A live transcript that grows while its range is being read stores the
+/// planned range after comparing the committed prefix with the newer file.
 #[test]
-fn a_file_appended_to_while_its_range_is_read_is_retried() {
+fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     fault::clear();
     let home = ClaudeHome::new();
     home.append("grows.jsonl", &claude_user("g1", "grows", "first record"));
@@ -116,8 +116,8 @@ fn a_file_appended_to_while_its_range_is_read_is_retried() {
     let first = engine.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     let path = home.file("grows.jsonl");
-    let committed = std::fs::metadata(&path).unwrap().len();
     home.append("grows.jsonl", &claude_user("g2", "grows", "second record"));
+    let planned = std::fs::metadata(&path).unwrap().len();
     fault::arm("read.source_range", "grows.jsonl", Action::Hold, 0, 1);
     let pass = std::thread::scope(|scope| {
         let running = scope.spawn(|| engine.run_pass());
@@ -135,13 +135,76 @@ fn a_file_appended_to_while_its_range_is_read_is_retried() {
     fault::clear();
     let pass = pass.unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert!(pass.capture_pending);
-    assert_eq!(home.texts("grows"), ["first record"]);
-    assert_eq!(engine.inputs[&path].stored, committed);
+    assert_eq!(home.texts("grows"), ["first record", "second record"]);
+    assert_eq!(engine.inputs[&path].stored, planned);
     let next = engine.run_pass().unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
     assert_eq!(
         home.texts("grows"),
         ["first record", "second record", "written while read"]
+    );
+}
+
+/// A growing file that also edited the already captured prefix cannot
+/// continue the old chain from the concurrent range.
+#[test]
+fn early_edit_and_growth_during_a_read_leave_the_committed_chain_intact() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    let path = home.file("edited-during-read.jsonl");
+    let first = claude_user("u1", "edited", "old word")
+        + &claude_user("u2", "edited", &"same suffix ".repeat(450));
+    home.append("edited-during-read.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    engine.config.workers = 1;
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let later = claude_user("u3", "edited", "planned append");
+    home.append("edited-during-read.jsonl", &later);
+    let replacement = first.replacen("old word", "new word", 1)
+        + &later
+        + &claude_user("u4", "edited", "new suffix");
+    fault::arm(
+        "read.source_range",
+        "edited-during-read.jsonl",
+        Action::Hold,
+        0,
+        1,
+    );
+    let pass = std::thread::scope(|scope| {
+        let running = scope.spawn(|| engine.run_pass());
+        assert!(fault::wait_held_within(Duration::from_secs(60)));
+        std::fs::write(&path, &replacement).unwrap();
+        fault::release();
+        running.join().unwrap().unwrap()
+    });
+    fault::clear();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(pass.capture_pending);
+    assert_eq!(pass.bytes_stored, 0);
+    let input = engine.location_id(&path);
+    let committed = engine
+        .reads
+        .reader()
+        .unwrap()
+        .latest_chain(&input)
+        .unwrap()
+        .unwrap();
+    assert_eq!((committed.chain, committed.stored), (1, first.len() as u64));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let rewritten = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(rewritten.chain, 2);
+    assert_eq!(
+        reader
+            .stored_range(&input, 1, 0, first.len() as u64, &engine.blobs)
+            .unwrap(),
+        first.as_bytes()
+    );
+    assert_eq!(
+        reader
+            .stored_range(&input, 2, 0, replacement.len() as u64, &engine.blobs)
+            .unwrap(),
+        replacement.as_bytes()
     );
 }
