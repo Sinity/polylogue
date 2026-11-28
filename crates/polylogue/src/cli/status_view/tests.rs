@@ -1,7 +1,9 @@
 use super::*;
 use crate::protocol::status::{AnswersFrom, NotReadSince, Notice, PendingWrites, Warm};
 use polylogue_model::Timestamp;
-use polylogue_model::freshness::{CompletenessReason, ReadCompleteness, ReadFreshness};
+use polylogue_model::freshness::{
+    CompletenessReason, CountedReason, ReadCompleteness, ReadFreshness,
+};
 use polylogue_model::live::{LiveState, WaitingOn};
 use polylogue_store::log::Record;
 
@@ -46,7 +48,11 @@ fn answer() -> Answer {
         vectors: None,
         vectors_error: None,
         verification: None,
+        session_starts_without_context: None,
         pending_writes: PendingWrites {
+            delivery_write_failures: 0,
+            mailbox_failures: 0,
+            host_reattachment_failures: 0,
             delivery_outcomes: 0,
             live_event_lines: 0,
             last_error: None,
@@ -74,6 +80,7 @@ fn answer() -> Answer {
         },
         recent_log: Vec::new(),
         threads: Vec::new(),
+        slow_statements: Vec::new(),
     }
 }
 
@@ -111,77 +118,96 @@ fn plain(status: &Answer, problems: &[&str]) -> String {
 fn an_idle_answer_renders_the_archive_reading_and_activity() {
     use polylogue_model::capture::{Accessibility, Classification, Coverage, Entry, RootCoverage};
     let mut status = answer();
-    status.store = Some(polylogue_store::Status {
-        sessions: 37_419,
-        messages: 11_240_000,
-        documents: 288,
-        tool_calls: 4_770_000,
-        inputs: 132_286,
-        revisions: 134_089,
-        stored_bytes: 105_871_282_586,
-        parse_states: [
-            ("done", 109_793),
-            ("parsing", 48),
-            ("failed", 31),
-            ("no_parser_yet", 15),
-        ]
-        .into_iter()
-        .map(|(state, n)| (state.to_owned(), n))
-        .collect(),
-        unused: vec![
-            ("claude-code:message.usage.cache".into(), 11_200_000),
-            ("codex:payload.extra".into(), 5),
-        ],
-        unused_fields: 41,
-        search_pending: 0,
-        capture_coverage: vec![Coverage {
-            version: 1,
-            machine: "host".into(),
-            observed_at: at(today(13, 0, 0)),
-            roots: vec![
-                RootCoverage {
-                    path_bytes: b"/home/op/.claude".to_vec(),
-                    status: Accessibility::Accessible,
-                    entries: vec![
-                        Entry {
-                            class: Classification::Collected,
-                            pattern: "projects/*/*.jsonl".into(),
-                            reason: None,
-                            files: 100,
-                            bytes: 1 << 20,
-                            newest_mtime_ms: None,
-                        },
-                        Entry {
-                            class: Classification::Ignored,
-                            pattern: "cache/**".into(),
-                            reason: Some("cache".into()),
-                            files: 40,
-                            bytes: 1 << 10,
-                            newest_mtime_ms: None,
-                        },
-                        Entry {
-                            class: Classification::Ignored,
-                            pattern: "**/*.lock".into(),
-                            reason: Some("lock files".into()),
-                            files: 3,
-                            bytes: 30,
-                            newest_mtime_ms: None,
-                        },
-                    ],
-                    unavailable_paths: Vec::new(),
-                },
-                RootCoverage {
-                    path_bytes: b"/home/op/.codex".to_vec(),
-                    status: Accessibility::Absent,
-                    entries: Vec::new(),
-                    unavailable_paths: Vec::new(),
-                },
+    status.store = Some(crate::protocol::status::Store::from_snapshot(
+        polylogue_store::Status {
+            sessions: 37_419,
+            sessions_physical: 41_208,
+            messages: 11_240_000,
+            documents: 288,
+            tool_calls: 4_770_000,
+            inputs: 132_286,
+            revisions: 134_089,
+            stored_bytes: 105_871_282_586,
+            parse_states: [
+                ("done", 109_793),
+                ("parsing", 48),
+                ("failed", 31),
+                ("no_parser", 15),
+            ]
+            .into_iter()
+            .map(|(state, n)| (state.to_owned(), n))
+            .collect(),
+            unused: vec![
+                ("claude-code:message.usage.cache".into(), 11_200_000),
+                ("codex:payload.extra".into(), 5),
             ],
-        }],
-        index_rebuild: None,
-    });
+            unused_fields: 41,
+            search_pending: 0,
+            search_pending_is_minimum: false,
+            summaries_due: 0,
+            capture_coverage: vec![Coverage {
+                version: 1,
+                machine: "host".into(),
+                observed_at: at(today(13, 0, 0)),
+                roots: vec![
+                    RootCoverage {
+                        path_bytes: b"/home/op/.claude".to_vec(),
+                        status: Accessibility::Accessible,
+                        entries: vec![
+                            Entry {
+                                class: Classification::Collected,
+                                pattern: "projects/*/*.jsonl".into(),
+                                reason: None,
+                                files: 100,
+                                bytes: 1 << 20,
+                                newest_mtime_ms: None,
+                            },
+                            Entry {
+                                class: Classification::Ignored,
+                                pattern: "cache/**".into(),
+                                reason: Some("cache".into()),
+                                files: 40,
+                                bytes: 1 << 10,
+                                newest_mtime_ms: None,
+                            },
+                            Entry {
+                                class: Classification::Ignored,
+                                pattern: "**/*.lock".into(),
+                                reason: Some("lock files".into()),
+                                files: 3,
+                                bytes: 30,
+                                newest_mtime_ms: None,
+                            },
+                        ],
+                        unavailable_paths: Vec::new(),
+                    },
+                    RootCoverage {
+                        path_bytes: b"/home/op/.codex".to_vec(),
+                        status: Accessibility::Absent,
+                        entries: Vec::new(),
+                        unavailable_paths: Vec::new(),
+                    },
+                ],
+            }],
+            index_rebuild: None,
+        },
+        true,
+        &[],
+        "host",
+    ));
     status.freshness.local.parsing =
-        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
+        CompletenessDimension::Incomplete(vec![CountedReason::inputs(
+            CompletenessReason::ParserBehind,
+            "codex",
+            48,
+        )]);
+    // docs/operations.md, Status: a failed parse is named as a problem
+    // with its count and origin, never as parsing behind.
+    status.freshness.local.failed_parses = vec![CountedReason::inputs(
+        CompletenessReason::ParseFailed,
+        "claude-code",
+        31,
+    )];
     status.loop_status.passes = 12;
     status.loop_status.last_pass_at = Some(at(today(12, 58, 4)));
     status.loop_status.last_pass.seconds = 4.2;
@@ -212,17 +238,26 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
         record(today(14, 2, 11), Priority::Info, "search thread: caught up"),
     ];
     assert_eq!(
-        plain(&status, &["parsing is behind the stored bytes"]),
+        plain(
+            &status,
+            &status
+                .freshness
+                .status_notes()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        ),
         "\
-polylogue  ⚠ parsing is behind the stored bytes
+polylogue  ⚠ 31 claude-code inputs failed to parse  (+1 more under NOTES)
            standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
-ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
+ARCHIVE    37,419 sessions (41,208 physical)   11.24M messages   4.77M tool calls   288 documents
            132,286 inputs (98.6 GiB decoded) · 134,089 revisions
 
 READING    #############################.  99.9%   109,793 of 109,887 files read
            48 parsing · 31 failed · 15 without a parser
-           parsing is behind the stored bytes · session figures current · search current
+           48 codex inputs have bytes not parsed yet · session figures current · search current
+           31 claude-code inputs failed to parse
 
 LAST CHECK 12:58:04 · 4.2 s · 37 of 132,286 files changed
            12.4 MiB read · 1,204 messages written
@@ -243,7 +278,8 @@ UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 40 more, 1 o
 RECENT     14:01:10  ⚠ scope index: busy
            14:02:11  search thread: caught up
 
-NOTES      ⚠ parsing is behind the stored bytes
+NOTES      ⚠ 31 claude-code inputs failed to parse
+           ⚠ 48 codex inputs have bytes not parsed yet
 "
     );
 }
@@ -957,13 +993,18 @@ fn entry(
 fn a_new_archive_is_up_to_date_with_its_sources_watched() {
     use polylogue_model::capture::Accessibility;
     let mut status = answer();
-    status.store = Some(polylogue_store::Status {
-        capture_coverage: vec![coverage(vec![
-            root("/home/op/.claude", Accessibility::Absent, Vec::new()),
-            root("/home/op/.codex", Accessibility::Absent, Vec::new()),
-        ])],
-        ..polylogue_store::Status::default()
-    });
+    status.store = Some(crate::protocol::status::Store::from_snapshot(
+        polylogue_store::Status {
+            capture_coverage: vec![coverage(vec![
+                root("/home/op/.claude", Accessibility::Absent, Vec::new()),
+                root("/home/op/.codex", Accessibility::Absent, Vec::new()),
+            ])],
+            ..polylogue_store::Status::default()
+        },
+        true,
+        &[],
+        "host",
+    ));
     assert_eq!(
         plain(&status, &[]),
         "\
@@ -1033,15 +1074,20 @@ fn a_rebuild_beside_a_readable_index_labels_the_installed_figures() {
     );
     reading.rate_seconds = Some(30.);
     let mut status = answer();
-    status.store = Some(polylogue_store::Status {
-        sessions: 12,
-        messages: 340,
-        tool_calls: 56,
-        inputs: 14,
-        revisions: 15,
-        stored_bytes: 5 << 30,
-        ..polylogue_store::Status::default()
-    });
+    status.store = Some(crate::protocol::status::Store::from_snapshot(
+        polylogue_store::Status {
+            sessions: 12,
+            messages: 340,
+            tool_calls: 56,
+            inputs: 14,
+            revisions: 15,
+            stored_bytes: 5 << 30,
+            ..polylogue_store::Status::default()
+        },
+        true,
+        &[],
+        "host",
+    ));
     status.index_build = Some(IndexBuild {
         reason: polylogue_store::index::file::RebuildReason::SchemaDiffers,
         chains: 14,
@@ -1168,32 +1214,37 @@ fn sources_show_an_absent_root_and_unrecognized_files() {
         )],
     );
     incomplete.unavailable_paths = vec![b"/home/op/.gemini/tmp".to_vec()];
-    status.store = Some(polylogue_store::Status {
-        capture_coverage: vec![coverage(vec![
-            root(
-                "/home/op/.codex",
-                Accessibility::Accessible,
-                vec![
-                    entry(
-                        Classification::Collected,
-                        "sessions/**/rollout-*.jsonl",
-                        None,
-                        20,
-                    ),
-                    entry(Classification::Collected, "history.jsonl", None, 1),
-                    entry(
-                        Classification::Unrecognized,
-                        "**",
-                        Some("no declared collection or ignore pattern matched"),
-                        3,
-                    ),
-                ],
-            ),
-            root("/home/op/.claude", Accessibility::Absent, Vec::new()),
-            incomplete,
-        ])],
-        ..polylogue_store::Status::default()
-    });
+    status.store = Some(crate::protocol::status::Store::from_snapshot(
+        polylogue_store::Status {
+            capture_coverage: vec![coverage(vec![
+                root(
+                    "/home/op/.codex",
+                    Accessibility::Accessible,
+                    vec![
+                        entry(
+                            Classification::Collected,
+                            "sessions/**/rollout-*.jsonl",
+                            None,
+                            20,
+                        ),
+                        entry(Classification::Collected, "history.jsonl", None, 1),
+                        entry(
+                            Classification::Unrecognized,
+                            "**",
+                            Some("no declared collection or ignore pattern matched"),
+                            3,
+                        ),
+                    ],
+                ),
+                root("/home/op/.claude", Accessibility::Absent, Vec::new()),
+                incomplete,
+            ])],
+            ..polylogue_store::Status::default()
+        },
+        true,
+        &[],
+        "host",
+    ));
     let text = plain(&status, &[]);
     let sources = text
         .split("\n\n")
@@ -1208,5 +1259,92 @@ SOURCES    walked 14:04:00
            /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
              ignored: 1 symbolic link is not followed
 "
+    );
+}
+
+/// Every chain state the census counts (`model::chain::ChainStatusName`)
+/// is worded in the READING section, in the view's order.
+#[test]
+fn every_chain_state_the_census_counts_has_its_words() {
+    use polylogue_model::chain::ChainStatusName;
+    let mut status = answer();
+    status.store = Some(crate::protocol::status::Store::from_snapshot(
+        polylogue_store::Status {
+            parse_states: ChainStatusName::ALL
+                .iter()
+                .map(|state| (state.as_str().to_owned(), 1))
+                .collect(),
+            ..Default::default()
+        },
+        true,
+        &[],
+        "host",
+    ));
+    let view = plain(&status, &[]);
+    let reading = view
+        .lines()
+        .find(|line| line.contains("parsing ·"))
+        .unwrap_or_else(|| panic!("{view}"));
+    assert_eq!(
+        reading.trim(),
+        "1 parsing · 1 waiting to grow · 1 refused · 1 failed · 1 without a parser · 1 repeated"
+    );
+}
+
+#[test]
+fn whole_log_prints_every_long_record_whole() {
+    let mut status = answer();
+    let texts: Vec<String> = (0..3)
+        .map(|n| format!("record {n}: {} end {n}", "long text ".repeat(20)))
+        .collect();
+    status.recent_log = texts
+        .iter()
+        .zip([Priority::Info, Priority::Warning, Priority::Error])
+        .map(|(text, priority)| record(today(13, 0, 0), priority, text))
+        .collect();
+    for building in [false, true] {
+        status.index_build = building.then_some(IndexBuild {
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
+            chains: 0,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        });
+        let text = render(
+            &status,
+            &[],
+            &View {
+                style: TextStyle::Plain,
+                width: 100,
+                now_ms: NOW,
+                zone: &jiff::tz::TimeZone::UTC,
+                whole_log: true,
+            },
+        );
+        for record in &texts {
+            assert_eq!(text.matches(record.as_str()).count(), 1, "{text}");
+        }
+    }
+}
+
+#[test]
+fn piped_status_prints_the_whole_archive_path() {
+    let mut status = answer();
+    let path = format!("/home/op/{}/archive", "long-directory/".repeat(10));
+    status.archive = Some(path.clone().into());
+    let text = render(
+        &status,
+        &[],
+        &View {
+            style: TextStyle::Plain,
+            width: usize::MAX,
+            now_ms: NOW,
+            zone: &jiff::tz::TimeZone::UTC,
+            whole_log: false,
+        },
+    );
+    assert_eq!(
+        text.lines().nth(1).unwrap(),
+        format!("           standalone · daemon 4479 · up 17h35m · idle · {path}")
     );
 }

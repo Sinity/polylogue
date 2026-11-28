@@ -27,7 +27,7 @@ struct Frame {
 enum Step {
     Node {
         session: String,
-        /// The node whose link reached it, with that link's kind and how.
+        /// The node whose link reached it, with that link's kind and reason.
         joined: Option<SessionLink>,
         references: Vec<SessionLink>,
         parents: Vec<SessionLink>,
@@ -91,7 +91,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 parent: String::new(),
                 child,
                 kind: String::new(),
-                how: None,
+                reason: None,
                 copies_prefix: false,
                 branch_point: None,
                 spawning_call: None,
@@ -295,7 +295,7 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
                 from: format!("session:{}", link.parent),
                 to: format!("session:{}", link.child),
                 relation: link.kind.clone(),
-                how: link.how.clone(),
+                reason: link.reason.clone(),
                 cross_link: cross,
                 branch_point: link.branch_point.as_ref().map(|at| format!("message:{at}")),
                 spawning_call: link.spawning_call.clone(),
@@ -372,6 +372,38 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
     Ok(out)
 }
 
+/// Each step of the walk from its place in `direction`, with its items and
+/// the walk's place after it, while `each` takes them. True when the walk reached its end.
+fn walk_items(
+    reader: &Reader<'_>,
+    seed: &SessionId,
+    walk: &mut Walk<'_, '_>,
+    direction: ReadDirection,
+    mut each: impl FnMut(&Step, Vec<ReadItem>, LinksPlace) -> Result<bool, Error>,
+) -> Result<bool, Error> {
+    loop {
+        let step = match direction {
+            ReadDirection::Before => walk.backward()?,
+            _ => walk.forward()?,
+        };
+        let Some(step) = step else {
+            return Ok(true);
+        };
+        if !each(&step, items(reader, seed, &step)?, walk.place())? {
+            return Ok(false);
+        }
+    }
+}
+
+/// The starting sessions of the links tree of `seed`.
+fn starts(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<String>, Error> {
+    Ok(reader
+        .lineage_starting_sessions(seed)?
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect())
+}
+
 /// The encoded bytes and estimated tokens of a step's items.
 fn encoded_size(items: &[ReadItem]) -> (usize, u64) {
     items
@@ -400,11 +432,7 @@ pub(super) fn page(
     let key = super::cursor_seal(reader)?;
     let graph_version = reader.lineage_version()?;
     let seed = &scope.session;
-    let starts = reader
-        .lineage_starting_sessions(seed)?
-        .into_iter()
-        .map(|id| id.to_string())
-        .collect();
+    let starts = starts(reader, seed)?;
     let (mut walk, direction) = match cursor.as_deref() {
         None => (Walk::start(reader, starts), ReadDirection::After),
         Some(text) => {
@@ -434,34 +462,31 @@ pub(super) fn page(
     // The steps of the page in walk order, and the places it starts and ends.
     let mut steps: Vec<Vec<ReadItem>> = Vec::new();
     let mut nodes = 0;
-    let mut ended = false;
     let page_start = walk.place();
     let mut reached = page_start.clone();
-    loop {
-        let step = match direction {
-            ReadDirection::Before => walk.backward()?,
-            _ => walk.forward()?,
-        };
-        let Some(step) = step else {
-            ended = true;
-            break;
-        };
-        let node = matches!(step, Step::Node { .. });
-        let step_items = items(reader, seed, &step)?;
-        let (size, cost) = encoded_size(&step_items);
-        if !steps.is_empty()
-            && (used + size > limits.bytes.get()
-                || tokens + cost > limits.tokens.get()
-                || (node && nodes >= limits.items.get()))
-        {
-            break;
-        }
-        used += size;
-        tokens += cost;
-        nodes += usize::from(node);
-        steps.push(step_items);
-        reached = walk.place();
-    }
+    let ended = walk_items(
+        reader,
+        seed,
+        &mut walk,
+        direction,
+        |step, step_items, place| {
+            let node = matches!(step, Step::Node { .. });
+            let (size, cost) = encoded_size(&step_items);
+            if !steps.is_empty()
+                && (used + size > limits.bytes.get()
+                    || tokens + cost > limits.tokens.get()
+                    || (node && nodes >= limits.items.get()))
+            {
+                return Ok(false);
+            }
+            used += size;
+            tokens += cost;
+            nodes += usize::from(node);
+            steps.push(step_items);
+            reached = place;
+            Ok(true)
+        },
+    )?;
     let (start, end, done) = match direction {
         ReadDirection::Before => {
             steps.reverse();
@@ -512,17 +537,76 @@ pub(super) fn page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        read_at: reader.change_position()?,
+        read_position: reader.change_position()?,
         freshness: services.freshness(reader)?,
+        incomplete: Vec::new(),
     };
     Ok(ReadPage {
         format,
         snapshot,
-        records: vec![],
         document: ReadDocument {
             header,
             items,
             footer,
         },
     })
+}
+
+/// The whole links tree as a stream, walked once from its start.
+pub(super) fn stream(
+    reader: &Reader<'_>,
+    _services: &impl ReadServices,
+    request: &ReadRequest,
+    _operation: &Arc<crate::operation::Context>,
+    scope: super::session::Scope,
+    snapshot: polylogue_model::bundle::ReadSnapshot,
+    output: &mut dyn std::io::Write,
+) -> Result<ReadFooter, Error> {
+    let seed = &scope.session;
+    let mut walk = Walk::start(reader, starts(reader, seed)?);
+    let mut header = super::session::header(reader, seed, &request.target, &request.options)?;
+    header.snapshot = Some(Box::new(snapshot));
+    header.options = Some(Box::new(request.options.clone()));
+    let token = reader.scope_token();
+    let check = || {
+        token.check()?;
+        reader.check()?;
+        Ok(())
+    };
+    let mut stream = super::output::Stream::begin(output, &check, &header)?;
+    // Each stored node's session record and its link records go out once,
+    // before the node's items.
+    let mut sent = HashSet::new();
+    walk_items(
+        reader,
+        seed,
+        &mut walk,
+        ReadDirection::After,
+        |step, items, _| {
+            if let Step::Node { session, .. } = step
+                && let Ok(id) = SessionId::parse(session)
+                && reader.session(&id)?.is_some()
+            {
+                let mut originals = vec![super::records::session_record(reader, &id)?];
+                originals.extend(super::records::link_records(reader, &id)?);
+                for record in originals {
+                    let reference = record.reference().unwrap_or_default().to_owned();
+                    if sent.insert(reference) {
+                        stream.record(&ReadRecord::Original {
+                            record: Box::new(record),
+                            parts: vec![],
+                        })?;
+                    }
+                }
+            }
+            for item in items {
+                stream.record(&ReadRecord::Presentation {
+                    parts: vec![ReadPart::Item(item)],
+                })?;
+            }
+            Ok(true)
+        },
+    )?;
+    check()?;
+    stream.finish(ReadFooter::default())
 }

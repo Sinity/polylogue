@@ -70,6 +70,7 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
         assert!(repeated.repeat);
         assert_eq!(repeated.saved.unwrap().id, format!("{id}-1"));
     }
+    d.wait_for(|status| status["caught_up"] == true);
     let current = crate::test_answers::ok(query(&d, "query:everything"));
     assert_eq!(current["unit"], "messages");
     assert_eq!(current["definitions"][0]["revision"], "second-1");
@@ -90,8 +91,9 @@ fn kept_rows_retry_after_membership_changes() {
     d.restart();
     let repeated = report(save("kept", Some("before"), "annotations").answer(&d.daemon));
     assert!(repeated.repeat);
-    assert_eq!(repeated.kept, first.kept);
-    let rows = crate::test_answers::empty(query(&d, &first.kept.result));
+    assert_eq!(repeated.saved_rows, first.saved_rows);
+    d.wait_for(|_| true);
+    let rows = crate::test_answers::empty(query(&d, &first.saved_rows.result));
     assert_eq!(rows["count"], 0);
     for request in [
         save("kept", Some("before"), "sessions"),
@@ -176,7 +178,7 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
         )
         .answer(&d.daemon),
     )
-    .kept;
+    .saved_rows;
     assert_eq!(
         crate::test_answers::ok(query(&d, &format!("{}.matches", kept.result)))["count"],
         1

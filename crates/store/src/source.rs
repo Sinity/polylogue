@@ -18,17 +18,21 @@ pub(crate) fn database_rows(link: &str) -> String {
 
 /// Committed imported row streams and the originals they represent. The
 /// caller can restrict the original by `container_input` on its existing index.
-pub(crate) fn database_links() -> String {
+pub(crate) fn database_links_from(observations: &str) -> String {
     let rows = database_rows("member");
     format!(
         "SELECT member.container_input FROM source_observation_container member
-         JOIN source_observation child ON child.id = member.observation_id
+         JOIN {observations} child ON child.id = member.observation_id
          WHERE {rows} AND child.class = 'imported' AND child.input <> member.container_input"
     )
 }
 
 pub(crate) fn database_original(input: &str) -> String {
-    let links = database_links();
+    database_original_from(input, "source_observation")
+}
+
+pub(crate) fn database_original_from(input: &str, observations: &str) -> String {
+    let links = database_links_from(observations);
     format!("EXISTS({links} AND member.container_input = {input})")
 }
 
@@ -184,30 +188,29 @@ impl Source {
         let source = Self::of(conn)?;
         let through = i64::try_from(through)
             .map_err(|_| StoreError::internal("source position exceeds SQLite's integer range"))?;
-        let mut query = conn.prepare(&source.sql("SELECT offset,length,commit_seq FROM @source.extent WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset"))?;
-        let mut rows = query.query(rusqlite::params![input, chain, through])?;
-        let mut covered = 0i64;
-        let mut committed = 0i64;
-        while let Some(row) = rows.next()? {
-            let offset: i64 = row.get(0)?;
-            let length: i64 = row.get(1)?;
-            let position: i64 = row.get(2)?;
+        // A chain only grows, its extents placed one after another and each
+        // committed no earlier than the one before: the commit through a byte
+        // is that of the extent holding the byte before it, found in one probe.
+        let last: Option<(i64, i64, i64)> = conn
+            .prepare_cached(&source.sql(
+                "SELECT offset,length,commit_seq FROM @source.extent
+                 WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset DESC LIMIT 1",
+            ))?
+            .query_row(rusqlite::params![input, chain, through], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()?;
+        if let Some((offset, length, position)) = last {
             if length < 0 {
                 return Err(StoreError::stored(1, "negative source extent length"));
             }
             if position < 0 {
                 return Err(StoreError::stored(2, "negative source commit position"));
             }
-            if offset != covered {
-                return Ok(None);
-            }
-            covered = offset
+            let end = offset
                 .checked_add(length)
                 .or_stored("source extent endpoint overflow")?;
-            committed = committed.max(position);
-            if covered >= through {
-                return Ok(Some(committed as u64));
-            }
+            return Ok((end >= through).then_some(position as u64));
         }
         if through == 0 {
             let position: Option<i64> = conn.scalar(

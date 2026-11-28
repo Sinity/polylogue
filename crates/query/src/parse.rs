@@ -38,6 +38,16 @@ pub fn with_catalog(
             }
             error.hint = Some("use similar: for semantic ranking".into());
         }
+        if error.kind == query_language::ErrorKind::UnknownField
+            && text
+                .get(error.position..error.position + 5)
+                .is_some_and(|field| field.eq_ignore_ascii_case("text:"))
+        {
+            error.hint = Some(
+                "use quoted words for full-text search, or text ~ \"fragment\" for a substring"
+                    .into(),
+            );
+        }
         QueryError::language(error, text)
     })?;
     read_lone_revision_as_annotations(&mut query);

@@ -128,7 +128,7 @@ impl Side {
     }
 }
 
-pub fn recognize_side(path: &Path, _head: &[u8]) -> bool {
+pub fn recognize_side(path: &Path, _head: &crate::document::Head<'_>) -> bool {
     Side::from_path(path).is_some()
 }
 
@@ -140,7 +140,8 @@ fn is_history_file(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "history.jsonl")
 }
 
-pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
+pub fn recognize_history(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     is_history_file(path) && crate::document::starts_object_lines(head)
 }
 
@@ -314,7 +315,7 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
         out.links.push(Link {
             kind: LinkKind::Resume,
             copies_prefix: false,
-            how: None,
+            reason: None,
             parent,
             child: id,
             branch_point: None,
@@ -344,7 +345,7 @@ fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
     out.links.push(Link {
         kind: LinkKind::Spawn,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: None,

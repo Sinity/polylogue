@@ -568,3 +568,125 @@ fn the_stored_backlog_stops_at_a_page_for_a_changed_live_session() {
     assert_eq!(pending_current_chains(&engine, &ids), 0);
     assert_eq!(home.texts("scan-0001"), ["first 1"]);
 }
+
+#[test]
+fn a_later_rebuild_page_does_not_include_an_append_after_the_cut() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    let n = crate::build::PLANNED_INPUTS + 1;
+    for i in 0..n {
+        let session = format!("cut-{i:04}");
+        home.append(
+            &format!("{session}.jsonl"),
+            &claude_user(&format!("initial-{i}"), &session, "before the cut"),
+        );
+    }
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let report = engine.run_pass().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+    }
+    polylogue_testkit::delete_index(&home.root);
+
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    engine.config.reads_sources = false;
+    let (session, path) = (0..n)
+        .map(|i| {
+            let session = format!("cut-{i:04}");
+            let path = home.file(&format!("{session}.jsonl"));
+            (session, path)
+        })
+        .max_by_key(|(_, path)| engine.location_id(path))
+        .unwrap();
+    let id = engine.location_id(&path);
+    let from = std::fs::metadata(&path).unwrap().len();
+    let append = claude_user("after-cut", &session, "arrived while rebuilding");
+    let mut raw = polylogue_store::fixture::writer::step(
+        &id,
+        "claude-code",
+        path.to_str().unwrap(),
+        Default::default(),
+        from,
+        0,
+    );
+    raw.parse.clear();
+    raw.length = from + append.len() as u64;
+    raw.observation = Some(engine.observation(&path, None));
+    let prepared = engine.archive.prepare_bytes(append.as_bytes()).unwrap();
+    let writer = engine.writer();
+    fault::arm("read.chains_behind_index", "All:[", Action::Hold, 0, 1);
+    let report = std::thread::scope(|scope| {
+        let building = scope.spawn(|| engine.build_index());
+        assert!(
+            fault::wait_held_within(Duration::from_secs(60)),
+            "the rebuild reached its first planning page"
+        );
+        let stored = writer.store_bytes(prepared, raw);
+        fault::release();
+        stored.unwrap();
+        building.join().unwrap()
+    });
+    fault::clear();
+    let (built, _) = report.unwrap();
+    assert!(built.errors.is_empty(), "{built:?}");
+    assert_eq!(home.texts(&session), ["before the cut"]);
+
+    let caught_up = engine.run_pass().unwrap();
+    assert!(caught_up.errors.is_empty(), "{caught_up:?}");
+    assert_eq!(
+        home.texts(&session),
+        ["before the cut", "arrived while rebuilding"]
+    );
+}
+
+#[test]
+fn first_replay_reads_recent_durable_bytes_before_backfill_and_resumes_after_reopen() {
+    let home = ClaudeHome::new();
+    {
+        let (engine, _lock) = crate::import::tests::engine(&home, 4096);
+        for (input, seen_at_ms) in [("aaa-old", 10), ("xxx-middle", 20), ("zzz-new", 30)] {
+            let path = home.file(&format!("{input}.jsonl"));
+            let mut raw = polylogue_store::fixture::writer::step(
+                input,
+                "claude-code",
+                path.to_str().unwrap(),
+                Default::default(),
+                0,
+                0,
+            );
+            let bytes = claude_user(&format!("u-{input}"), input, input);
+            raw.parse.clear();
+            raw.observation.as_mut().unwrap().seen_at_ms = seen_at_ms;
+            raw.length = bytes.len() as u64;
+            engine
+                .writer
+                .store_bytes(engine.archive.prepare_bytes(bytes.as_bytes()).unwrap(), raw)
+                .unwrap();
+            assert!(!path.exists(), "only the archive holds the source");
+        }
+    }
+
+    for session in ["zzz-new", "xxx-middle"] {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        engine.config.workers = 1;
+        engine.load().unwrap();
+        fault::arm("read.chains_behind_index", "aaa-old", Action::Fail, 0, 1);
+        let mut pass = Pass::default();
+        let result = engine.reparse_behind(RevisionChains::Newest, &mut pass);
+        fault::clear();
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("injected fault at read.chains_behind_index"),
+            "{error}"
+        );
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert_eq!(home.texts(session), [session]);
+        assert!(home.texts("aaa-old").is_empty());
+    }
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    for session in ["zzz-new", "xxx-middle", "aaa-old"] {
+        assert_eq!(home.texts(session), [session]);
+    }
+}

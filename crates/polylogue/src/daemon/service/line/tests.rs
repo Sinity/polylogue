@@ -1,3 +1,4 @@
+mod read_after_write;
 mod saved_queries;
 
 use crate::test_daemon::{self, Call, TestDaemon};
@@ -454,15 +455,14 @@ fn a_waiting_listing_on_an_absent_id_returns_when_the_session_appears() {
     let d = test_daemon::start("first prompt");
     std::thread::scope(|scope| {
         let waiting = scope.spawn(|| {
-            // The import takes longer than a test request's default deadline,
-            // which would otherwise cut the wait short.
-            let mut call = Call::new(
+            // Under the request's default deadline, which bounds a listing
+            // without a wait and must not cut this one short.
+            Call::new(
                 "rows",
                 json!({"selection": "sessions where id:claude-code:s2", "wait": "1m"}),
             )
-            .id("wait-for-s2");
-            call.deadline = command_surface::Deadline::None;
-            call.answer(&d.daemon)
+            .id("wait-for-s2")
+            .answer(&d.daemon)
         });
         // The listing is waiting, or about to: either way the import below
         // is the change it answers with.
@@ -487,7 +487,31 @@ fn a_waiting_listing_on_an_absent_id_returns_when_the_session_appears() {
             "{listing}"
         );
         assert_eq!(listing["reply"]["rows"][0]["id"], "claude-code:s2");
+        assert_eq!(listing["reply"]["count"], 1);
     });
+}
+
+/// docs/interfaces.md, `--wait D`: a listing with no rows on an up-to-date
+/// index waits its whole duration, past the listing's default deadline
+/// (2 s), and then answers empty with the same line as its next line. The
+/// elapsed time is only a lower bound: the wait ends no sooner.
+#[test]
+fn a_waiting_listing_with_no_rows_waits_its_whole_duration() {
+    let d = test_daemon::start("first prompt");
+    let wait = std::time::Duration::from_secs(3);
+    let started = std::time::Instant::now();
+    let answer = Call::new(
+        "rows",
+        json!({"selection": "sessions where tag:never", "wait": "3s"}),
+    )
+    .answer(&d.daemon);
+    assert!(started.elapsed() >= wait, "{:?}", started.elapsed());
+    assert_eq!(answer.exit_code(), 1, "{answer:?}");
+    assert_eq!(
+        answer.envelope.next[0].request.arguments,
+        json!({"selection": "sessions where tag:never", "wait": "3s"})
+    );
+    crate::test_answers::empty(answer);
 }
 
 /// A reference selection that names no session is `not_found`; only a
@@ -580,7 +604,10 @@ fn socket_events(d: &TestDaemon, id: &str, arguments: Value) -> Vec<(String, Val
             Ok(false)
         },
     )
-    .unwrap()
+    .unwrap_or_else(|error| {
+        let frames: Vec<_> = events.iter().map(|(name, _)| name.as_str()).collect();
+        panic!("socket line {id:?} after {frames:?}: {error}")
+    })
     .expect("the line answers");
     events.push(("answer".into(), serde_json::to_value(answer).unwrap()));
     events
@@ -975,7 +1002,7 @@ fn listing_value(d: &TestDaemon, selection: &str) -> Value {
 
 fn kept_result(d: &TestDaemon, report: &Value) -> Value {
     assert_eq!(report["outcome"]["status"], "done", "{report}");
-    let result = report["outcome"]["reply"]["reply"]["kept"]["result"]
+    let result = report["outcome"]["reply"]["reply"]["saved_rows"]["result"]
         .as_str()
         .unwrap();
     listing_value(d, result)
@@ -1082,7 +1109,7 @@ fn saving_a_saved_kept_relation_retains_nested_output_schemas() {
         "kept-source",
         json!({"selection":"session:claude-code:s1","steps":[{"verb":"save"}]}),
     );
-    let source = original[0]["outcome"]["reply"]["reply"]["kept"]["result"]
+    let source = original[0]["outcome"]["reply"]["reply"]["saved_rows"]["result"]
         .as_str()
         .unwrap();
     let expected = kept_result(&d, &original[0]);
@@ -1248,11 +1275,11 @@ fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_chang
         second[0]["outcome"].get("undo").is_none(),
         "a keep-only Save has no undo"
     );
-    assert_eq!(second_parts["kept"]["result"], "result:second-save-1");
+    assert_eq!(second_parts["saved_rows"]["result"], "result:second-save-1");
     steps(&d, "changed-definition", save("messages"));
     for (id, original) in [("first-save", &first[0]), ("second-save", &second[0])] {
         let retry = steps(&d, id, save("sessions"));
-        for field in ["saved", "watch", "kept"] {
+        for field in ["saved", "watch", "saved_rows"] {
             assert_eq!(part(&retry[0])[field], part(original)[field]);
         }
         assert_eq!(part(&retry[0])["repeat"], true);
@@ -1317,7 +1344,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
         panic!("one atomic Save request")
     };
     assert_eq!(
-        save.outcomes.as_ref().unwrap().kept.result,
+        save.outcomes.as_ref().unwrap().saved_rows.result,
         "result:owned-save-1"
     );
     for child in ["owned-save-1.1", "owned-save-1.2"] {
@@ -1346,8 +1373,8 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
         report["saved"].is_null() && report["watch"].is_null(),
         "{report}"
     );
-    assert_eq!(report["kept"]["rows"], 1);
-    assert_eq!(report["kept"]["result"], "result:only-rows-1");
+    assert_eq!(report["saved_rows"]["rows"], 1);
+    assert_eq!(report["saved_rows"]["result"], "result:only-rows-1");
     assert!(
         kept[0]["outcome"].get("undo").is_none(),
         "an unnamed Save has no undo"
@@ -1416,7 +1443,10 @@ fn save_keeps_the_accepted_membership_after_an_earlier_step_changes_the_predicat
     let kept = kept_result(&d, &reports[1]);
     assert_eq!(kept["count"], 1, "{kept}");
     assert_eq!(kept["rows"][0]["id"], "claude-code:s1", "{kept}");
-    assert_eq!(reports[1]["outcome"]["reply"]["reply"]["kept"]["rows"], 1);
+    assert_eq!(
+        reports[1]["outcome"]["reply"]["reply"]["saved_rows"]["rows"],
+        1
+    );
 }
 
 #[test]

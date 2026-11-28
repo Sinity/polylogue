@@ -2,7 +2,7 @@
 use crate::{ColKind, ast::Unit};
 use polylogue_model::{
     AlternateKind, BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender,
-    DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role,
+    DocumentAuthorship, DocumentPurpose, LINK_KIND_NAMES, LINK_REASON_NAMES, PromptKind, Role,
     SessionKind, WrittenBy,
     user::{ChatStatus, ImportJobStatus},
 };
@@ -68,6 +68,8 @@ pub struct Field {
     pub kind: Kind,
     /// The closed set of values, when there is one.
     pub values: Option<&'static [&'static str]>,
+    /// The closed values are the daemon's declared origins.
+    pub origin_values: bool,
     /// The stored word representing an unknown value, when present.
     pub stored_unknown: Option<&'static str>,
     pub help: &'static str,
@@ -81,6 +83,11 @@ pub struct Field {
 }
 
 impl Field {
+    const fn origins(mut self) -> Self {
+        self.origin_values = true;
+        self
+    }
+
     const fn reference_argument(mut self) -> Self {
         self.reference_argument = true;
         self
@@ -139,6 +146,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         name,
         kind,
         values: None,
+        origin_values: false,
         stored_unknown: None,
         help,
         value_kind: None,
@@ -515,7 +523,7 @@ fields! {
         SOURCE_TIME_PRECISION_HELP,
     ),
     DocumentsId = f(Documents, "id", Prefix, "document ID or a unique prefix").reference(Documents),
-    DocumentsOrigin = f(Documents, "origin", Match, "the provider export family"),
+    DocumentsOrigin = f(Documents, "origin", Match, "the provider export family").origins(),
     DocumentsPurpose = v(
         Documents,
         "purpose",
@@ -553,7 +561,7 @@ fields! {
         "the number of distinct versions its sources hold",
     ),
     SessionsId = f(Sessions, "id", Prefix, "session ID or a unique prefix").reference(Sessions),
-    SessionsOrigin = f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …"),
+    SessionsOrigin = f(Sessions, "origin", Match, "the origins declared by the daemon").origins(),
     SessionsPhysical = f(
         Sessions,
         "physical",
@@ -1075,7 +1083,7 @@ fields! {
         "origin",
         Match,
         "conversation origin, or source format when unbound",
-    ),
+    ).origins(),
     EventsData = f(Events, "data", Substring, "the observation payload").json(),
     EventsSourceChain = f(Events, "source_chain", Number, "the source revision chain"),
     EventsSourceStart = f(Events, "source_start", Number, "record byte start"),
@@ -1106,7 +1114,7 @@ fields! {
         LINK_KIND_NAMES,
         "the recorded session relationship",
     ),
-    SessionLinksHow = v(SessionLinks, "how", LINK_HOW_NAMES, "why the sessions reference each other"),
+    SessionLinksReason = v(SessionLinks, "reason", LINK_REASON_NAMES, "why the sessions reference each other"),
     SessionLinksCopiesPrefix = f(SessionLinks, "copies_prefix", Bool, "the child holds a copy of the parent's prefix"),
     SessionLinksParent = sp(SessionLinks, "parent", "the parent session").reference(Sessions),
     SessionLinksChild = sp(SessionLinks, "child", "the child session").reference(Sessions),
@@ -1331,7 +1339,7 @@ fields! {
     FeedAfter = sp(
         Feed,
         "after",
-        "changes after a feed position `GENERATION:INDEX:ARCHIVE`: the `view` of an earlier answer",
+        "changes after a feed position `INDEX_INSTANCE:INDEX:ARCHIVE`: the `view` of an earlier answer",
     ),
     FeedSessions = sp(
         Feed,

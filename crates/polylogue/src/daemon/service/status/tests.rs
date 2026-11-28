@@ -93,7 +93,7 @@ fn status_says_what_it_answers_from() {
     );
 
     d.status_snapshot.clear(d);
-    let installed = answer(d, None, false);
+    let installed = answer(d, None, false, false);
     assert_eq!(installed.exit_code(), 5);
     let command_surface::Outcome::Degraded { value, missing } = &installed.outcome else {
         panic!("{installed:?}");
@@ -112,7 +112,7 @@ fn status_says_what_it_answers_from() {
 
     let before = polylogue_model::Timestamp::from(d.clock.now());
     d.status_snapshot.refresh(d, &d.reads.reader().unwrap(), 0);
-    let read = answer(d, None, false);
+    let read = answer(d, None, false, false);
     let value = read.value().unwrap();
     let AnswersFrom::Snapshot { read_at } = value.answers_from else {
         panic!("{:?}", value.answers_from);
@@ -122,10 +122,115 @@ fn status_says_what_it_answers_from() {
     assert!(value.notices.is_some() && value.running.is_some());
 }
 
+fn status_is_waiting(limit: &polylogue_store::read::limit::ReadLimit) {
+    use std::time::{Duration, Instant};
+    let until = Instant::now() + Duration::from_secs(10);
+    while limit.stage() != Some("status wait") {
+        assert!(Instant::now() < until, "status did not reach its wait");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_plain_status_wait_crosses_a_generation_change_without_old_figures() {
+    use crate::test_daemon::Call;
+    use polylogue_store::{cancellation::CancelOnDrop, read::limit::ReadLimit};
+    use serde_json::json;
+
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut old = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    old.store.as_mut().unwrap().messages = 42;
+    let old = std::sync::Arc::new(old);
+    d.status_snapshot.clear(d);
+
+    let plain = ReadLimit::without_deadline(Default::default());
+    let deep = ReadLimit::without_deadline(Default::default());
+    let mut plain_wait = Call::new("status", json!({"wait":"1m"})).within(&plain);
+    plain_wait.deadline = command_surface::Deadline::None;
+    let mut deep_wait = Call::new("status", json!({"wait":"1m", "vectors":true})).within(&deep);
+    deep_wait.deadline = command_surface::Deadline::None;
+
+    std::thread::scope(|scope| {
+        let _stop_plain = CancelOnDrop::new(plain.cancellation.clone());
+        let _stop_deep = CancelOnDrop::new(deep.cancellation.clone());
+        let waiting = scope.spawn(|| plain_wait.answer(d));
+        let reading_vectors = scope.spawn(|| deep_wait.answer(d));
+        status_is_waiting(&plain);
+        status_is_waiting(&deep);
+
+        d.archive.advance_generation_for_test().unwrap();
+        assert!(matches!(
+            old.scope.check(),
+            Err(polylogue_store::StoreError::ScopeChanged)
+        ));
+        // The previous snapshot can still be in memory when the index changes.
+        *d.status_snapshot.0.locked() = Latest::Read(old);
+        d.status.changed();
+
+        let reply = Call::new("status", json!({})).answer(d);
+        let (value, _) = crate::test_answers::degraded(reply);
+        assert_eq!(
+            value["answers_from"],
+            json!({"kind":"not_read_yet", "since":"install"})
+        );
+        assert!(value["store"].is_null(), "{value}");
+        assert_eq!(value["caught_up"], false);
+
+        let reader = d.reads.reader().unwrap();
+        let commits = d.writes.as_ref().unwrap().commits_made();
+        d.status_snapshot.refresh(d, &reader, commits);
+        let (value, vector_reply) = (
+            crate::test_answers::ok(waiting.join().unwrap()),
+            reading_vectors.join().unwrap(),
+        );
+        assert_eq!(value["answers_from"]["kind"], "snapshot");
+        assert_eq!(value["store"]["messages"], 1, "{value}");
+        assert_eq!(value["caught_up"], true);
+        assert_eq!(
+            crate::test_answers::refusal(vector_reply).code.as_deref(),
+            Some("scope_changed")
+        );
+    });
+}
+
+#[test]
+fn cancelling_a_sleeping_status_wait_wakes_it() {
+    use crate::test_daemon::Call;
+    use polylogue_store::{cancellation::CancelOnDrop, read::limit::ReadLimit};
+    use serde_json::json;
+    use std::time::Duration;
+
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let limit = ReadLimit::without_deadline(Default::default());
+    let request =
+        Call::new("status", json!({"wait":"1m", "after_changes":u64::MAX})).within(&limit);
+    std::thread::scope(|scope| {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let _stop = CancelOnDrop::new(limit.cancellation.clone());
+        scope.spawn(move || {
+            let _ = send.send(request.answer(d));
+        });
+        status_is_waiting(&limit);
+        limit.cancellation.cancel();
+        let reply = receive.recv_timeout(Duration::from_secs(4));
+        if reply.is_err() {
+            d.status.changed();
+        }
+        assert_eq!(
+            crate::test_answers::refusal(reply.expect("cancellation did not wake status"))
+                .code
+                .as_deref(),
+            Some("cancelled")
+        );
+    });
+}
+
 #[test]
 fn verification_retains_runtime_pending_and_named_problem_outcomes() {
     let daemon = crate::test_daemon::start("synthetic source");
-    let status = answer(&daemon.daemon, None, false);
+    let status = answer(&daemon.daemon, None, false, false);
     let mut status = status.map(|mut status| {
         status.pending_writes.delivery_outcomes = 2;
         status.pending_writes.last_error = Some("synthetic retry pending".into());
@@ -257,10 +362,14 @@ fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpu
             continue;
         };
         let messages = value["store"]["messages"].as_u64();
-        if value["busy"] == true && messages.is_some_and(|n| n > 1 && n < total) {
+        // Sessions are counted with each commit; the message total follows
+        // the session summaries, which may fold the corpus in one run.
+        let sessions = value["store"]["sessions"].as_u64();
+        if value["caught_up"] == false && sessions.is_some_and(|n| n > 1 && n < 1 + SESSIONS as u64)
+        {
             during_ingest += 1;
         }
-        if messages == Some(total) && value["busy"] == false {
+        if messages == Some(total) && value["caught_up"] == true {
             break;
         }
         if during_ingest != 1 || held_replies > 0 {
@@ -466,7 +575,7 @@ fn lasting_worker_failure_is_a_status_problem() {
         };
         let expected = format!("status failure test: {state}: synthetic worker failure");
         for reply in [
-            answer(&daemon.daemon, None, false),
+            answer(&daemon.daemon, None, false, false),
             unread(
                 &daemon.daemon,
                 crate::protocol::status::AnswersFrom::NotReadYet {
@@ -499,4 +608,200 @@ fn lasting_worker_failure_is_a_status_problem() {
         let _ = wake.try_send(());
         assert!(thread.join().unwrap());
     }
+}
+
+#[test]
+fn status_summarizes_twenty_roots_and_details_are_explicit() {
+    use polylogue_model::capture::{Accessibility, Classification, Coverage, Entry, RootCoverage};
+    let morrow = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let mut store = morrow
+        .reads()
+        .reader()
+        .unwrap()
+        .status(&polylogue_engine::reading_contracts())
+        .unwrap();
+    store.unused = vec![("synthetic:field".into(), 2)];
+    store.unused_fields = 1;
+    store.capture_coverage = vec![Coverage {
+        version: 1,
+        machine: "synthetic-host".into(),
+        observed_at: polylogue_model::Timestamp::from_unix_ms(1_700_000_000_000).unwrap(),
+        roots: (0..20)
+            .map(|n| RootCoverage {
+                path_bytes: format!("/home/op/root-{n}").into_bytes(),
+                status: Accessibility::Accessible,
+                entries: (0..100)
+                    .map(|p| Entry {
+                        class: Classification::Collected,
+                        pattern: format!("pattern-{p}/**"),
+                        reason: None,
+                        files: 1,
+                        bytes: 10,
+                        newest_mtime_ms: None,
+                    })
+                    .collect(),
+                unavailable_paths: Vec::new(),
+            })
+            .collect(),
+    }];
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut snapshot = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    snapshot.store = Ok(store);
+    *d.status_snapshot.0.locked() = Latest::Read(std::sync::Arc::new(snapshot));
+    let request = |details| {
+        crate::test_daemon::Call::new("status", serde_json::json!({"details":details})).answer(d)
+    };
+    let mcp = crate::mcp::tests::call(&d.archive, "status", serde_json::Map::new()).unwrap();
+    assert!(
+        mcp.chars().count() < 8000,
+        "{} MCP text characters",
+        mcp.chars().count()
+    );
+    let default = request(false);
+    let text = serde_json::to_string(&default).unwrap();
+    assert!(
+        text.chars().count() < 8000,
+        "{} characters",
+        text.chars().count()
+    );
+    let value = default.value().unwrap();
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][19]["path"],
+        "/home/op/root-19"
+    );
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][0]["collected"],
+        100
+    );
+    let details = request(true);
+    let value = details.value().unwrap();
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][19]["entries"][99]["pattern"],
+        "pattern-99/**"
+    );
+    assert_eq!(
+        value["store"]["unused"],
+        serde_json::json!([["synthetic:field", 2]])
+    );
+}
+
+#[test]
+fn status_names_update_errors_and_failed_snapshot_parts() {
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut snapshot = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    snapshot.notices = Err("synthetic notices read failed".into());
+    snapshot.store.as_mut().unwrap().capture_coverage =
+        [d.config.identity.machine.clone(), "other-machine".into()]
+            .into_iter()
+            .map(|machine| polylogue_model::capture::Coverage {
+                version: 1,
+                machine,
+                observed_at: polylogue_model::Timestamp::from(d.clock.now()),
+                roots: vec![polylogue_model::capture::RootCoverage {
+                    path_bytes: b"/home/op/root".to_vec(),
+                    status: polylogue_model::capture::Accessibility::Unavailable,
+                    entries: Vec::new(),
+                    unavailable_paths: Vec::new(),
+                }],
+            })
+            .collect();
+    *d.status_snapshot.0.locked() = Latest::Read(std::sync::Arc::new(snapshot));
+    d.status.update(|s| {
+        s.last_pass.errors = vec![polylogue_model::Failure::stated(
+            "source root /home/op/root",
+            polylogue_model::Cause::Environment,
+            polylogue_model::Code::Io,
+            "permission denied",
+        )]
+    });
+    let answer = answer(d, None, false, false);
+    assert_eq!(answer.exit_code(), 5);
+    let command_surface::Outcome::Degraded { value, missing } = answer.outcome else {
+        panic!("expected degraded status");
+    };
+    assert_eq!(
+        missing,
+        [
+            "source root /home/op/root: permission denied",
+            "notices: synthetic notices read failed"
+        ]
+    );
+    let roots = value.store.unwrap().capture_coverage;
+    assert_eq!(
+        roots[0].roots[0].error.as_deref(),
+        Some("source root /home/op/root: permission denied")
+    );
+    assert_eq!(roots[1].roots[0].error, None);
+    assert!(
+        matches!(value.notices, Some(crate::protocol::status::Notices::Unavailable { error }) if error == "synthetic notices read failed")
+    );
+}
+
+#[test]
+fn status_keeps_a_root_error_until_a_scan_finds_the_root_readable() {
+    use std::os::unix::fs::PermissionsExt;
+    let daemon = crate::test_daemon::start_with_sources_and_workers(
+        "synthetic source",
+        &|home| {
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+        },
+        0,
+        2,
+    );
+    let d = &daemon.daemon;
+    let root = daemon.home.join(".claude");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    daemon.wait_for(|status| {
+        status["last_pass"]["unreadable_roots"]
+            .as_array()
+            .is_some_and(|paths| paths.iter().any(|path| path.as_str() == root.to_str()))
+    });
+    for n in 0..4 {
+        let result = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(d);
+        assert_eq!(result.exit_code(), 5, "{result:?}");
+        let words = crate::protocol::notes(&result)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            words.contains(&root.display().to_string())
+                && words.to_lowercase().contains("permission denied"),
+            "{words}"
+        );
+        let value = result.value().unwrap();
+        let roots = value["store"]["capture_coverage"][0]["roots"]
+            .as_array()
+            .unwrap();
+        let observed = roots
+            .iter()
+            .find(|item| item["path"].as_str() == root.to_str())
+            .unwrap();
+        assert!(
+            observed["error"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("permission denied")
+        );
+        let before = value["passes"].as_u64().unwrap();
+        std::fs::write(
+            daemon.home.join(format!(".codex/unrecognized-{n}")),
+            "synthetic file",
+        )
+        .unwrap();
+        daemon.wait_for(|status| {
+            status["passes"]
+                .as_u64()
+                .is_some_and(|passes| passes > before)
+        });
+    }
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    daemon.wait_for(|status| {
+        status["last_pass"]["errors"] == serde_json::json!([])
+            && status["last_pass"]["unreadable_roots"] == serde_json::json!([])
+    });
+    let result = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(d);
+    assert_eq!(result.exit_code(), 0, "{result:?}");
 }

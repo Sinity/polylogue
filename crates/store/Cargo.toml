@@ -37,9 +37,16 @@ polylogue-query = { workspace = true, features = ["fixture"] }
 authored-generator.workspace = true
 proptest.workspace = true
 shared-signals.workspace = true
+# The integration target (tests/store/) reads archives the engine built.
+polylogue-sources.workspace = true
+polylogue-testkit.workspace = true
 
 [[example]]
 name = "archive_format_7"
+test = true
+
+[[example]]
+name = "reuse_archive_index"
 test = true
 
 [lints]

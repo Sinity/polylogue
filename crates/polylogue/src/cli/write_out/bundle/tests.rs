@@ -1,14 +1,21 @@
 use super::*;
 use polylogue_model::{Author, ChangePosition, Timestamp};
-fn begin() -> ReadBegin {
-    ReadBegin {
-        format: polylogue_model::read::Format::Json,
-        snapshot: ReadSnapshot {
+fn begin() -> ReadHeader {
+    ReadHeader {
+        target: "query:synthetic".into(),
+        view: View::Transcript,
+        title: ValueState::known("Synthetic bundle".into()),
+        kind: HeaderKind::Query {
+            query: "sessions".into(),
+        },
+        figures: vec![],
+        zone: None,
+        snapshot: Some(Box::new(ReadSnapshot {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
             ran_at: Timestamp::from_unix_ms(1).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
             },
@@ -20,18 +27,8 @@ fn begin() -> ReadBegin {
             author: Author::Operator,
             notes: vec![],
             incomplete: vec![],
-        },
-        header: ReadHeader {
-            target: "query:synthetic".into(),
-            view: View::Transcript,
-            title: ValueState::known("Synthetic bundle".into()),
-            kind: HeaderKind::Query {
-                query: "sessions".into(),
-            },
-            figures: vec![],
-            zone: None,
-        },
-        options: ReadOptions::default(),
+        })),
+        options: Some(Box::new(ReadOptions::default())),
     }
 }
 fn session(native_id: &str) -> ReadRecord {
@@ -54,13 +51,13 @@ fn session(native_id: &str) -> ReadRecord {
         })],
     }
 }
-fn complete(sessions: u64) -> ReadComplete {
-    ReadComplete {
-        footer: ReadFooter::default(),
+fn complete(sessions: u64) -> ReadFooter {
+    ReadFooter {
         counts: Counts {
             sessions,
             ..Default::default()
         },
+        ..Default::default()
     }
 }
 fn manifest(path: &Path) -> Manifest {
@@ -228,12 +225,12 @@ fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
     })
     .unwrap();
     assert!(
-        sink.finish(ReadComplete {
-            footer: ReadFooter::default(),
+        sink.finish(ReadFooter {
             counts: Counts {
                 blobs: 1,
                 ..Default::default()
-            }
+            },
+            ..Default::default()
         })
         .is_err()
     );
@@ -305,13 +302,13 @@ fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
         })
         .unwrap();
     }
-    sink.finish(ReadComplete {
-        footer: ReadFooter::default(),
+    sink.finish(ReadFooter {
         counts: Counts {
             sessions: 1,
             messages: 4,
             ..Default::default()
         },
+        ..Default::default()
     })
     .unwrap();
     let records: Vec<Record> =
@@ -342,12 +339,12 @@ fn blob_chunks_are_pinned_and_unclaimed_bytes_are_refused() {
         parts: vec![],
     })
     .unwrap();
-    sink.finish(ReadComplete {
-        footer: ReadFooter::default(),
+    sink.finish(ReadFooter {
         counts: Counts {
             blobs: 1,
             ..Default::default()
         },
+        ..Default::default()
     })
     .unwrap();
     assert_eq!(

@@ -9,7 +9,6 @@ pub use metadata::Mode;
 
 use crate::ConnExt as _;
 use crate::OptionExt as _;
-use crate::read::scope::InitialInvalidation;
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, Transaction};
 use std::fs::{self, File, OpenOptions};
@@ -153,6 +152,13 @@ pub struct Archive {
 #[derive(Debug)]
 pub struct ArchiveLock {
     _file: File,
+    index_build: std::sync::Arc<index_build::State>,
+}
+
+impl Drop for ArchiveLock {
+    fn drop(&mut self) {
+        drop(self.index_build.take_prepared_index());
+    }
 }
 
 impl Archive {
@@ -187,18 +193,6 @@ impl Archive {
         crate::read::scope::root_key(root)
     }
 
-    /// Register while holding the writer lock of a live shared archive. Startup
-    /// uses the open-with-invalidator constructors to take that lock first.
-    /// The callback runs immediately and at each reset, under the publication fence;
-    /// it must invalidate its pointer on disk without acquiring archive readers
-    /// or re-entering the scope fence.
-    pub fn register_scope_invalidator(
-        root: &Path,
-        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
-    ) -> Result<crate::read::scope::ScopeInvalidation> {
-        crate::read::scope::state(root).register(invalidate, InitialInvalidation::Invalidate)
-    }
-
     /// A transition guard without SQL. Currentness still comes from a reader's
     /// confirmed checkpoint; this token alone cannot authorize cache activation.
     pub fn scope_token(&self) -> Result<crate::ReadScopeToken> {
@@ -211,9 +205,7 @@ impl Archive {
     pub fn advance_generation_for_test(&self) -> Result<()> {
         let mut index = open_write(&self.index_db(), cache::SETUP)?;
         index.pragma_update(None, "synchronous", 2)?;
-        let mut reset = self.read_scope.begin_reset()?;
-        reset.invalidate()?;
-        drop(reset);
+        self.read_scope.begin_reset()?;
         let tx = index.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         generation::rotate(&tx)?;
         tx.commit()?;
@@ -283,50 +275,27 @@ impl Archive {
     /// at their current versions, or opens an existing one. Takes the writer
     /// lock; a second daemon on the same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
-        let (archive, lock, ()) = Self::open_configured(Self::at(root), |_| Ok(()))?;
-        Ok((archive, lock))
+        Self::open_configured(Self::at(root), false)
     }
 
-    /// Take the writer lock before registering cache invalidation and opening
-    /// the standalone archive. Keep the returned registration with the lock.
-    pub fn open_or_create_with_invalidator(
-        root: &Path,
-        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
-    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
-        Self::open_configured(Self::at(root), |archive| {
-            archive
-                .read_scope
-                .register(invalidate, InitialInvalidation::Keep)
-        })
+    /// Opens the archive for the daemon. Without a usable index, the
+    /// installed index starts empty and catches up through ordinary writes.
+    pub fn open_for_serving(root: &Path) -> Result<(Self, ArchiveLock)> {
+        Self::open_configured(Self::at(root), true)
     }
 
-    fn open_configured<T>(
-        archive: Self,
-        setup: impl FnOnce(&Self) -> Result<T>,
-    ) -> Result<(Self, ArchiveLock, T)> {
+    fn open_configured(archive: Self, install_for_catch_up: bool) -> Result<(Self, ArchiveLock)> {
         metadata::check(&archive)?;
-        let lock = Self::lock(&archive.root)?;
+        let lock = archive.lock()?;
         metadata::check(&archive)?;
         metadata::create(&archive)?;
-        let setup = setup(&archive)?;
-        let opened = (|| {
-            fs::create_dir_all(archive.blobs_dir())?;
-            let source = open_write(&archive.archive_db(), cache::SETUP)?;
-            let schema_lock = crate::write_lock::hold(&source)?;
-            schema::ensure_archive(&source)?;
-            drop(schema_lock);
-            archive.finish_open()
-        })();
-        if let Err(error) = opened {
-            // A failed open cannot leave the previous cache authorized. Keep
-            // the writer lock and registration until its pointer is revoked.
-            let mut reset = archive.read_scope.begin_reset()?;
-            reset.invalidate()?;
-            drop(reset);
-            archive.read_scope.finish_reset();
-            return Err(error);
-        }
-        Ok((archive, lock, setup))
+        fs::create_dir_all(archive.blobs_dir())?;
+        let source = open_write(&archive.archive_db(), cache::SETUP)?;
+        let schema_lock = crate::write_lock::hold(&source)?;
+        schema::ensure_archive(&source)?;
+        drop(schema_lock);
+        archive.finish_open(install_for_catch_up)?;
+        Ok((archive, lock))
     }
 
     /// The archive's recorded mode, read without opening or creating a database.
@@ -337,10 +306,7 @@ impl Archive {
     /// Broken deployment settings pause capture and writes while the recorded
     /// archive remains readable. They never choose another storage mode: an
     /// archive recorded as primary is refused, as every open refuses it.
-    pub fn open_blocked_with_invalidator(
-        root: &Path,
-        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
-    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+    pub fn open_blocked(root: &Path) -> Result<(Self, ArchiveLock)> {
         let archive = match Self::recorded_mode(root)? {
             Some(_) => Self::at(root),
             None => {
@@ -350,14 +316,11 @@ impl Archive {
                 .into());
             }
         };
-        Self::open_configured(archive, |archive| {
-            archive
-                .read_scope
-                .register(invalidate, InitialInvalidation::Invalidate)
-        })
+        Self::open_configured(archive, false)
     }
 
-    fn lock(root: &Path) -> Result<ArchiveLock> {
+    fn lock(&self) -> Result<ArchiveLock> {
+        let root = &self.root;
         let fresh = !root.exists();
         fs::create_dir_all(root)?;
         if fresh {
@@ -384,7 +347,10 @@ impl Archive {
         // The holder's pid, so a refused second start can name it.
         file.set_len(0)?;
         file.write_all(format!("{}\n", std::process::id()).as_bytes())?;
-        Ok(ArchiveLock { _file: file })
+        Ok(ArchiveLock {
+            _file: file,
+            index_build: self.index_build.clone(),
+        })
     }
 
     /// Private prepared output, cleared after the archive lock is taken on open.
@@ -392,29 +358,23 @@ impl Archive {
         self.root.join("staging")
     }
 
-    fn finish_open(&self) -> Result<()> {
+    fn finish_open(&self, install_for_catch_up: bool) -> Result<()> {
         fs::create_dir_all(self.staging_dir())?;
         clear_directory(&self.staging_dir())?;
         let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        self.prepare_index()?;
+        index_build::prepare(self, install_for_catch_up)?;
         crate::search::files::sweep(&self.root)
     }
 
-    /// The caller holds the archive lock. An index is rebuilt in a private
-    /// file and installed when its rebuild ends ([`index_build`]).
-    pub(crate) fn prepare_index(&self) -> Result<()> {
-        index_build::prepare(self)
-    }
     /// Creates the index schema in an empty file or opens the one there.
     /// `building`: the file is a build, which leaves out the
     /// indexes it builds when it ends.
     pub(crate) fn ensure_index(&self, index: &Connection, building: bool) -> Result<()> {
         let fresh = schema::version(index)? == 0;
         if fresh {
-            let mut reset = self.read_scope.begin_reset()?;
-            reset.invalidate()?;
+            self.read_scope.begin_reset()?;
         }
         let archive = open_read(&self.archive_db())?;
         let _write = crate::write_lock::hold(&archive)?;

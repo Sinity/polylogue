@@ -25,13 +25,17 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         assert_eq!(next.request.operation, "rows");
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert_eq!(body.matches("role=\"alert\"").count(), 0, "{body}");
+        assert_eq!(html_elements(&body, "<div class=\"archived-text\">", "</div>"),
+            ["<div class=\"archived-text\"><p>look at &lt;script&gt;alert(1)&lt;/script&gt; &amp; the parser</p>\n</div>"]);
         let path =
             polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
                 .unwrap();
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(!body.contains("history.back"));
+        let api = follow_read(&r, next).await;
+        assert_reader_items(&body, &api);
+        assert_reader_navigation(&body, &api);
     });
 }
 
@@ -133,7 +137,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let position = frames.last().unwrap()["position"].as_str().unwrap();
         let conn = rusqlite::Connection::open(r.w.daemon.archive.index_db()).unwrap();
         conn.execute(
-            "UPDATE meta SET value=?1 WHERE key='generation'",
+            "UPDATE meta SET value=?1 WHERE key='index_instance'",
             [uuid::Uuid::now_v7().to_string()],
         )
         .unwrap();
@@ -147,7 +151,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let frames = feed_frames(&body);
-        assert_eq!(frames[0]["generation_changed"], true);
+        assert_eq!(frames[0]["index_instance_changed"], true);
         assert_eq!(frames[0]["replacement"], true);
     });
 }
@@ -180,15 +184,22 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
     for n in 0..125 {
         let child = format!("related-{n}");
         let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
-            &format!("u-{child}"),
+            &format!("copy-{child}"),
             &child,
-            "synthetic related prompt",
+            "look at <script>alert(1)</script> & the parser",
         ))
         .unwrap();
         record["forkedFrom"] = serde_json::json!({"sessionId":"s1","messageUuid":"u1"});
         std::fs::write(
             r.w.home.join(format!(".claude/projects/-p/{child}.jsonl")),
-            format!("{record}\n"),
+            format!(
+                "{record}\n{}",
+                polylogue_testkit::claude_user(
+                    &format!("u-{child}"),
+                    &child,
+                    "synthetic related prompt"
+                )
+            ),
         )
         .unwrap();
     }
@@ -207,13 +218,13 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
                     from,
                     to,
                     relation,
-                    how,
+                    reason,
                     ..
                 } = card.as_ref()
             {
                 assert_eq!(from, "session:claude-code:s1");
                 assert_eq!(relation, "fork");
-                assert_eq!(how.as_deref(), None);
+                assert_eq!(reason.as_deref(), None);
                 assert!(seen.insert(to.clone()), "relationship repeated");
             }
         }
@@ -317,15 +328,18 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
 fn inheritance_is_an_explicit_shared_read_option() {
     let r = reader();
     let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
-        "child-prompt",
+        "child-copy",
         "child",
-        "synthetic child only",
+        "look at <script>alert(1)</script> & the parser",
     ))
     .unwrap();
     record["forkedFrom"] = serde_json::json!({"sessionId":"s1","messageUuid":"u1"});
     std::fs::write(
         r.w.home.join(".claude/projects/-p/child.jsonl"),
-        format!("{record}\n"),
+        format!(
+            "{record}\n{}",
+            polylogue_testkit::claude_user("child-prompt", "child", "synthetic child only")
+        ),
     )
     .unwrap();
     r.w.wait_for(|data| data["store"]["messages"] == 2);
@@ -374,6 +388,13 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
             .as_ref()
             .expect("long body continues");
         let second = follow_read(&r, next).await;
+        let next_path =
+            polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
+                .unwrap();
+        let (status, _, current_html) = send_html(&r, &next_path).await;
+        assert_eq!(status, StatusCode::OK, "{current_html}");
+        assert_reader_navigation(&current_html, &second);
+
         let previous = second
             .document
             .footer
@@ -387,7 +408,8 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
                 .unwrap();
         let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
-        assert!(!html.contains("history.back"));
+        assert_reader_items(&html, &restored);
+        assert_reader_navigation(&html, &restored);
     });
 }
 
@@ -419,7 +441,12 @@ fn live_initial_queries_page_through_the_real_http_api() {
         polylogue_testkit::claude_user("second", "s2", "second synthetic prompt"),
     )
     .unwrap();
-    r.w.wait_for(|s| s["store"]["sessions"].as_u64().is_some_and(|n| n >= 2) && s["busy"] == false);
+    r.w.wait_for(|s| {
+        s["store"]["sessions_physical"]
+            .as_u64()
+            .is_some_and(|n| n >= 2)
+            && s["caught_up"] == true
+    });
     rt().block_on(async {
         let mut cursor = None;
         let mut ids = Vec::new();
@@ -447,7 +474,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
             assert_eq!(status, StatusCode::OK, "{body}");
             let page: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert!(
-                page["read_at"]["cursor"]
+                page["read_position"]["cursor"]
                     .as_str()
                     .and_then(polylogue_model::ChangePosition::parse)
                     .is_some(),
@@ -469,7 +496,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
 
 #[test]
 fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
-    use polylogue_model::read::{ReadComplete, ReadPart, ReadRecord};
+    use polylogue_model::read::{ReadFooter, ReadPart, ReadRecord};
     let r = reader();
     let position =
         r.w.daemon
@@ -555,9 +582,9 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             }
             assert_eq!(messages, 1);
             assert_eq!(items, expected.document.items);
-            let complete: ReadComplete = serde_json::from_str(&completion.data).unwrap();
+            let complete: ReadFooter = serde_json::from_str(&completion.data).unwrap();
             assert_eq!(complete.counts.messages, messages);
-            assert_eq!(complete.footer.shown, items.len() as u64);
+            assert_eq!(complete.shown, items.len() as u64);
             let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
                 serde_json::from_str(&report.data).unwrap();
             let crate::protocol::line::LineAnswer::Steps(steps) = answer.value().unwrap() else {
@@ -638,7 +665,7 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
                         .iter()
                         .find(|frame| frame.event == "complete")
                         .unwrap();
-                    let complete: polylogue_model::read::ReadComplete =
+                    let complete: polylogue_model::read::ReadFooter =
                         serde_json::from_str(&complete.data).unwrap();
                     assert_eq!(
                         complete.counts.messages, 1,

@@ -15,11 +15,12 @@ use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Caused as _, Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
 use polylogue_sources::chain_names::SettleError;
+use polylogue_store::parse::ParseSink as _;
 use polylogue_store::staging::PreparedBatch;
-use polylogue_store::writer::ChainParse;
+use polylogue_store::writer::Replacement;
 use polylogue_store::writer::WriterSender;
 use polylogue_store::{Archive, ReadPool};
-use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
+use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParsePart};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -40,9 +41,7 @@ pub struct Job {
     pub change: Change,
     pub observation: Option<Observation>,
     pub(crate) source_read: Option<crate::capture_read::SourceReadContext>,
-    /// Bytes of the file this plan already holds, ending where its stored
-    /// bytes end: a file that grows while it is read must still hold them.
-    pub(crate) proven_tail: Option<read::ProvenTail>,
+    pub(crate) frozen_file: Option<read::FrozenFile>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -107,8 +106,8 @@ pub struct Done {
     /// input starts here.
     pub parsed_upto: u64,
     pub parser_state: Option<Json>,
-    /// The last bytes read, kept to check the next growth.
-    pub tail: Vec<u8>,
+    pub(crate) frozen_file: Option<read::FrozenFile>,
+    pub(crate) extra_source_read: u64,
     /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
     pub error: Option<EngineError>,
@@ -555,42 +554,34 @@ fn work(
                 }
                 let mut bytes_read = 0;
                 let reading = polylogue_model::caught(|| {
-                    run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
+                    run_chain(
+                        &mut plan,
+                        archive,
+                        store,
+                        chains,
+                        shared,
+                        writer,
+                        &mut bytes_read,
+                    )
                 })
-                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()))
-                .and_then(|reading| {
-                    if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
-                        return Ok(None);
-                    }
-                    reading
-                        .map(|mut reading| {
-                            polylogue_store::timing::time(
-                                polylogue_store::timing::Stage::Store,
-                                || reading.finish(),
-                            )?;
-                            Ok(reading)
-                        })
-                        .transpose()
-                });
+                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()));
                 plan.source = Bytes::File;
                 if !plan.tracked {
                     plan.parser_state = None;
-                    plan.tail = None;
                 }
+                // A replacement that is not ended is dropped: nothing of it
+                // reaches the index.
                 let reply = reading.and_then(|reading| {
                     if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
                         return Ok(None);
                     }
-                    let Some(reading) = reading else {
+                    let Some((reading, committed)) = reading else {
                         return Ok(None);
                     };
-                    let polylogue_store::Change::Reparse { chain } = plan.change else {
-                        return Err(EngineError::internal("a replacement needs a stored chain"));
-                    };
-                    writer
-                        .queue_chain(plan.input.clone(), chain, plan.size, reading)
-                        .map(Some)
-                        .map_err(EngineError::from)
+                    polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
+                        Box::new(reading).end()
+                    })?;
+                    Ok(Some(committed))
                 });
                 drop(charge);
                 let sent = acknowledge
@@ -797,6 +788,10 @@ fn flush(
         .is_ok()
 }
 
+/// Answers once a replacement's transaction committed, with the messages
+/// it wrote.
+type Committed = Receiver<polylogue_store::Result<u64>>;
+
 /// Parses a stored chain end to end into a reading staged for one
 /// replacement transaction. Decoded bytes stay with the reading, counted
 /// against the pool's bytes in flight.
@@ -806,9 +801,13 @@ fn run_chain(
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     settings: &ChainSettings,
     shared: &Arc<Shared>,
+    writer: &WriterSender,
     bytes_read: &mut u64,
-) -> Result<Option<ChainParse>, EngineError> {
-    let mut reading = ChainParse::new()?;
+) -> Result<Option<(Replacement, Committed)>, EngineError> {
+    let polylogue_store::Change::Reparse { chain } = plan.change else {
+        return Err(EngineError::internal("a replacement needs a stored chain"));
+    };
+    let (mut reading, committed) = Replacement::of(writer, plan.input.clone(), chain, plan.size)?;
     let read = read_chain(
         plan,
         archive,
@@ -821,13 +820,13 @@ fn run_chain(
             Ok(())
         },
     )?;
-    Ok(read.then_some(reading))
+    Ok(read.then_some((reading, committed)))
 }
 
 /// Parses a stored chain end to end into `sink`, step by step; decoded
 /// bytes go to `keep` before the steps that name them. False when the read
 /// yields to a request before the chain's end.
-pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
+pub(crate) fn read_chain<S: polylogue_store::parse::ParseSink>(
     plan: &mut Plan,
     archive: &Archive,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
@@ -836,6 +835,9 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
     sink: &mut S,
     mut keep: impl FnMut(&mut S, PreparedBatch) -> polylogue_store::Result<()>,
 ) -> Result<bool, EngineError> {
+    if let Some(reason) = crate::compressed::rollout_refusal(&plan.input) {
+        return Err(polylogue_model::ChainFailure::refused(reason).into());
+    }
     let stop = archive.stop();
     let yielding = &settings.yielding;
     if yielding.load(std::sync::atomic::Ordering::Acquire) {
@@ -878,7 +880,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan, blobs)?;
+            let (step, cursor) = item.into_parse(plan, blobs)?;
             keep(
                 sink,
                 PreparedBatch {
@@ -898,7 +900,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 },
             )?;
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                sink.step(&mut step)
+                sink.part(step)
             })?;
             Ok(cursor)
         });
@@ -952,11 +954,11 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
             let Some(mut batch) = batch else {
                 return Err(EngineError::internal("a replacement returned no rows"));
             };
-            let mut steps = std::mem::take(&mut batch.batch.parse);
+            let steps = std::mem::take(&mut batch.batch.parse);
             keep(sink, batch)?;
-            for step in &mut steps {
+            for step in steps {
                 polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                    sink.step(step)
+                    sink.part(step)
                 })?;
             }
             plan.apply(done, true);
@@ -965,7 +967,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
     Ok(true)
 }
 
-fn keep_decoded(reading: &mut ChainParse, shared: &Arc<Shared>, mut batch: PreparedBatch) {
+fn keep_decoded(reading: &mut Replacement, shared: &Arc<Shared>, mut batch: PreparedBatch) {
     if !batch.batch.blobs.is_empty() {
         // Decoded payloads are files; only their batch and chunk descriptors stay in memory.
         let bytes = (std::mem::size_of::<PreparedBatch>()
@@ -995,7 +997,7 @@ fn failed(
     job: &Job,
     prepare: bool,
     failure: polylogue_model::ChainFailure,
-) -> Vec<ParseStep> {
+) -> Vec<ParsePart> {
     let step = failed_step(job, failure.clone(), prepare);
     out.error = Some(failure.into());
     out.failure_recorded = true;
@@ -1004,14 +1006,66 @@ fn failed(
 
 /// The record of a parse that failed: no rows, and the chain's cursor stays
 /// where this parse began.
-fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool) -> ParseStep {
-    let mut failed = ParseStep::failed(job.start..job.start, failure);
+fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool) -> ParsePart {
+    let mut failed = ParsePart::failed(job.start..job.start, failure);
     failed.reset = false;
     failed.parse_version = job.origin.parse_version();
     if prepare {
         failed.prepare();
     }
     failed
+}
+
+fn native_range(
+    job: &Job,
+    expected: Option<polylogue_store::FileFacts>,
+    archive: &Archive,
+    store: &Arc<polylogue_store::blobs::Blobs>,
+    done: &mut Done,
+) -> Result<(Vec<u8>, polylogue_store::capture_read::FileSnapshot), EngineError> {
+    if let Some(file) = &job.frozen_file {
+        return Ok((file.read(job.start, job.end)?, file.observed.clone()));
+    }
+    let first =
+        read::read_source_range(&job.path, job.start, job.end, expected).map_err(EngineError::from);
+    match (first, expected) {
+        (Err(error), Some(facts)) if error.source_changed() => {
+            let committed = job.store_from.unwrap_or(job.length);
+            let loaded = || {
+                let chain = job.parser_chain.ok_or_else(|| {
+                    std::io::Error::other(polylogue_store::StoreError::invalid(
+                        "a continued range has no committed chain",
+                    ))
+                })?;
+                let reads =
+                    ReadPool::with_budget(archive, 1, 4 << 20).map_err(std::io::Error::other)?;
+                let reader = reads.reader().map_err(std::io::Error::other)?;
+                let chain = reader
+                    .stored_chain(&job.input.id, chain, committed)
+                    .map_err(std::io::Error::other)?;
+                Ok(chain.reader(Arc::clone(store)))
+            };
+            if committed > 0 && job.parser_chain.is_none() {
+                return Err(error);
+            }
+            match read::read_after_growth(
+                &job.path,
+                facts,
+                job.start..job.end,
+                committed,
+                loaded,
+                &archive.staging_dir(),
+                &mut done.extra_source_read,
+            )? {
+                Some(range) => {
+                    done.frozen_file = range.snapshot;
+                    Ok((range.data, range.observed))
+                }
+                None => Err(error),
+            }
+        }
+        (first, _) => first,
+    }
 }
 
 /// Reads, stores and parses one job. The archive's stop request ends it
@@ -1022,7 +1076,7 @@ fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool)
 pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    store: &polylogue_store::blobs::Blobs,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     prepare: bool,
     names: Option<&mut crate::chain_names::Names>,
 ) -> (Option<PreparedBatch>, Done) {
@@ -1035,7 +1089,8 @@ pub(crate) fn run(
         end: job.end,
         parsed_upto: job.start,
         parser_state: job.parser_state.take(),
-        tail: Vec::new(),
+        frozen_file: None,
+        extra_source_read: 0,
         stored: 0,
         error: None,
         cancelled: false,
@@ -1056,21 +1111,15 @@ pub(crate) fn run(
             .read_range(job.start, job.end)
             .map_err(EngineError::from),
         Bytes::Stored(chain) => chain
-            .read_range(store, job.start, job.end)
+            .read_range(store.as_ref(), job.start, job.end)
             .map_err(EngineError::from),
         Bytes::File => match &job.source_read {
-            Some(context) => read::read_source_range(
-                &job.path,
-                job.start,
-                job.end,
-                context.facts,
-                job.proven_tail.as_ref(),
-            )
-            .map(|(bytes, observed)| {
-                file_snapshot = Some(observed);
-                bytes
-            })
-            .map_err(EngineError::from),
+            Some(context) => native_range(&job, context.facts, archive, store, &mut out).map(
+                |(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                },
+            ),
             None => read::read_range(&job.path, job.start, job.end).map_err(EngineError::from),
         },
         Bytes::Unloaded { .. } => Err(EngineError::internal(
@@ -1089,7 +1138,6 @@ pub(crate) fn run(
             return (None, out);
         }
     };
-    out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
     // A document its source saves whole is stored as content-defined chunks,
     // so a revision that changes one place stores only the chunks around it.
@@ -1143,7 +1191,7 @@ pub(crate) fn run(
                             Change::Appended { from } => from,
                             _ => 0,
                         },
-                        end: observed.size,
+                        end: context.facts.map_or(observed.size, |facts| facts.size),
                     },
                 ),
                 None => context.finish(range, blob.hash),
@@ -1294,7 +1342,7 @@ pub(crate) fn run(
                                 return Vec::new();
                             }
                         }
-                        let mut p = ParseStep::new(
+                        let mut p = ParsePart::new(
                             step.output,
                             step.counts,
                             job.start + step.start..job.start + step.consumed,
@@ -1346,7 +1394,7 @@ pub(crate) fn run(
             }
             // A row-dump origin's file that is not a row dump: its bytes
             // are kept, and its parse holds no records.
-            let mut step = ParseStep::new(
+            let mut step = ParsePart::new(
                 Default::default(),
                 Default::default(),
                 job.start..job.end,

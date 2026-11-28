@@ -127,6 +127,18 @@ in
     IOSchedulingClass = "idle";
   };
   wrapper = settings.wrapper;
+  browserHostManifest =
+    {
+      extension,
+      program,
+    }:
+    pkgs.runCommand "com.polylogue.browser_capture.json" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      id=$(cat ${extension}/share/polylogue/extension-id)
+      jq --arg path ${lib.escapeShellArg program} \
+        --arg id "$id" \
+        '. + {path: $path, allowed_origins: ["chrome-extension://" + $id + "/"]}' \
+        ${../../extension/native-host.json} > "$out"
+    '';
   aliases =
     {
       cfg,

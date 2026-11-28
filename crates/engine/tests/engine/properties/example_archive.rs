@@ -8,6 +8,79 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
+#[test]
+fn morrow_has_one_delivered_session_brief() {
+    let morrow = Morrow::build(Set::Main);
+    let reads = morrow.reads();
+    let reader = reads.reader().unwrap();
+    let midnight = jiff::civil::Time::constant(0, 0, 0, 0);
+    let day = query_language::time::DaySetting::new(jiff::tz::TimeZone::UTC, midnight).unwrap();
+    let mut options = polylogue_store::query::Options::fixture(
+        query_language::time::Clock::new(morrow.config().clock.now(), day),
+        vec!["claude-code".into()],
+    );
+    options.fields = ["id", "recipient", "sender", "event", "outcome", "at"]
+        .map(str::to_owned)
+        .into();
+    let rows = |query: &str| {
+        let program = polylogue_store::query::compile(query, &options).unwrap();
+        let mut rows = reader.query_rows(&program).unwrap();
+        for row in &mut rows {
+            polylogue_store::query::execute::present(&program, row).unwrap();
+        }
+        rows
+    };
+
+    let delivery = "01a101c9-1dc0-7000-8000-000000000d01";
+    let reference = format!("session:{}", session(2));
+    let expected = [serde_json::json!({
+        "id": delivery,
+        "recipient": session(4).to_string(),
+        "sender": "hook",
+        "event": "session_brief",
+        "outcome": "delivered",
+        "at": "2026-10-03T12:42:00.17Z",
+    })];
+    assert_eq!(rows("deliveries where outcome:delivered"), expected);
+    assert_eq!(
+        rows(&format!(
+            "deliveries where outcome:delivered refs:\"{reference}\""
+        )),
+        expected
+    );
+    assert_eq!(
+        reader.delivery_refs(delivery).unwrap(),
+        Some(vec![reference])
+    );
+    assert_eq!(
+        rows("deliveries where outcome:not_sent"),
+        Vec::<serde_json::Value>::new()
+    );
+
+    let handoffs: Vec<_> = reader
+        .events(&session(4))
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "hook_context_emitted")
+        .map(|event| {
+            (
+                event.at,
+                event.data["invocation"].clone(),
+                event.data["deliveries"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        handoffs,
+        [(
+            Some(polylogue_model::Timestamp::parse_rfc3339("2026-10-03T12:42:00.180Z").unwrap()),
+            serde_json::json!("01a101c9-1dc0-7000-8000-000000000001"),
+            serde_json::json!([format!("delivery:{delivery}")])
+        )],
+        "the hook spool records the handoff to session #4"
+    );
+}
+
 fn jsonl_files(w: &Morrow) -> Vec<PathBuf> {
     w.provider_files()
         .into_iter()
@@ -106,40 +179,52 @@ fn message_ids_survive_unrelated_changes() {
     w.run_pass();
 
     let after = w.view();
-    let mut wrong = Vec::new();
+    let messages = |doc: &serde_json::Value| -> Vec<serde_json::Value> {
+        doc.as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["record"] == "message")
+            .map(|record| record["data"]["message"].clone())
+            .collect()
+    };
+    let unrelated = "claude-code:7f3a2c10-0901-4000-8000-000000000901";
+    let mut expected_sessions_with_messages: BTreeSet<_> = before
+        .iter()
+        .filter(|(_, doc)| !messages(doc).is_empty())
+        .map(|(id, _)| id.clone())
+        .collect();
+    expected_sessions_with_messages.insert(unrelated.to_owned());
+    assert_eq!(
+        after
+            .iter()
+            .filter(|(_, doc)| !messages(doc).is_empty())
+            .map(|(id, _)| id.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_sessions_with_messages
+    );
+    let added = messages(&after[unrelated]);
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["id"], "claude-code:u901");
+    assert_eq!(added[0]["session"], unrelated);
+    assert_eq!(
+        added[0]["blocks"],
+        serde_json::json!([{"type":"text", "text":"unrelated"}])
+    );
+    let one = session(1).to_string();
+    let mut current = messages(&after[&one]);
+    let appended = current.pop().expect("session one gains a last message");
+    assert_eq!(appended["id"], "claude-code:u1-late");
+    assert_eq!(appended["session"], one);
+    assert_eq!(
+        appended["blocks"],
+        serde_json::json!([{"type":"text", "text":"one more thing"}])
+    );
+    assert_eq!(current, messages(&before[&one]));
     for (id, doc) in &before {
-        let Some(now) = after.get(id) else {
-            wrong.push(format!("{id} is gone"));
-            continue;
-        };
-        let msgs = |d: &serde_json::Value| -> BTreeMap<String, serde_json::Value> {
-            d.as_array()
-                .unwrap()
-                .iter()
-                .filter(|record| record["record"] == "message")
-                .map(|record| &record["data"]["message"])
-                .map(|m| (m["id"].as_str().unwrap().to_owned(), m.clone()))
-                .collect()
-        };
-        let (was, is) = (msgs(doc), msgs(now));
-        for (mid, m) in &was {
-            match is.get(mid) {
-                None => wrong.push(format!("{id}: message {mid} is gone")),
-                Some(n) if n != m => wrong.push(format!("{id}: message {mid} changed")),
-                _ => {}
-            }
+        if id != &one {
+            assert_eq!(messages(&after[id]), messages(doc), "{id}");
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    let late_arrived = after.values().any(|doc| {
-        doc.as_array().unwrap().iter().any(|record| {
-            record["record"] == "message"
-                && record["data"]["message"]["id"]
-                    .as_str()
-                    .is_some_and(|id| id.ends_with("u1-late"))
-        })
-    });
-    assert!(late_arrived, "the appended message u1-late is missing");
 }
 
 /// corruption is loud. A stored blob with one byte flipped fails
@@ -299,10 +384,18 @@ fn a_rebuild_leaves_one_index() {
     fs::remove_file(&index).unwrap();
     w.run_pass();
     let counts = |w: &Morrow| -> Vec<i64> {
-        ["session", "message", "block", "tool_call", "link", "event"]
-            .iter()
-            .map(|t| count(w, &format!("SELECT count(*) AS n FROM {t}")))
-            .collect()
+        [
+            "session",
+            "message",
+            "block",
+            "tool_call",
+            "link_statement",
+            "session_link",
+            "event",
+        ]
+        .iter()
+        .map(|t| count(w, &format!("SELECT count(*) AS n FROM {t}")))
+        .collect()
     };
     let after_rebuild = counts(&w);
     w.run_pass();

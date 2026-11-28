@@ -4,6 +4,30 @@ use crate::{
     bundle::fragments::seek::{SourceTextBody, SourceTextPiece, SourceTextPosition, TextField},
 };
 
+#[test]
+fn run_outcomes_keep_their_tagged_wire_shape() {
+    let cases = [
+        (RunOutcome::Ok, r#"{"state":"ok"}"#),
+        (
+            RunOutcome::Error {
+                kind: "query".into(),
+            },
+            r#"{"state":"error","kind":"query"}"#,
+        ),
+    ];
+    for (outcome, wire) in cases {
+        assert_eq!(serde_json::to_string(&outcome).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<RunOutcome>(wire).unwrap(), outcome);
+    }
+    for wire in [
+        r#"{"state":"pending"}"#,
+        r#"{"state":"error"}"#,
+        r#"{"state":"error","kind":"query","extra":true}"#,
+    ] {
+        assert!(serde_json::from_str::<RunOutcome>(wire).is_err(), "{wire}");
+    }
+}
+
 fn resolved() -> NormalizedReadSpan {
     let original = Reference::parse("span:message:codex:synthetic#c=1-3").unwrap();
     NormalizedReadSpan::new(

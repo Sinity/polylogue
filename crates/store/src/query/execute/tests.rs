@@ -1,6 +1,7 @@
 use super::*;
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
+mod hidden_totals;
 mod lineage;
 mod saved_fields;
 mod search;
@@ -108,7 +109,7 @@ fn sort_by_count_after_group() {
                 message,
                 CallFacts {
                     tool: "Read",
-                    action: "read",
+                    action: "file_read",
                     command: None,
                     path: Some(path),
                     outcome: "ok",
@@ -417,7 +418,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
                 r#"a literal \"quote\" and slash\"#.into(),
             ],
             vec![LeftOut {
-                what: "session:codex:other".into(),
+                item: "session:codex:other".into(),
                 reason: "budget".into(),
             }],
         ),
@@ -437,6 +438,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
                     text: "synthetic pointer".into(),
                     refs,
                     left_out,
+                    prepared_position: None,
                 }),
             ))
             .unwrap();
@@ -686,6 +688,7 @@ fn cached_counts_follow_the_vector_snapshot() {
     let mut program = crate::query::compile("messages", &options).unwrap();
     program.near = Some(crate::query::compile::Near {
         text: "synthetic seed".into(),
+        text_ranked: false,
     });
     program.counts_near = true;
     let hex = hash

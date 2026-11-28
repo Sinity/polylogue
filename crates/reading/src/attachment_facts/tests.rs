@@ -39,6 +39,44 @@ fn item(reader: &Reader<'_>, message: &MessageId) -> ReadItem {
 }
 
 #[test]
+fn failed_attachment_reads_as_failed() {
+    let mut writer = WriterArchive::new();
+    let row = message(
+        "file",
+        "attachments",
+        Role::User,
+        1,
+        vec![Block::File(Attachment {
+            failure: Some(AttachmentFailure::InvalidBase64),
+            ..Attachment::default()
+        })],
+    );
+    let id = row.id.clone();
+    writer.write("attachments", vec![row]);
+    let pool = ReadPool::open(&writer.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let prepared = prepare(&reader, item(&reader, &id), 0, &|_, _, _, _| {
+        panic!("an unreadable attachment has no open action")
+    })
+    .unwrap();
+    let ItemKind::Attachment {
+        availability,
+        verified_hash,
+        open,
+        ..
+    } = prepared.kind
+    else {
+        panic!("expected an attachment")
+    };
+    assert_eq!(
+        availability,
+        ValueState::known("failed: invalid inline base64".into())
+    );
+    assert_eq!(verified_hash, None);
+    assert_eq!(open, None);
+}
+
+#[test]
 fn changed_attachment_slot_is_unavailable() {
     let (writer, message) = fixture();
     let pool = ReadPool::open(&writer.archive).unwrap();

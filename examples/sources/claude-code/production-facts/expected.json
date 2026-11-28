@@ -124,13 +124,13 @@
               "type": "text"
             }
           ],
-          "id": "claude-code:p1",
+          "id": "claude-code:z9",
           "production": {
             "turn_origin": "sdk"
           },
           "prompt_kind": "prose",
           "role": "user",
-          "session": "claude-code:s4",
+          "session": "claude-code:s0",
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
@@ -154,7 +154,7 @@
           ],
           "id": "claude-code:p2",
           "model": "model-a",
-          "parent": "claude-code:p1",
+          "parent": "claude-code:z9",
           "production": {
             "advisor_model": "model-b",
             "attribution": {
@@ -270,13 +270,47 @@
     ],
     "sessions": [
       {
-        "id": "claude-code:s4",
+        "id": "claude-code:s0",
         "kind": "main",
         "mode": "bg",
         "started": "2026-09-01T08:00:00Z",
+        "started_quality": "intrinsic",
+        "started_precision": "second"
+      },
+      {
+        "id": "claude-code:s4",
+        "kind": "main",
+        "started": "2026-09-01T08:00:05Z",
         "tool_version": "2.2.0",
         "started_quality": "intrinsic",
         "started_precision": "second"
+      }
+    ],
+    "aliases": [
+      {
+        "offset": 0,
+        "end": 222,
+        "name": "claude-code:p1",
+        "target": "claude-code:z9"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "claude-code:s0",
+        "child": "claude-code:s4",
+        "explicit_members": true
+      }
+    ],
+    "prefix_members": [
+      {
+        "parent": "claude-code:s0",
+        "child": "claude-code:s4",
+        "message": "claude-code:z9",
+        "source": null,
+        "position": [
+          0,
+          0
+        ]
       }
     ]
   }

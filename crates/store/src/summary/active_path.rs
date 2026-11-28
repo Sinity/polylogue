@@ -32,7 +32,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM event INDEXED BY event_path_marker WHERE session_pk = ?1
                              AND kind IN ('active_leaf','active_path_empty','active_path_unknown'))
-                 OR EXISTS(SELECT 1 FROM message INDEXED BY message_branch WHERE session_pk = ?1
+                 OR EXISTS(SELECT 1 FROM message INDEXED BY message_marked WHERE session_pk = ?1
                              AND on_active_path IS NOT NULL)",
         )?
         .query_row([session_pk], |r| r.get(0))?;
@@ -46,7 +46,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
              SELECT m.id, e.kind, e.at, e.id AS event_id, r.id AS input_id,
                     row_number() OVER (
                       PARTITION BY r.id ORDER BY
-                        e.source_chain DESC, e.seq DESC, e.id
+                        e.source_chain DESC, e.position DESC, e.id
                     ) AS newest
              FROM event e LEFT JOIN message m ON m.id = e.after_message_id
              JOIN input_ref r ON r.pk = e.input_pk

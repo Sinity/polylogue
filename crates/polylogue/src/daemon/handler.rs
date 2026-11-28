@@ -21,7 +21,7 @@ use polylogue_model::authorship::Channel;
 use polylogue_reading::operation::{Context, Invocation};
 pub(crate) use polylogue_store::Lane;
 use polylogue_store::read::limit::ReadLimit;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
@@ -45,7 +45,17 @@ pub(crate) trait Operation: 'static {
     fn failure(_reply: &Self::Reply) -> Option<command_surface::FailureKind> {
         None
     }
+    /// The same request answered as one reply, for a caller that cannot
+    /// hold a stream; none when it does not stream.
+    fn without_stream(_arguments: &Self::Arguments) -> Option<Self::Arguments> {
+        None
+    }
+    /// The reply as text for a model, when it has one other than its JSON.
+    const MODEL_TEXT: Option<ModelText<Self::Reply>> = None;
 }
+
+/// A reply as text for a model, or why it cannot be.
+pub(crate) type ModelText<Reply> = fn(&Reply) -> Result<String, String>;
 
 /// How one request is treated before and while it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +65,8 @@ pub(crate) struct Policy {
     /// Refused while writes are blocked; over HTTP only by POST.
     pub changes_archive: bool,
     pub bound: Bound,
+    /// A read's reply must remain in the index generation it started in.
+    pub pin_scope: bool,
     /// Which readers it may take.
     pub lane: Lane,
     pub late: Late,
@@ -93,6 +105,7 @@ impl Policy {
         access: ToolAccess::Read,
         changes_archive: false,
         bound: Bound::Whole,
+        pin_scope: true,
         lane: Lane::Ordinary,
         late: Late::Refuse,
         pages: false,
@@ -129,6 +142,8 @@ pub(crate) struct Call<'a> {
     /// The request's one read limit.
     pub limit: &'a ReadLimit,
     pub lane: Lane,
+    /// The archive position a preceding write needs the next reader to see.
+    pub after_write: Option<polylogue_store::archive::writer::Position>,
     /// Where the request's events go; its final answer is the return value.
     pub output: &'a dyn Events,
     /// The query the request runs, which a deadline refusal narrows.
@@ -146,14 +161,18 @@ impl Call<'_> {
     /// reads, and only under its cancellation once a write was handed over
     /// or for a write, so a committed result is read back whatever the time.
     pub fn reader(&self) -> Result<polylogue_store::Reader<'_>, Failure> {
-        let reader = match ReadLimit::current() {
-            Some(limit) => self.daemon.reads.checkout(self.lane, &limit),
-            None => self.daemon.reads.checkout(
+        let reads = &self.daemon.reads;
+        let limit = ReadLimit::current()
+            .unwrap_or_else(|| ReadLimit::without_deadline(self.limit.cancellation.clone()));
+        Ok(match self.after_write {
+            Some(position) => reads.checkout_after(
+                super::service::writer(self.daemon)?,
+                position,
                 self.lane,
-                &ReadLimit::without_deadline(self.limit.cancellation.clone()),
-            ),
-        };
-        Ok(reader?)
+                &limit,
+            )?,
+            None => reads.checkout(self.lane, &limit)?,
+        })
     }
 
     /// Ends the read phase before a write is handed to the writer: a read
@@ -273,8 +292,16 @@ impl Events for Transport<'_> {
 pub(crate) trait Row: Sync {
     fn operation(&self) -> TypeId;
     fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command);
+    /// The schema of the operation's request type.
+    fn arguments(&self) -> schemars::Schema;
     /// Decodes the arguments and states how they are treated.
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure>;
+    /// The request answered as one reply, when it would stream.
+    fn without_stream(&self, arguments: &Value) -> Result<Option<Value>, Failure>;
+    /// The failure a successful reply carries inside it.
+    fn failure_inside(&self, reply: &Value) -> Option<command_surface::FailureKind>;
+    /// The reply as text for a model, when it has one other than its JSON.
+    fn model_text(&self, reply: &Value) -> Option<Result<String, String>>;
     /// The answer, and the failure its reply carries inside it.
     fn respond(
         &self,
@@ -304,8 +331,31 @@ impl<O: Operation> Row for Handled<O> {
             .expect("declared command is unique");
     }
 
+    fn arguments(&self) -> schemars::Schema {
+        schemars::schema_for!(O::Arguments)
+    }
+
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure> {
         O::policy(&decode::<O::Arguments>(arguments)?, channel)
+    }
+
+    fn without_stream(&self, arguments: &Value) -> Result<Option<Value>, Failure> {
+        O::without_stream(&decode::<O::Arguments>(arguments)?)
+            .map(|arguments| serde_json::to_value(arguments).map_err(Failure::internal))
+            .transpose()
+    }
+
+    fn failure_inside(&self, reply: &Value) -> Option<command_surface::FailureKind> {
+        O::failure(&O::Reply::deserialize(reply).ok()?)
+    }
+
+    fn model_text(&self, reply: &Value) -> Option<Result<String, String>> {
+        let text = O::MODEL_TEXT?;
+        Some(
+            O::Reply::deserialize(reply)
+                .map_err(|error| error.to_string())
+                .and_then(|reply| text(&reply)),
+        )
     }
 
     fn respond(
@@ -346,6 +396,9 @@ pub(crate) fn policy(
     arguments: &Value,
     channel: Channel,
 ) -> Result<Policy, Failure> {
+    if let Some(unbuilt) = crate::unbuilt::in_arguments(row.name, arguments) {
+        return Err(unbuilt.into());
+    }
     match row.run {
         crate::commands::Run::Daemon(operation) => operation.policy(arguments, channel),
         _ => Err(Failure::bad_request(format!(
@@ -456,6 +509,9 @@ fn check_envelope(row: &Command, request: &RunnableRequest) -> Result<(), Failur
     let Some(object) = request.arguments.as_object() else {
         return Err(Failure::bad_request("arguments must be an object"));
     };
+    if let Some(unbuilt) = crate::unbuilt::in_arguments(row.name, &request.arguments) {
+        return Err(unbuilt.into());
+    }
     if let Some(description) = declarations
         .descriptions()
         .iter()
@@ -556,7 +612,7 @@ fn respond<O: Operation>(
         return daemon.write_refusal().answer();
     }
     let limit = limit(request.deadline, &policy, row.latency, caller);
-    let scope = if policy.changes_archive {
+    let scope = if policy.changes_archive || !policy.pin_scope {
         None
     } else {
         match daemon.reads.scope_token() {
@@ -583,6 +639,7 @@ fn respond<O: Operation>(
         budget: request.budget_tokens,
         limit: &limit,
         lane: policy.lane,
+        after_write: None,
         output: &guarded,
         query: &query,
     };
@@ -601,7 +658,12 @@ fn respond<O: Operation>(
         },
     );
     if let Some(failure) = guarded.stopped.take() {
-        answer = failure.answer();
+        answer = match limit.check() {
+            Err(error) => {
+                super::execution::stopped_read(&error, row.name, query.borrow().as_deref(), &limit)
+            }
+            Ok(()) => failure.answer(),
+        };
     }
     if let Outcome::Error(failure) = &mut answer.outcome {
         // A cursor that no longer names its place suggests the same request

@@ -6,11 +6,10 @@
 //! stdout, so the process that holds those pipes keeps the agent alive. A
 //! small per-session `polylogue internal host` process holds them instead of the
 //! daemon, so a daemon restart never ends an agent. The host relays lines
-//! between the agent and whichever daemon connection its socket has. What
-//! the agent writes while no daemon is connected waits in the host and is
-//! sent first when a daemon connects again; requests the agent asked and
-//! nobody answered (permission prompts) are sent again to each new
-//! connection, after a first line stating the session's status. The host
+//! between the agent and whichever daemon connection its socket has. A new
+//! connection starts with the host's current turns and unanswered requests.
+//! Completed turns and answers to a former connection's requests need no
+//! replay. The host
 //! also writes the session's status changes to the registry spool
 //! (`HostedStatus`, and `HostedEnded` when the agent exits), naming the
 //! agent process it started, which is how the live-state update knows the
@@ -83,25 +82,41 @@ pub(crate) fn write_record(dir: &Path, key: &str, record: &Record) -> std::io::R
 }
 
 /// Every record, with its key.
-pub(crate) fn records(dir: &Path) -> Vec<(String, Record)> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+pub(crate) fn records(dir: &Path) -> Vec<std::io::Result<(String, Record)>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => return vec![Err(error)],
     };
-    let mut out: Vec<(String, Record)> = entries
-        .flatten()
+    let mut out: Vec<_> = entries
         .filter_map(|entry| {
-            let path = entry.path();
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => return Some(Err(error)),
+            };
             let key = path
                 .file_name()?
                 .to_str()?
                 .strip_suffix(".json")
                 .filter(|k| !k.starts_with('.'))?
                 .to_owned();
-            let record = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-            Some((key, record))
+            Some(
+                (|| {
+                    let record = serde_json::from_slice(&std::fs::read(&path)?)?;
+                    Ok((key, record))
+                })()
+                .map_err(|error: std::io::Error| {
+                    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+                }),
+            )
         })
         .collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort_by(|a, b| {
+        a.as_ref()
+            .ok()
+            .map(|(key, _)| key)
+            .cmp(&b.as_ref().ok().map(|(key, _)| key))
+    });
     out
 }
 
@@ -129,8 +144,8 @@ pub(crate) struct Tracker {
     /// Turns in flight: ACP prompt request IDs, or one placeholder per Claude
     /// user message awaiting its result.
     turns: Vec<Value>,
-    /// The agent's unanswered requests: (request ID, line).
-    open: Vec<(Value, Vec<u8>)>,
+    /// The agent's unanswered requests, oldest first.
+    open: Vec<Value>,
 }
 
 impl Tracker {
@@ -141,15 +156,6 @@ impl Tracker {
             turns: Vec::new(),
             open: Vec::new(),
         }
-    }
-
-    pub(crate) fn word(&self) -> &'static str {
-        self.word
-    }
-
-    /// Turns in flight, the running one included.
-    pub(crate) fn turns(&self) -> usize {
-        self.turns.len()
     }
 
     fn update_word(&mut self) -> Option<&'static str> {
@@ -181,7 +187,7 @@ impl Tracker {
                 }
                 Some("control_response") => {
                     let id = &message["response"]["request_id"];
-                    self.open.retain(|(open, _)| open != id);
+                    self.open.retain(|open| &open["request_id"] != id);
                 }
                 _ => {}
             },
@@ -190,7 +196,7 @@ impl Tracker {
                     self.turns.push(message["id"].clone());
                 } else if message.get("method").is_none() {
                     let id = &message["id"];
-                    self.open.retain(|(open, _)| open != id);
+                    self.open.retain(|open| &open["id"] != id);
                 }
             }
         }
@@ -198,12 +204,11 @@ impl Tracker {
     }
 
     /// A line the agent sent; the new status word if it changed.
-    pub(crate) fn agent_sent(&mut self, message: &Value, line: &[u8]) -> Option<&'static str> {
+    pub(crate) fn agent_sent(&mut self, message: &Value) -> Option<&'static str> {
         match self.protocol {
             HostProtocol::ClaudeStreamJson => match message["type"].as_str() {
                 Some("control_request") => {
-                    self.open
-                        .push((message["request_id"].clone(), line.to_vec()));
+                    self.open.push(message.clone());
                 }
                 Some("result") => {
                     // One turn finished; messages sent during it run next,
@@ -215,14 +220,14 @@ impl Tracker {
                 }
                 Some("control_cancel_request") => {
                     let id = &message["request_id"];
-                    self.open.retain(|(open, _)| open != id);
+                    self.open.retain(|open| &open["request_id"] != id);
                 }
                 _ => {}
             },
             _ => {
                 if message.get("method").is_some() {
                     if message.get("id").is_some() {
-                        self.open.push((message["id"].clone(), line.to_vec()));
+                        self.open.push(message.clone());
                     }
                 } else {
                     let id = &message["id"];
@@ -236,11 +241,6 @@ impl Tracker {
             }
         }
         self.update_word()
-    }
-
-    /// The agent's requests nobody has answered, oldest first.
-    pub(crate) fn unanswered(&self) -> impl Iterator<Item = &[u8]> {
-        self.open.iter().map(|(_, line)| line.as_slice())
     }
 }
 
@@ -260,7 +260,6 @@ pub struct HostConfig {
 
 struct Relay {
     client: Option<UnixStream>,
-    backlog: VecDeque<Vec<u8>>,
     tracker: Tracker,
     session: Option<SessionId>,
     spool: crate::live_events::PendingLines,
@@ -270,8 +269,8 @@ struct Relay {
 /// The first line a host sends each new connection.
 fn hello(relay: &Relay) -> Vec<u8> {
     let mut line = serde_json::to_vec(&json!({"polylogue_host": {
-        "status": relay.tracker.word(),
-        "turns": relay.tracker.turns(),
+        "turns": relay.tracker.turns,
+        "requests": relay.tracker.open,
     }}))
     .unwrap_or_default();
     line.push(b'\n');
@@ -291,7 +290,12 @@ fn status_line(
     }
     let mut payload = json!({});
     if let Some(word) = word {
-        payload["status"] = json!(word);
+        let field = if event == "HostedEnded" {
+            "detail"
+        } else {
+            "status"
+        };
+        payload[field] = json!(word);
     }
     payload["protocol"] = json!(config.protocol.as_str());
     if let Some(identity) = identity {
@@ -328,6 +332,40 @@ fn session_named(config: &HostConfig, message: &Value) -> Option<SessionId> {
     SessionId::parse(&format!("{}:{native}", config.harness)).ok()
 }
 
+/// Reads the end of standard error without storing an unbounded line or stream.
+pub(crate) fn stderr_tail(mut input: impl std::io::Read) -> std::io::Result<String> {
+    const BYTES: usize = 16 * 1024;
+    let mut tail = VecDeque::with_capacity(BYTES);
+    let mut bytes = [0; 4096];
+    loop {
+        let count = match input.read(&mut bytes) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        let excess = (tail.len() + count).saturating_sub(BYTES);
+        tail.drain(..excess);
+        tail.extend(&bytes[..count]);
+    }
+    let text = String::from_utf8_lossy(tail.make_contiguous());
+    let lines: Vec<_> = text.lines().collect();
+    Ok(lines[lines.len().saturating_sub(12)..].join("\n"))
+}
+
+/// Describes a harness exit even when it emitted no standard error.
+pub(crate) fn exit_reason(
+    status: std::process::ExitStatus,
+    stderr: std::io::Result<String>,
+) -> String {
+    match stderr {
+        Ok(text) if text.is_empty() => status.to_string(),
+        Ok(text) => format!("{status}: {text}"),
+        Err(error) => format!("{status}: reading harness standard error failed: {error}"),
+    }
+}
+
 /// Runs a hosted agent until it exits: the body of `polylogue internal host`.
 pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
@@ -338,14 +376,18 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let listener = crate::socket::bind(&config.socket)?;
+    let listener = crate::socket::with_short_path(&config.socket, crate::socket::bind)?;
     let mut child = Command::new(program)
         .args(args)
         .current_dir(&config.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr =
+        polylogue_model::spawn_named("polylogue-host-stderr", move || stderr_tail(stderr))?;
+    let (connected, first_connection) = std::sync::mpsc::sync_channel(1);
     let identity = crate::live_events::identity(child.id());
     let input = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let output = child.stdout.take().expect("piped stdout");
@@ -353,7 +395,6 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     let relay = Arc::new(Mutex::new(Relay {
         client: None,
         stopping: Arc::clone(&stopping),
-        backlog: VecDeque::new(),
         tracker: Tracker::new(config.protocol),
         spool: crate::live_events::PendingLines::new("registry", "host", Default::default()),
         session: config
@@ -378,27 +419,10 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 };
                 {
                     let mut relay = relay.locked();
-                    let mut first = hello(&relay);
-                    for line in relay.tracker.unanswered() {
-                        first.extend_from_slice(line);
-                        first.push(b'\n');
-                    }
-                    // An unanswered request that waited here is in both.
-                    for line in &relay.backlog {
-                        if relay
-                            .tracker
-                            .unanswered()
-                            .any(|open| open == line.as_slice())
-                        {
-                            continue;
-                        }
-                        first.extend_from_slice(line);
-                        first.push(b'\n');
-                    }
-                    if stream.write_all(&first).is_err() {
+                    if stream.write_all(&hello(&relay)).is_err() {
                         continue;
                     }
-                    relay.backlog.clear();
+                    let _ = connected.try_send(());
                     if let Some(previous) = relay.client.replace(stream) {
                         let _ = previous.shutdown(std::net::Shutdown::Both);
                     }
@@ -450,7 +474,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             if relay.session.is_none() {
                 relay.session = session_named(config, &message);
             }
-            if let Some(word) = relay.tracker.agent_sent(&message, &line)
+            if let Some(word) = relay.tracker.agent_sent(&message)
                 && let Some(session) = relay.session.clone()
             {
                 status_line(
@@ -470,18 +494,20 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 .and_then(|()| client.write_all(b"\n"))
                 .is_ok()
         });
-        if !sent {
-            if let Some(client) = relay.client.take() {
-                let _ = client.shutdown(std::net::Shutdown::Both);
-            }
-            // A later daemon acts only on requests, answers and turn ends;
-            // the agent's narration stays in its transcript.
-            if serde_json::from_slice::<Value>(&line).is_ok_and(|m| protocol_traffic(&m)) {
-                relay.backlog.push_back(line);
-            }
+        if !sent && let Some(client) = relay.client.take() {
+            let _ = client.shutdown(std::net::Shutdown::Both);
         }
     }
-    let _ = child.wait();
+    let status = child.wait();
+    let stderr = stderr
+        .join()
+        .unwrap_or_else(|_| Err(std::io::Error::other("standard error reader panicked")));
+    let reason = match status {
+        Ok(status) => exit_reason(status, stderr),
+        Err(error) => format!("waiting for the harness failed: {error}"),
+    };
+    // A harness can exit before the starter connects to the published socket.
+    let _ = first_connection.recv_timeout(HOST_WAIT);
     {
         // Status production and this stop decision share the append owner's lock.
         // A client may still be writing a pipe held open by an agent descendant.
@@ -489,16 +515,11 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         stopping.store(true, Ordering::Release);
     }
     // Wakes the accept loop so it sees it should stop.
-    let _ = UnixStream::connect(&config.socket);
+    let _ = crate::socket::connect(&config.socket);
     let mut failure = accept
         .join()
         .err()
         .map(|_| std::io::Error::other("host accept worker panicked"));
-    // The client reader holds another descriptor and an Arc to the relay.
-    // Closing both directions releases that reader and lets the daemon see EOF.
-    if let Some(client) = relay.locked().client.take() {
-        let _ = client.shutdown(std::net::Shutdown::Both);
-    }
     let session = relay.locked().session.clone();
     if let Some(session) = session {
         status_line(
@@ -507,7 +528,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             &session,
             identity.as_ref(),
             "HostedEnded",
-            None,
+            Some(&reason),
         );
     }
     let spool_result = flush_spool(&mut relay.locked(), config);
@@ -523,17 +544,12 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             None => format!("host live event spool drain: {error}"),
         }));
     }
+    // The final line follows the session's event, even at startup.
+    if let Some(mut client) = relay.locked().client.take() {
+        let _ = writeln!(client, "{}", json!({"polylogue_host": {"ended": reason}}));
+        let _ = client.shutdown(std::net::Shutdown::Both);
+    }
     failure.map_or(Ok(()), Err)
-}
-
-/// Whether a line from the agent is one a daemon acts on: a request, an
-/// answer, or a turn's end.
-fn protocol_traffic(message: &Value) -> bool {
-    message.get("id").is_some()
-        || matches!(
-            message["type"].as_str(),
-            Some("control_request" | "control_response" | "control_cancel_request" | "result")
-        )
 }
 
 /// Starts `polylogue internal host` for a new session in its own process group, so
@@ -545,7 +561,7 @@ pub(crate) fn spawn_host(
     cwd: &Path,
     spool: &Path,
     session_id: Option<&str>,
-) -> std::io::Result<u32> {
+) -> std::io::Result<(u32, UnixStream)> {
     let program = std::env::current_exe()?;
     let mut command = std::process::Command::new(program);
     command
@@ -570,7 +586,7 @@ fn start_host(
     command: &mut std::process::Command,
     socket: &Path,
     until: Instant,
-) -> std::io::Result<u32> {
+) -> std::io::Result<(u32, UnixStream)> {
     use std::os::fd::OwnedFd;
     use std::os::unix::process::CommandExt;
     if let Some(parent) = socket.parent() {
@@ -592,7 +608,7 @@ fn start_host(
         result
     });
     let result = match wait_for_host_socket(&watch, socket, &exited, until) {
-        Ok(HostSocket::Listening) => Ok(pid),
+        Ok(HostSocket::Listening(stream)) => Ok((pid, stream)),
         Ok(HostSocket::Exited) => match reaper.join() {
             Ok(Ok(status)) => Err(std::io::Error::other(format!(
                 "polylogue internal host exited at start ({status})"
@@ -608,9 +624,9 @@ fn start_host(
     result
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum HostSocket {
-    Listening,
+    Listening(UnixStream),
     Exited,
 }
 
@@ -646,8 +662,8 @@ fn wait_for_host_socket(
             probe |= watch.changed()?;
         }
         if probe {
-            match UnixStream::connect(socket) {
-                Ok(_) => return Ok(HostSocket::Listening),
+            match crate::socket::connect(socket) {
+                Ok(stream) => return Ok(HostSocket::Listening(stream)),
                 Err(error) if crate::cli::is_down(&error) => {}
                 Err(error) => return Err(error),
             }
@@ -677,7 +693,15 @@ fn stop_host(pid: u32) {
 
 /// The callback a queued message's outcome is reported through: its
 /// delivery, and whether it was written to the agent.
-pub(crate) type Sent = Arc<dyn Fn(&str, Result<(), String>) + Send + Sync>;
+pub(crate) type Sent = Arc<dyn Fn(&str, Result<(), SendFailure>) + Send + Sync>;
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum SendFailure {
+    #[error("{0}")]
+    NotSent(String),
+    #[error("{0}")]
+    Unknown(String),
+}
 
 /// The callback that learns how many messages wait behind the running turn.
 pub(crate) type QueueChanged = Arc<dyn Fn(usize) + Send + Sync>;
@@ -689,9 +713,7 @@ struct StdioState {
     writer: UnixStream,
     /// The agent's requests awaiting an answer, oldest first.
     requests: VecDeque<Value>,
-    /// ACP: a prompt runs now.
-    turn: bool,
-    /// ACP: the IDs of prompts this connection sent and not yet answered.
+    /// ACP: the IDs of prompts sent and not yet answered.
     prompts: Vec<Value>,
     /// ACP: prompts waiting for the running one to finish, each with the
     /// delivery it carries.
@@ -708,6 +730,9 @@ struct StdioState {
     answers: Vec<Value>,
     /// The connection to the host closed.
     closed: bool,
+    ended: Option<String>,
+    first_prompt: bool,
+    first_reply: Option<Result<(), String>>,
     protocol_session: String,
     /// A per-connection prefix, so request IDs never repeat across
     /// daemon restarts while an earlier request is still in flight.
@@ -728,15 +753,18 @@ impl StdioState {
         json!(format!("{}-{}", self.nonce, self.next_id))
     }
 
-    fn prompt(&mut self, text: &str) -> std::io::Result<()> {
-        let id = self.id();
+    fn prompt(&mut self, text: &str, delivery: Option<&str>) -> std::io::Result<()> {
+        let id = match delivery {
+            Some(delivery) => json!(format!("{DELIVERY_PROMPT_PREFIX}{delivery}")),
+            None => self.id(),
+        };
         let message = json!({"jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": {
             "sessionId": self.protocol_session,
             "prompt": [{"type": "text", "text": text}],
         }});
-        self.turn = true;
+        self.write(&message)?;
         self.prompts.push(id);
-        self.write(&message)
+        Ok(())
     }
 
     /// Messages waiting behind the running turn: ACP prompts held here, or
@@ -759,17 +787,58 @@ impl StdioState {
         }
     }
 
-    fn report(&self, delivery: Option<&str>, sent: Result<(), String>) {
+    fn report(&self, delivery: Option<&str>, sent: Result<(), SendFailure>) {
         if let (Some(delivery), Some(on_sent)) = (delivery, &self.on_sent) {
             on_sent(delivery, sent);
         }
     }
 
+    /// Reports every local delivery still waiting when the host closes.
+    /// A prompt already written keeps its outcome.
+    fn close(&mut self) {
+        self.closed = true;
+        for (_, delivery) in std::mem::take(&mut self.queued) {
+            self.report(
+                delivery.as_deref(),
+                Err(SendFailure::NotSent(
+                    "the host connection closed before the queued prompt was sent".into(),
+                )),
+            );
+        }
+        self.turns = 0;
+        self.queue_changed();
+    }
+
     /// Takes in one line from the host.
     fn absorb(&mut self, message: Value) {
         if let Some(host) = message.get("polylogue_host") {
-            self.turn = host["status"] != "idle";
+            if let Some(ended) = host["ended"].as_str() {
+                self.ended = Some(ended.to_owned());
+                self.close();
+            }
             return;
+        }
+        if self.first_prompt && self.first_reply.is_none() {
+            self.first_reply = match self.protocol {
+                HostProtocol::ClaudeStreamJson if self.turns > 0 && message["type"].is_string() => {
+                    Some(Ok(()))
+                }
+                HostProtocol::Acp if self.prompts.contains(&message["id"]) => {
+                    Some(match message.get("error") {
+                        Some(error) => Err(error.to_string()),
+                        None => Ok(()),
+                    })
+                }
+                HostProtocol::Acp
+                    if matches!(
+                        message["method"].as_str(),
+                        Some("session/update" | "session/request_permission")
+                    ) =>
+                {
+                    Some(Ok(()))
+                }
+                _ => None,
+            };
         }
         self.absorb_line(message);
         self.queue_changed();
@@ -808,17 +877,14 @@ impl StdioState {
                     }
                 } else if message.get("method").is_none() {
                     let id = &message["id"];
-                    // A prompt sent before a daemon restart is known only
-                    // by its answer's stop reason.
-                    let prompt =
-                        self.prompts.contains(id) || message["result"].get("stopReason").is_some();
-                    if prompt {
+                    if self.prompts.contains(id) {
                         self.prompts.retain(|p| p != id);
-                        self.turn = false;
                         // A finished prompt's permission requests are moot.
                         self.requests.clear();
                         if let Some((next, delivery)) = self.queued.pop_front() {
-                            let sent = self.prompt(&next).map_err(|e| e.to_string());
+                            let sent = self
+                                .prompt(&next, delivery.as_deref())
+                                .map_err(|e| SendFailure::Unknown(e.to_string()));
                             self.report(delivery.as_deref(), sent);
                         }
                     } else {
@@ -830,28 +896,47 @@ impl StdioState {
     }
 }
 
+const DELIVERY_PROMPT_PREFIX: &str = "delivery:";
+
 /// The daemon's connection to a session a `polylogue internal host` holds.
 pub(crate) struct HostedStdio {
     state: Arc<(Mutex<StdioState>, std::sync::Condvar)>,
 }
 
 impl HostedStdio {
+    #[cfg(test)]
     fn connect(
         socket: &Path,
         protocol: HostProtocol,
         protocol_session: String,
     ) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(socket)?;
+        Self::connected(crate::socket::connect(socket)?, protocol, protocol_session)
+            .map(|(hosted, _)| hosted)
+    }
+
+    fn connected(
+        stream: UnixStream,
+        protocol: HostProtocol,
+        protocol_session: String,
+    ) -> std::io::Result<(Self, Vec<String>)> {
         let mut reader = BufReader::new(stream.try_clone()?);
         reader.get_ref().set_read_timeout(Some(HOST_WAIT))?;
         let mut first = String::new();
         reader.read_line(&mut first)?;
         let hello: Value = serde_json::from_str(&first)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        let status = hello["polylogue_host"]["status"]
-            .as_str()
-            .ok_or_else(|| std::io::Error::other("the host did not send its initial status"))?;
-        let turn = status != "idle";
+        let turns = hello["polylogue_host"]["turns"]
+            .as_array()
+            .ok_or_else(|| std::io::Error::other("the host did not send its current turns"))?;
+        let (turns, prompts) = match protocol {
+            HostProtocol::ClaudeStreamJson => (turns.len(), Vec::new()),
+            _ => (0, turns.clone()),
+        };
+        let submitted = prompts
+            .iter()
+            .filter_map(|id| id.as_str()?.strip_prefix(DELIVERY_PROMPT_PREFIX))
+            .map(str::to_owned)
+            .collect();
         reader.get_ref().set_read_timeout(None)?;
         let nonce = format!(
             "{:x}",
@@ -859,28 +944,34 @@ impl HostedStdio {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         );
-        let state = Arc::new((
-            Mutex::new(StdioState {
-                protocol,
-                writer: stream,
-                requests: VecDeque::new(),
-                turn,
-                prompts: Vec::new(),
-                queued: VecDeque::new(),
-                on_sent: None,
-                turns: hello["polylogue_host"]["turns"]
-                    .as_u64()
-                    .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)),
-                on_queue: None,
-                queue_reported: 0,
-                answers: Vec::new(),
-                closed: false,
-                protocol_session,
-                nonce,
-                next_id: 0,
-            }),
-            std::sync::Condvar::new(),
-        ));
+        let mut state = StdioState {
+            protocol,
+            writer: stream,
+            requests: VecDeque::new(),
+            prompts,
+            queued: VecDeque::new(),
+            on_sent: None,
+            turns,
+            on_queue: None,
+            queue_reported: 0,
+            answers: Vec::new(),
+            closed: false,
+            ended: None,
+            first_prompt: false,
+            first_reply: None,
+            protocol_session,
+            nonce,
+            next_id: 0,
+        };
+        let unanswered = hello["polylogue_host"]["requests"]
+            .as_array()
+            .ok_or_else(|| {
+                std::io::Error::other("the host did not send its unanswered requests")
+            })?;
+        for request in unanswered {
+            state.absorb_line(request.clone());
+        }
+        let state = Arc::new((Mutex::new(state), std::sync::Condvar::new()));
         let shared = Arc::clone(&state);
         polylogue_model::spawn_named("polylogue-hosted", move || {
             for line in reader.split(b'\n') {
@@ -892,20 +983,10 @@ impl HostedStdio {
                 shared.1.notify_all();
             }
             let mut state = shared.0.locked();
-            state.closed = true;
-            // These prompts never left this connection's local queue.
-            // Already-written prompts keep their reported outcome.
-            for (_, delivery) in std::mem::take(&mut state.queued) {
-                state.report(
-                    delivery.as_deref(),
-                    Err("the host connection closed before the queued prompt was sent".into()),
-                );
-            }
-            state.turns = 0;
-            state.queue_changed();
+            state.close();
             shared.1.notify_all();
         })?;
-        Ok(Self { state })
+        Ok((Self { state }, submitted))
     }
 
     /// Sends a request and waits for its answer.
@@ -913,7 +994,8 @@ impl HostedStdio {
         let (mutex, ready) = &*self.state;
         let mut state = mutex.locked();
         let id = state.id();
-        state.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        let written =
+            state.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         let deadline = Instant::now() + HOST_WAIT;
         loop {
             if let Some(at) = state.answers.iter().position(|a| a["id"] == id) {
@@ -926,13 +1008,21 @@ impl HostedStdio {
                 return Ok(answer["result"].clone());
             }
             if state.closed {
-                return Err(std::io::Error::other("the host closed the connection"));
+                return Err(std::io::Error::other(
+                    state
+                        .ended
+                        .as_deref()
+                        .unwrap_or("the host closed the connection"),
+                ));
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
-                    format!("the agent did not answer {method}"),
+                    written.err().map_or_else(
+                        || format!("the agent did not answer {method}"),
+                        |error| error.to_string(),
+                    ),
                 ));
             }
             state = polylogue_model::unpoisoned(ready.wait_timeout(state, left)).0;
@@ -953,8 +1043,10 @@ impl HostedStdio {
         let socket = dir.join(format!("{key}.sock"));
         let claude_id =
             (protocol == HostProtocol::ClaudeStreamJson).then(|| uuid::Uuid::new_v4().to_string());
-        let host = spawn_host(harness, &socket, cwd, spool, claude_id.as_deref())?;
-        let started = Self::begin(harness, protocol, dir, &key, &socket, cwd, claude_id, text);
+        let (host, stream) = spawn_host(harness, &socket, cwd, spool, claude_id.as_deref())?;
+        let started = Self::begin(
+            harness, protocol, dir, &key, &socket, cwd, claude_id, stream, text,
+        );
         if started.is_err() {
             // A host that never became a session would hold its agent
             // with nobody to reattach to it.
@@ -975,9 +1067,10 @@ impl HostedStdio {
         socket: &Path,
         cwd: &Path,
         claude_id: Option<String>,
+        stream: UnixStream,
         text: &str,
     ) -> std::io::Result<(Self, SessionId)> {
-        let hosted = Self::connect(socket, protocol, String::new())?;
+        let (hosted, _) = Self::connected(stream, protocol, String::new())?;
         let native = match protocol {
             HostProtocol::ClaudeStreamJson => claude_id.unwrap_or_default(),
             _ => {
@@ -1007,18 +1100,45 @@ impl HostedStdio {
                 protocol_session: (protocol == HostProtocol::Acp).then_some(native),
             },
         )?;
-        hosted.send(text, None)?;
+        hosted.state.0.locked().first_prompt = true;
+        let written = hosted.send(text, None).map_err(std::io::Error::other);
+        let (mutex, ready) = &*hosted.state;
+        let mut state = mutex.locked();
+        let deadline = Instant::now() + HOST_WAIT;
+        loop {
+            if let Some(reply) = state.first_reply.take() {
+                reply.map_err(std::io::Error::other)?;
+                state.first_prompt = false;
+                break;
+            }
+            if state.closed {
+                return Err(std::io::Error::other(state.ended.as_deref().unwrap_or(
+                    "the host closed before the harness answered its first turn",
+                )));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                written?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the harness did not answer its first turn",
+                ));
+            }
+            state = polylogue_model::unpoisoned(ready.wait_timeout(state, left)).0;
+        }
+        drop(state);
         Ok((hosted, session))
     }
 
-    /// Connects again to a recorded session's host.
-    pub(crate) fn reattach(record: &Record) -> std::io::Result<Self> {
+    /// Connects to the host and returns delivery IDs accepted by the relay
+    /// whose ACP prompts were active at reattachment.
+    pub(crate) fn reattach(record: &Record) -> std::io::Result<(Self, Vec<String>)> {
         let socket = record
             .socket
             .as_deref()
             .ok_or_else(|| std::io::Error::other("the record names no host socket"))?;
-        Self::connect(
-            socket,
+        Self::connected(
+            crate::socket::connect(socket)?,
             record.protocol,
             record.protocol_session.clone().unwrap_or_default(),
         )
@@ -1043,10 +1163,12 @@ impl HostedStdio {
     /// A message to an ACP agent whose prompt runs waits for that prompt
     /// (`false`); its outcome is reported through `on_sent` when it is
     /// written or dropped.
-    pub(crate) fn send(&self, text: &str, delivery: Option<&str>) -> std::io::Result<bool> {
+    pub(crate) fn send(&self, text: &str, delivery: Option<&str>) -> Result<bool, SendFailure> {
         let mut state = self.state.0.locked();
         if state.closed {
-            return Err(std::io::Error::other("the hosted session's host is gone"));
+            return Err(SendFailure::NotSent(
+                "the hosted session's host is gone".into(),
+            ));
         }
         let written = match state.protocol {
             HostProtocol::ClaudeStreamJson => state
@@ -1060,16 +1182,25 @@ impl HostedStdio {
                     state.turns += 1;
                     true
                 }),
-            _ if state.turn => {
+            _ if !state.prompts.is_empty() => {
                 state
                     .queued
                     .push_back((text.to_owned(), delivery.map(str::to_owned)));
                 Ok(false)
             }
-            _ => state.prompt(text).map(|()| true),
+            _ => state.prompt(text, delivery).map(|()| true),
         };
         state.queue_changed();
-        written
+        written.map_err(|error| SendFailure::Unknown(error.to_string()))
+    }
+
+    pub(crate) fn queued(&self, delivery: &str) -> bool {
+        self.state
+            .0
+            .locked()
+            .queued
+            .iter()
+            .any(|(_, queued)| queued.as_deref() == Some(delivery))
     }
 
     /// The oldest request awaiting an answer, by the protocol's ID.
@@ -1084,14 +1215,30 @@ impl HostedStdio {
     }
 
     /// Answers the oldest pending request.
-    pub(crate) fn answer(&self, approve: bool, text: Option<&str>) -> std::io::Result<()> {
+    pub(crate) fn answer(
+        &self,
+        approve: bool,
+        text: Option<&str>,
+    ) -> std::io::Result<Option<crate::protocol::acts::AnswerCancellation>> {
         let mut state = self.state.0.locked();
         let request = state
             .requests
-            .pop_front()
+            .front()
             .ok_or_else(|| std::io::Error::other("no request is pending on the hosted session"))?;
-        let reply = answer_message(state.protocol, &request, approve, text);
-        state.write(&reply)
+        let reply = answer_message(state.protocol, request, approve, text);
+        let cancellation = (reply["result"]["outcome"]["outcome"] == "cancelled").then(|| {
+            crate::protocol::acts::AnswerCancellation {
+                options: request["params"]["options"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|option| option["kind"].as_str().map(str::to_owned))
+                    .collect(),
+            }
+        });
+        state.write(&reply)?;
+        state.requests.pop_front();
+        Ok(cancellation)
     }
 
     pub(crate) fn interrupt(&self) -> std::io::Result<()> {
@@ -1103,13 +1250,15 @@ impl HostedStdio {
                     "request": {"subtype": "interrupt"}}))
             }
             _ => {
-                if !state.turn {
+                if state.prompts.is_empty() {
                     return Err(std::io::Error::other("no prompt is running"));
                 }
                 for (_, delivery) in std::mem::take(&mut state.queued) {
                     state.report(
                         delivery.as_deref(),
-                        Err("the running prompt was interrupted before it was sent".into()),
+                        Err(SendFailure::NotSent(
+                            "the running prompt was interrupted before it was sent".into(),
+                        )),
                     );
                 }
                 state.queue_changed();

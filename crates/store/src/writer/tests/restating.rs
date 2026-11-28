@@ -42,7 +42,7 @@ fn active(w: &TestArchive) -> Vec<Json> {
 
 // A complete reparse orders its collected observations by their source records.
 fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeMap<u64, Batch>) {
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     for mut b in observations.values().cloned() {
         reading.push(&mut b.parse[0]).unwrap();
     }
@@ -365,4 +365,28 @@ fn a_later_restating_record_replaces_the_earlier_version_and_keeps_absent_messag
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(read(&w), ["old A", "old B"]);
+}
+
+/// A replacement dropped without its end discards its parts: the writer
+/// never hears of it and the chain keeps what it had.
+#[test]
+fn a_replacement_dropped_without_its_end_changes_nothing() {
+    let w = test_archive();
+    let mut seed = batch("a", Route::Live, 0, vec![], &[]);
+    seed.length = 300;
+    seed.parse.clear();
+    w.store_reading(seed, Some(&[b'r'; 300])).unwrap();
+    w.writer.flush().unwrap();
+    let input = InputKey {
+        id: "a".into(),
+        format: "claude-code".into(),
+        route: polylogue_model::Route::Live,
+    };
+    let (mut reading, committed) = Replacement::of(&w.writer.sender(), input, 1, 300).unwrap();
+    let mut b = restating("a", 0, &[("a", "A")]);
+    crate::parse::ParseSink::part(&mut reading, b.parse.remove(0)).unwrap();
+    drop(reading);
+    assert!(committed.recv().is_err());
+    w.writer.flush().unwrap();
+    assert!(active(&w).is_empty());
 }

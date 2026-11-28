@@ -17,6 +17,7 @@ use query_language::{
 use serde_json::Value;
 
 mod execution;
+pub use execution::bind_execution;
 mod prepare;
 pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on};
 mod shipped;
@@ -24,12 +25,6 @@ pub use shipped::shipped_bindings;
 
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
-
-/// A current annotation family's names and resolved query definitions.
-pub(crate) struct SavedFamily {
-    pub names: BTreeMap<String, usize>,
-    pub queries: BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SelectionError {
@@ -82,7 +77,7 @@ impl SelectionError {
 }
 
 /// Provider work is injected; preparing or visiting never selects a provider.
-pub type NearFn<'a> = dyn Fn(&str) -> Result<Arc<crate::vectors::Similarity>, String> + 'a;
+pub type NearFn<'a> = dyn Fn(&str) -> Result<Arc<crate::vectors::Similarity>, StoreError> + 'a;
 
 pub struct PreparedSelection<'read> {
     reader: usize,
@@ -114,6 +109,15 @@ impl PreparedSelection<'_> {
     pub fn bound_query(&self) -> &BoundQuery {
         self.plan.bound_query()
     }
+    /// Resolve the ranking before reading metadata and records.
+    pub fn ranking(
+        &mut self,
+        reader: &Reader<'_>,
+        near: Option<&NearFn<'_>>,
+    ) -> Result<Option<Arc<crate::vectors::Similarity>>, SelectionError> {
+        self.program.ranking(reader, near)
+    }
+
     pub fn program(&self) -> &Program {
         &self.program
     }
@@ -375,7 +379,7 @@ impl Reader<'_> {
             resolved_times: program.resolved_times.clone(),
             random_seed: options.random_seed.unwrap_or(0),
             read_positions: BTreeMap::from([
-                ("generation".into(), position.generation),
+                ("index_instance".into(), position.index_instance),
                 ("index".into(), position.index.to_string()),
                 ("archive".into(), position.archive.to_string()),
                 (
@@ -749,13 +753,13 @@ impl Reader<'_> {
         if program
             .change_generations
             .iter()
-            .any(|generation| generation != &position.generation)
+            .any(|generation| generation != &position.index_instance)
         {
             return Err(SelectionError::Invalid {
                 kind: polylogue_model::Code::ResyncRequired,
                 message: format!(
                     "the index generation changed to {}; read the current state again",
-                    position.generation
+                    position.index_instance
                 ),
             });
         }
@@ -796,15 +800,6 @@ impl Reader<'_> {
         options: &Options,
     ) -> Result<(), QueryError> {
         prepare::resolve_reference(condition, options.self_session.as_deref())
-    }
-
-    pub(crate) fn selection_saved_queries_for_family(
-        &self,
-        root: &str,
-    ) -> Result<SavedFamily, SelectionError> {
-        let values = prepare::saved_queries_for_family(self.conn()?, root)?;
-        self.conn()?;
-        Ok(values)
     }
 
     /// The saved queries and kept results `text` names, read from this

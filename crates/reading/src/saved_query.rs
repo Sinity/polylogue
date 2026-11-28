@@ -85,7 +85,7 @@ pub(super) fn prepare(
         header: SavedQueryHeader {
             name: query.name.clone(),
             selected_revision,
-            question: Reference::Query {
+            query_id: Reference::Query {
                 key: definition.question_id.to_string(),
                 parameters: vec![],
             },
@@ -109,7 +109,7 @@ impl SavedQuery {
                 .map(|revision| &revision.reference)
                 .collect::<Vec<_>>(),
             self.query
-                .kept
+                .saved_rows
                 .iter()
                 .map(|kept| &kept.result)
                 .collect::<Vec<_>>(),
@@ -126,7 +126,7 @@ impl SavedQuery {
         Ok(BlobHash::of(&self.version_material()?))
     }
     pub(super) fn item_count(&self) -> usize {
-        self.query.revisions.len() + self.query.kept.len() + 1 + self.query.dependents.len()
+        self.query.revisions.len() + self.query.saved_rows.len() + 1 + self.query.dependents.len()
     }
     pub(super) fn item(&self, ordinal: usize, seed: BlobHash) -> Result<ReadItem, Error> {
         let (reference, item) = if ordinal < self.query.revisions.len() {
@@ -137,11 +137,11 @@ impl SavedQuery {
             )
         } else {
             let ordinal = ordinal - self.query.revisions.len();
-            if ordinal < self.query.kept.len() {
-                let kept = self.query.kept[ordinal].clone();
+            if ordinal < self.query.saved_rows.len() {
+                let kept = self.query.saved_rows[ordinal].clone();
                 (kept.result.clone(), SavedQueryItem::Kept(kept))
             } else {
-                let ordinal = ordinal - self.query.kept.len();
+                let ordinal = ordinal - self.query.saved_rows.len();
                 if ordinal == 0 {
                     (
                         format!("query:{}", self.query.name),

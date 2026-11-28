@@ -23,9 +23,7 @@ pub struct Runtime {
     live_events: Option<JoinHandle<std::io::Result<()>>>,
     /// Records hosted-connection outcomes and runs resumes.
     acts: Option<JoinHandle<()>>,
-    completion: Option<crate::completion_catalog::publisher::Publisher>,
     scope: Option<crate::daemon::scope::ScopeWorker>,
-    completion_scope: Option<polylogue_store::ScopeInvalidation>,
     pub(super) engine: Option<JoinHandle<(std::io::Result<()>, Engine)>>,
     lock: Option<polylogue_store::ArchiveLock>,
     pub(super) worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
@@ -135,9 +133,7 @@ impl Runtime {
         if self.acts.as_ref().is_some_and(JoinHandle::is_finished) {
             return Some("acts worker terminated");
         }
-        self.completion
-            .as_ref()
-            .and_then(|worker| worker.worker_failure())
+        None
     }
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
@@ -160,13 +156,6 @@ impl Runtime {
             );
         }
         let mut failure = None;
-        if let Some(completion) = self.completion.as_mut() {
-            steps.next("completion worker");
-            if let Err(error) = completion.shutdown() {
-                failure = Some(error);
-            }
-        }
-        self.completion.take();
         if let Some(scope) = self.scope.as_mut() {
             steps.next("scope worker");
             if let Err(error) = scope.shutdown() {
@@ -220,7 +209,6 @@ impl Runtime {
         }
         steps.finish();
         self.daemon.reads.close();
-        self.completion_scope.take();
         self.lock.take();
         failure.map_or(Ok(()), Err)
     }
@@ -277,10 +265,7 @@ pub fn start(
     if let Some(stopped) = crate::daemon::storage_stop::this_boot(&deployment.paths, root) {
         return Err(std::io::Error::other(stopped));
     }
-    let completion_path = deployment.paths.completion_catalog(root);
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
-    let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
-    let invalidate = move || pointer.invalidate();
     let budget = config.memory_budget;
     let config = config.with_memory_budget(budget);
     let settings = config.clone();
@@ -292,29 +277,27 @@ pub fn start(
     {
         return Err(primary_not_built());
     }
-    let (archive, lock, mode, engine, completion_scope) = match mode {
+    let (archive, lock, mode, engine) = match mode {
         ArchiveMode::Standalone => {
-            let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
-                .map_err(std::io::Error::other)?;
+            let (archive, lock) = Archive::open_for_serving(root).map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
             steps.next("starting the writer");
             let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
-            (archive, lock, ModeState::Standalone, Some(engine), scope)
+            (archive, lock, ModeState::Standalone, Some(engine))
         }
         ArchiveMode::Blocked {
             configured,
             path,
             error,
         } => {
-            let (archive, lock, scope) = Archive::open_blocked_with_invalidator(root, invalidate)
-                .map_err(std::io::Error::other)?;
+            let (archive, lock) = Archive::open_blocked(root).map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
             let state = ModeState::Blocked {
                 configured,
                 path,
                 error,
             };
-            (archive, lock, state, None, scope)
+            (archive, lock, state, None)
         }
         #[cfg(feature = "sinex")]
         ArchiveMode::Primary => return Err(primary_not_built()),
@@ -346,7 +329,6 @@ pub fn start(
         archive,
         reads,
         requests: Default::default(),
-        completion_path,
         callers: crate::hook::open_calls::OpenCalls::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
@@ -373,6 +355,7 @@ pub fn start(
         mode,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
+        captures_sources: settings.reads_sources && engine.is_some(),
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         idle_gate: crate::daemon::schema::IdleGate::default(),
@@ -386,7 +369,7 @@ pub fn start(
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
     steps.next("reattaching hosted sessions");
-    daemon.acts.reattach();
+    acts::recover_host_submissions(&daemon);
     // Messages and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are closed.
     acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
@@ -397,36 +380,14 @@ pub fn start(
         live_events_stop: None,
         live_events: None,
         acts: Some(acts_worker),
-        completion: None,
         scope: None,
-        completion_scope: Some(completion_scope),
         engine: None,
         lock: Some(lock),
         worker_events: tokio::sync::watch::channel(None).0,
         idle: Arc::new(tokio::sync::watch::channel(None).0),
         progress: progress.clone(),
     };
-    // Subscribe before the initial snapshot or starting the ingest loop.
-    let completion_commits = runtime
-        .daemon
-        .writes
-        .as_ref()
-        .map(WriterSender::completion_commits);
-    steps.next("reading the first status");
-    // The first status snapshot is read before any request is served, so
-    // status says it is warming only while no index can be read yet.
-    let commits_read = runtime
-        .daemon
-        .writes
-        .as_ref()
-        .map_or(0, WriterSender::commits_made);
-    if let Ok(reader) = runtime.daemon.reads.reader() {
-        runtime
-            .daemon
-            .status_snapshot
-            .refresh(&runtime.daemon, &reader, commits_read);
-    }
-    steps.next("starting the scope and completion workers");
+    steps.next("starting the scope worker");
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),
         runtime
@@ -436,13 +397,6 @@ pub fn start(
             .map(WriterSender::completion_commits),
         runtime.worker_events.clone(),
     )?);
-    if !runtime.daemon.mode.blocked() {
-        runtime.completion = Some(crate::completion_catalog::publisher::Publisher::start(
-            Arc::clone(&runtime.daemon),
-            completion_commits,
-            runtime.worker_events.clone(),
-        )?);
-    }
     let Some(mut engine) = engine.take() else {
         // Without a loop (writes paused) there is no work to wait for.
         if lifetime == Lifetime::UntilIdle {

@@ -2,6 +2,11 @@ use super::*;
 use crate::parse::run_document;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn capture(raw: Json, session: Json) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "polylogue_capture_kind": "conversation",
@@ -240,6 +245,22 @@ fn the_files_of_a_capture_name_their_message_by_its_provider_id() {
     assert_eq!(read["files"][0]["file_id"], "file-Pic");
     assert_eq!(read["files"][0]["inline"], false);
     assert_eq!(read["conversation"]["temporary"], false);
+}
+
+#[test]
+fn a_capture_keeps_malformed_bytes_visible_on_the_attachment() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider":"chatgpt", "provider_session_id":"c1", "turns":[],
+            "attachments":[{"provider_attachment_id":"file-Pic","message_provider_id":"m1",
+                "content_base64":"invalid!!"}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    assert!(step.output.blobs.is_empty());
+    assert!(step.output.messages.iter().flat_map(|row| &row.message.blocks).any(|block|
+        matches!(block, Block::Image(attachment) | Block::File(attachment)
+            if attachment.failure == Some(AttachmentFailure::InvalidBase64) && attachment.blob.is_none())
+    ));
 }
 
 #[test]

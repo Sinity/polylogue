@@ -20,14 +20,14 @@ fn invalid(message: &str) -> Failure {
     Failure::from(Error::new(ErrorKind::InvalidQuery, message, 0))
 }
 
-/// The read positions a cursor records: the generation, the index file and
+/// The read positions a cursor records: the index instance, the index file and
 /// the counters the read saw.
 pub(crate) fn read_positions(
     position: &ChangePosition,
     index_file: (u64, u64),
 ) -> BTreeMap<String, String> {
     BTreeMap::from([
-        ("generation".into(), position.generation.clone()),
+        ("index_instance".into(), position.index_instance.clone()),
         (
             "index_file".into(),
             format!("{}:{}", index_file.0, index_file.1),
@@ -38,9 +38,9 @@ pub(crate) fn read_positions(
 }
 
 /// Whether the recorded read positions are still reachable from the current
-/// ones: same generation and index file, counters not ahead.
-pub(crate) fn read_positions_unchanged(
-    context: &CursorContext,
+/// ones: same index instance and index file, counters not ahead.
+pub(crate) fn read_positions_unchanged<C>(
+    context: &CursorContext<C>,
     position: &ChangePosition,
     index_file: (u64, u64),
 ) -> bool {
@@ -51,7 +51,7 @@ pub(crate) fn read_positions_unchanged(
             .and_then(|value| value.parse::<i64>().ok())
             .is_some_and(|value| value <= bound)
     };
-    context.read_positions.get("generation") == Some(&position.generation)
+    context.read_positions.get("index_instance") == Some(&position.index_instance)
         && context.read_positions.get("index_file")
             == Some(&format!("{}:{}", index_file.0, index_file.1))
         && at_most("index", position.index)
@@ -80,7 +80,7 @@ pub(super) fn open(
 ) -> Result<Continuation, Failure> {
     polylogue_store::read::open_cursor(
         seal,
-        &position.generation,
+        &position.index_instance,
         &SealedCursor::from_wire(text),
         question,
         |name| {

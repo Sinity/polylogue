@@ -48,7 +48,7 @@ fn authored_line_steps_keep_their_values_on_the_cli() {
     ];
     let parsed = crate::cli::line::parse(
         &words.map(str::to_owned),
-        &crate::cli::line::FirstWordCatalog::default(),
+        &crate::cli::line::SavedNames::default(),
         false,
     )
     .unwrap();

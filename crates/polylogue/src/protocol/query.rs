@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 pub struct Position {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness: Option<polylogue_model::freshness::ReadFreshness>,
-    pub generation: String,
+    pub index_instance: String,
     pub index: u64,
     pub archive: u64,
     pub cursor: String,
@@ -21,6 +21,11 @@ pub struct Resolved {
     pub context: polylogue_model::context::RunContext,
     #[serde(default)]
     pub times: Vec<query_language::time::ResolvedTime>,
+    /// The archive record of the original evaluation, shared by all its pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<polylogue_model::Reference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<polylogue_model::Reference>,
 }
 
 pub use polylogue_store::query::execute::Explanation;
@@ -56,12 +61,36 @@ impl Answer {
         }
     }
 
-    /// The index position the answer was read at.
-    pub fn read_at_mut(&mut self) -> &mut Position {
+    pub fn next(&self) -> Option<&str> {
         match self {
-            Self::Rows(rows) => &mut rows.read_at,
-            Self::PagedMeasure(measure) => &mut measure.read_at,
-            Self::Measure(measure) => &mut measure.read_at,
+            Self::Rows(rows) => rows.next.as_deref(),
+            Self::PagedMeasure(measure) => measure.next.as_deref(),
+            Self::Measure(_) => None,
+        }
+    }
+
+    pub fn count(&self) -> Option<u64> {
+        match self {
+            Self::Rows(rows) => rows.count,
+            Self::PagedMeasure(measure) => measure.count,
+            Self::Measure(_) => None,
+        }
+    }
+
+    pub fn set_count(&mut self, count: Option<u64>) {
+        match self {
+            Self::Rows(rows) => rows.count = count,
+            Self::PagedMeasure(measure) => measure.count = count,
+            Self::Measure(_) => {}
+        }
+    }
+
+    /// The index position the answer was read at.
+    pub fn read_position_mut(&mut self) -> &mut Position {
+        match self {
+            Self::Rows(rows) => &mut rows.read_position,
+            Self::PagedMeasure(measure) => &mut measure.read_position,
+            Self::Measure(measure) => &mut measure.read_position,
         }
     }
 }
@@ -69,7 +98,7 @@ impl Answer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rows {
-    pub read_at: Position,
+    pub read_position: Position,
     pub unit: String,
     pub shape: polylogue_query::Shape,
     pub columns: Vec<polylogue_query::Column>,
@@ -96,7 +125,7 @@ pub struct Rows {
 pub struct PagedMeasure {
     pub measure: String,
     pub data: Value,
-    pub read_at: Position,
+    pub read_position: Position,
     pub resolved: Resolved,
     #[serde(deserialize_with = "Option::deserialize")]
     #[schemars(required, schema_with = "Option::<u64>::json_schema")]
@@ -111,7 +140,7 @@ pub struct PagedMeasure {
 pub struct Measure {
     pub measure: String,
     pub data: Value,
-    pub read_at: Position,
+    pub read_position: Position,
     pub resolved: Resolved,
 }
 

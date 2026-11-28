@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 parser_modules! {
     mod fields;
@@ -24,7 +24,6 @@ use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
-use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, MessageId, PromptKind,
     Role, Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
@@ -39,25 +38,52 @@ const ROOT_PARENT: &str = "00000000-0000-4000-8000-000000000000";
 
 /// `conversations.json` whose conversations start with `uuid` (ChatGPT's
 /// export has the same name and never does).
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    if sidecars::recognize(path, head) {
+///
+/// One conversation alone (`uuid` and `chat_messages`) is recognized
+/// whatever the file is named, once the whole document is read. A project
+/// read whole names itself by its `docs` or `prompt_template`; its path alone
+/// does not.
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::{Kind, ShapeKey};
+    if head.shape.is_some()
+        && head.holds(ShapeKey::Uuid, Kind::String)
+        && head.holds(ShapeKey::ChatMessages, Kind::Array)
+    {
         return true;
     }
+    if sidecars::recognize(path, head.bytes) {
+        return head.shape.is_none()
+            || !project_path(path)
+            || (head.holds(ShapeKey::Uuid, Kind::String)
+                && (head.has(ShapeKey::Docs) || head.has(ShapeKey::PromptTemplate)));
+    }
+    let head = head.bytes;
     let named = path.extension().is_some_and(|ext| ext == "json");
     named && first_byte(head) == Some(b'[') && first_key(head) == Some("uuid")
 }
 
+/// A project of the export: `projects.json`, or a file under `projects/`.
+/// Its path alone declares no export around it.
+pub fn project_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "json")
+        && (path.file_name().is_some_and(|name| name == "projects.json")
+            || path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "projects"))
+}
+
 pub fn open(path: &Path) -> Option<Parse> {
-    if let Some(parser) = sidecars::open(path) {
-        return Some(parser);
-    }
-    let named = path.extension().is_some_and(|ext| ext == "json");
-    named.then(|| Parse::Export(Box::new(Export)))
+    sidecars::open(path).or_else(|| Some(Parse::Export(Box::new(Export))))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
-pub fn recognize_design(path: &Path, head: &[u8]) -> bool {
-    in_design_dir(path) && first_byte(head) == Some(b'{') && first_key(head) == Some("uuid")
+pub fn recognize_design(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::{Kind, ShapeKey};
+    in_design_dir(path)
+        && head.top() == Some(Kind::Object)
+        && head.holds(ShapeKey::Uuid, Kind::String)
 }
 
 pub fn open_design(path: &Path) -> Option<Parse> {
@@ -647,7 +673,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
     })
 }
 
-fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
+fn inline_bytes(block: &Json) -> Option<Result<Vec<u8>, polylogue_model::AttachmentFailure>> {
     if !matches!(
         block.str("type").filter(|s| !s.is_empty()),
         Some("image" | "document")
@@ -655,14 +681,13 @@ fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
     {
         return None;
     }
-    base64::engine::general_purpose::STANDARD
-        .decode(block.pointer("/source/data")?.as_str()?)
-        .ok()
+    Some(crate::inline_bytes::decode_bytes(
+        block.pointer("/source/data").and_then(Json::as_str),
+    ))
 }
 
 fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment {
-    let bytes = inline_bytes(block);
-    Attachment {
+    let mut attachment = Attachment {
         name: block
             .str("name")
             .filter(|s| !s.is_empty())
@@ -681,15 +706,22 @@ fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment 
             .pointer("/source/url")
             .and_then(Json::as_str)
             .map(str::to_owned),
-        blob: bytes.as_ref().map(|b| BlobHash::of(b)),
-        size: bytes.as_ref().map(|b| b.len() as u64),
         direction,
         ..Attachment::default()
+    };
+    match inline_bytes(block) {
+        Some(Ok(bytes)) => {
+            attachment.blob = Some(BlobHash::of(&bytes));
+            attachment.size = Some(bytes.len() as u64);
+        }
+        Some(Err(failure)) => attachment.failure = Some(failure),
+        None => {}
     }
+    attachment
 }
 
 fn collect_inline(value: &Json, blobs: &mut Vec<ExtractedBlob>) {
-    if let Some(bytes) = inline_bytes(value) {
+    if let Some(Ok(bytes)) = inline_bytes(value) {
         let hash = BlobHash::of(&bytes);
         if !blobs.iter().any(|blob| blob.hash == hash) {
             blobs.push(ExtractedBlob {

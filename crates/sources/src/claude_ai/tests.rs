@@ -2,6 +2,16 @@ use super::*;
 use crate::parse::run_document;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize_design(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize_design(path, &crate::document::Head::new(head))
+}
+
 fn conv(messages: Vec<Json>) -> Json {
     json!({"uuid": "c1", "name": "Named", "summary": "", "created_at": "2026-01-01T00:00:00Z",
            "updated_at": "2026-01-01T00:10:00Z", "account": {"uuid": "acc"},
@@ -202,8 +212,14 @@ fn recognizers_tell_the_exports_apart() {
     let p = Path::new("/x.zip!/conversations.json");
     assert!(recognize(p, claude));
     assert!(!recognize(p, chatgpt));
-    assert!(!crate::chatgpt::recognize(p, claude));
-    assert!(crate::chatgpt::recognize(p, chatgpt));
+    assert!(!crate::chatgpt::recognize(
+        p,
+        &crate::document::Head::new(claude)
+    ));
+    assert!(crate::chatgpt::recognize(
+        p,
+        &crate::document::Head::new(chatgpt)
+    ));
     let d = Path::new("/x.zip!/design_chats/05c0.json");
     assert!(recognize_design(d, b"{\"uuid\": \"05c0\""));
     assert!(!recognize_design(
@@ -238,13 +254,17 @@ fn a_design_chat_delivers_the_bytes_of_its_inline_images() {
     "messages": [
         {"uuid": "m1", "role": "assistant", "created_at": "2026-01-01T00:00:30Z",
          "content": {"role": "assistant", "attachments": [], "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQID"}}
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQID"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "invalid!!"}}
          ]}}
     ]});
     let step = run_document(&Design, &serde_json::to_vec(&chat).unwrap()).unwrap();
     assert_eq!(step.output.blobs.len(), 1);
     assert_eq!(step.output.blobs[0].bytes, vec![1, 2, 3]);
     assert_eq!(step.output.blobs[0].hash, BlobHash::of(&[1, 2, 3]));
+    let blocks = &step.output.messages[0].message.blocks;
+    assert!(matches!(&blocks[1], Block::Image(a)
+        if a.failure == Some(polylogue_model::AttachmentFailure::InvalidBase64) && a.blob.is_none()));
 }
 
 #[test]

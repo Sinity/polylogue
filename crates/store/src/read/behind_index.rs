@@ -52,9 +52,9 @@ pub enum RevisionChains {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChainCensus {
     pub chains: BTreeMap<(String, ChainStatusName), u64>,
-    /// Why the chains shown as `parsing` are due, by origin: never parsed,
-    /// parsed under another parser version, or stored further.
-    pub behind: BTreeMap<String, std::collections::BTreeSet<CompletenessReason>>,
+    /// Why the chains shown as `parsing` are due, counted by origin: never
+    /// parsed, parsed under another parser version, or stored further.
+    pub behind: BTreeMap<String, BTreeMap<CompletenessReason, u64>>,
 }
 
 impl ChainCensus {
@@ -87,23 +87,39 @@ fn parser<'a>(versions: &'a [(String, String)], origin: &str) -> Option<&'a str>
         .map(|(_, version)| version.as_str())
 }
 
-fn chain_rows() -> String {
+fn import_formats(observations: &str) -> String {
     use crate::source::{IMPORT_FORMAT, IMPORT_FORMAT_ORDER, STATES_IMPORT_FORMAT};
+    format!(
+        "SELECT o.input, o.path_bytes, {IMPORT_FORMAT} AS format,
+            row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
+        FROM {observations} o WHERE {STATES_IMPORT_FORMAT}"
+    )
+}
+
+fn chain_rows(recent: bool) -> String {
+    let formats = import_formats("observations");
     let state = crate::parse_state::PLANNED_COLUMNS;
+    // A revision carries the observation clock for an in-place append too.
+    // A recorded file mtime is only a scheduling proxy when the observation
+    // clock is unavailable. Unknown times sort last; no time is invented.
+    let observed = if recent {
+        ", coalesce(l.seen_at,
+            (SELECT max(seen_at) FROM observations
+             WHERE input = c.input AND (revision = l.number OR chain = c.chain)),
+            l.mtime_ns / 1000000) AS observed_at"
+    } else {
+        ""
+    };
     format!(
         r#"first_paths AS MATERIALIZED (
                 SELECT input, min(id) AS observation
                 FROM observations GROUP BY input
-            ), formats AS (
-                SELECT o.input, o.path_bytes, {IMPORT_FORMAT} AS format,
-                    row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
-                FROM observations o WHERE {STATES_IMPORT_FORMAT}
-            )
+            ), formats AS ({formats})
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
                 COALESCE(f.format, i.origin) AS format,
                 COALESCE(f.path_bytes, o.path_bytes),
-                {state}
+                {state}{observed}
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
@@ -117,15 +133,15 @@ fn chain_rows() -> String {
     )
 }
 
-fn planning_sql(selected: bool, chains: RevisionChains) -> String {
+fn planning_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
     format!(
         "{} ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
-        behind_sql(selected, chains)
+        behind_sql(selected, chains, at_cut, false)
     )
 }
 
 /// The chains of the selected inputs with their parse states, in no order.
-fn behind_sql(selected: bool, chains: RevisionChains) -> String {
+fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool, recent: bool) -> String {
     // Restrict histories before aggregating them. All-input planning
     // keeps its existing source-view access.
     let (revisions, observations) = if selected {
@@ -135,8 +151,8 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
         )
     } else {
         (
-            "SELECT * FROM source_revision",
-            "SELECT * FROM source_observation",
+            "SELECT r.* FROM source_revision r",
+            "SELECT o.* FROM source_observation o",
         )
     };
     // Keep the selected chain lengths once: flattening the current-chain MAX
@@ -153,8 +169,40 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
             CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
             GROUP BY r.input,r.chain",
     };
-    let database = crate::source::database_original("c.input");
-    let chain_rows = chain_rows();
+    let (revisions, observations, database, chain_lengths) = if at_cut {
+        let extents = if selected {
+            "FROM chosen CROSS JOIN source_extent e ON e.input=chosen.input"
+        } else {
+            "FROM source_extent e"
+        };
+        // Another chunk of the same read extends a revision in place. Its
+        // original commit stays put, so cap that revision's chain at the
+        // last extent committed through this cut.
+        let cut_lengths = format!(
+            "SELECT c.input,c.chain,min(c.length,coalesce(e.length,c.length)) AS length
+             FROM ({chain_lengths}) c LEFT JOIN (
+                 SELECT e.input,e.chain,max(e.offset + e.length) AS length
+                 {extents} WHERE e.commit_seq <= ?2 GROUP BY e.input,e.chain
+             ) e USING (input,chain)"
+        );
+        (
+            format!("{revisions} WHERE r.commit_seq <= ?2"),
+            format!("{observations} WHERE o.commit_seq <= ?2"),
+            crate::source::database_original_from(
+                "c.input",
+                "(SELECT * FROM source_observation WHERE commit_seq <= ?2)",
+            ),
+            cut_lengths,
+        )
+    } else {
+        (
+            revisions.into(),
+            observations.into(),
+            crate::source::database_original("c.input"),
+            chain_lengths.into(),
+        )
+    };
+    let chain_rows = chain_rows(recent);
     format!(
         "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?1)),
          revisions AS NOT MATERIALIZED ({revisions}),
@@ -189,6 +237,44 @@ impl Reader<'_> {
         let ids = query
             .query_map(params![after, limit as u64], |row| row.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
+        token.check()?;
+        Ok(ids)
+    }
+
+    /// A page of inputs whose stored contents or observations changed in
+    /// (after, through]. A continued read can change only the extents in
+    /// this range. A database row stream's observation can also change
+    /// whether its original database needs a reading.
+    pub fn changed_input_ids(
+        &self,
+        after: Position,
+        through: Position,
+        after_input: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let token = self.scope_token();
+        let database_rows = crate::source::database_rows("member");
+        let conn = self.conn()?;
+        let mut query = conn.prepare_cached(&format!(
+            "WITH changes AS MATERIALIZED (
+                SELECT input, id FROM source_observation WHERE commit_seq > ?1 AND commit_seq <= ?2
+             )
+             SELECT input FROM (
+                SELECT input FROM source_revision WHERE commit_seq > ?1 AND commit_seq <= ?2
+                UNION SELECT input FROM source_extent WHERE commit_seq > ?1 AND commit_seq <= ?2
+                UNION SELECT input FROM changes
+                UNION SELECT member.container_input FROM changes o
+                JOIN source_observation_container member ON member.observation_id = o.id
+                WHERE {database_rows}
+             )
+             WHERE ?3 IS NULL OR input > ?3 ORDER BY input LIMIT ?4"
+        ))?;
+        let ids = query
+            .query_map(
+                params![after.0, through.0, after_input, limit as u64],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         token.check()?;
         Ok(ids)
     }
@@ -233,8 +319,18 @@ impl Reader<'_> {
         versions: &[(String, String)],
         through: &str,
     ) -> Result<(u64, u64)> {
+        self.count_chains_behind_index_at(versions, through, None)
+    }
+
+    /// Counts only archive rows committed through the supplied position.
+    pub fn count_chains_behind_index_at(
+        &self,
+        versions: &[(String, String)],
+        through: &str,
+        cut: Option<Position>,
+    ) -> Result<(u64, u64)> {
         let (mut chains, mut bytes) = (0, 0);
-        self.visit_chain_rows(None, RevisionChains::All, &mut |row| {
+        self.visit_chain_rows(None, RevisionChains::All, cut, None, &mut |row| {
             if row.input.as_str() <= through
                 && parser(versions, &row.source.format).is_some()
                 && row.due(versions) != Due::No
@@ -255,39 +351,79 @@ impl Reader<'_> {
         chains: RevisionChains,
         selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
+        self.chains_behind_index_at(versions, chains, selected, None)
+    }
+
+    /// Like [Self::chains_behind_index], with revision lengths and parser
+    /// hints determined by rows committed through the supplied position.
+    pub fn chains_behind_index_at(
+        &self,
+        versions: &[(String, String)],
+        chains: RevisionChains,
+        selected: Option<&[String]>,
+        cut: Option<Position>,
+    ) -> Result<Vec<BehindChain>> {
         let mut found = Vec::new();
-        self.visit_chain_rows(selected, chains, &mut |row| {
-            let due = row.due(versions);
-            if due != Due::No {
-                found.push(BehindChain {
-                    input: row.input,
-                    current: row.current,
-                    source: row.source,
-                    chain: row.chain,
-                    imported: row.imported,
-                    stored: row.stored,
-                    state: row.state,
-                    due,
-                });
-            }
+        self.visit_chain_rows(selected, chains, cut, None, &mut |row| {
+            found.extend(row.into_behind(versions));
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
         Ok(found)
+    }
+
+    /// Select a bounded head start for current chains with no checkpoint.
+    /// Entries compete by observation time within a parser origin. Take
+    /// each origin's first entry before any origin's second entry.
+    /// Normal catch-up still reads every due chain, including partial reads.
+    pub fn recent_unread_chains(
+        &self,
+        versions: &[(String, String)],
+        through: &str,
+        per_origin: usize,
+    ) -> Result<Vec<BehindChain>> {
+        let mut counts = BTreeMap::new();
+        let mut rounds: Vec<Vec<BehindChain>> = (0..per_origin).map(|_| Vec::new()).collect();
+        self.visit_chain_rows(
+            None,
+            RevisionChains::Newest,
+            None,
+            Some(through),
+            &mut |row| {
+                let round = counts.entry(row.source.format.clone()).or_insert(0);
+                if let Some(batch) = rounds.get_mut(*round)
+                    && let Some(chain) = row.into_behind(versions)
+                {
+                    batch.push(chain);
+                    *round += 1;
+                }
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )?;
+        Ok(rounds.into_iter().flatten().collect())
     }
 
     /// Every chain of the archive counted by origin and status, judged
     /// against the origins' parser versions in `contracts`.
     pub fn chain_census(&self, contracts: &[ReadingContract]) -> Result<ChainCensus> {
         let token = self.scope_token();
-        let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("c.input", "i.origin");
+        // Census visits the entire archive. Resolve formats and SQLite member
+        // links once rather than reopening each input's observation history
+        // for every chain.
+        let formats = import_formats("source_observation");
+        let database_inputs = crate::source::database_links_from("source_observation");
         let state = crate::parse_state::PLANNED_COLUMNS;
         let sql = format!(
-            "SELECT c.input, c.length,
-                CASE WHEN {database} THEN 'export-file' ELSE {format} END, {state}
+            "WITH database_inputs(input) AS MATERIALIZED (
+                SELECT DISTINCT container_input FROM ({database_inputs})
+             ), formats AS MATERIALIZED ({formats})
+             SELECT c.length,
+                CASE WHEN db.input IS NOT NULL THEN 'export-file'
+                     ELSE coalesce(f.format, i.origin) END, {state}
              FROM (SELECT input, chain, max(length) AS length FROM source_revision
                    GROUP BY input, chain) c
              JOIN source_input i ON i.id = c.input
+             LEFT JOIN database_inputs db ON db.input = c.input
+             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
              LEFT JOIN input_ref ir ON ir.id = c.input
              LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain"
         );
@@ -297,9 +433,9 @@ impl Reader<'_> {
         let mut census = ChainCensus::default();
         while let Some(row) = rows.next()? {
             token.check()?;
-            let stored: u64 = row.get(1)?;
-            let origin: String = row.get(2)?;
-            let state = crate::parse_state::ParseStateRow::planned(row, 3)?;
+            let stored: u64 = row.get(0)?;
+            let origin: String = row.get(1)?;
+            let state = crate::parse_state::ParseStateRow::planned(row, 2)?;
             let parser = contracts
                 .iter()
                 .find(|c| c.origin() == origin)
@@ -317,7 +453,12 @@ impl Reader<'_> {
                     }
                     Some(_) => CompletenessReason::ParserBehind,
                 };
-                census.behind.entry(origin.clone()).or_default().insert(why);
+                *census
+                    .behind
+                    .entry(origin.clone())
+                    .or_default()
+                    .entry(why)
+                    .or_default() += 1;
             }
             *census.chains.entry((origin, shown.name())).or_default() += 1;
         }
@@ -331,22 +472,38 @@ impl Reader<'_> {
         &self,
         selected: Option<&[String]>,
         chains: RevisionChains,
+        cut: Option<Position>,
+        recent_through: Option<&str>,
         visit: &mut dyn FnMut(ChainRow) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         let selected_json = selected.map(serde_json::to_string).transpose()?;
         #[cfg(feature = "faults")]
-        crate::fault::check(
-            "read.chains_behind_index",
-            &format!(
-                "{chains:?}:{}",
-                selected_json.as_deref().unwrap_or("all inputs")
-            ),
-        )?;
+        if recent_through.is_none() {
+            crate::fault::check(
+                "read.chains_behind_index",
+                &format!(
+                    "{chains:?}:{}",
+                    selected_json.as_deref().unwrap_or("all inputs")
+                ),
+            )?;
+        }
         let connection = self.conn()?;
-        let sql = planning_sql(selected.is_some(), chains);
+        let sql = if recent_through.is_some() {
+            format!(
+                "{} AND p.input_pk IS NULL AND c.input <= ?2
+                    ORDER BY observed_at DESC, c.input",
+                behind_sql(false, RevisionChains::Newest, false, true)
+            )
+        } else {
+            planning_sql(selected.is_some(), chains, cut.is_some())
+        };
         let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params![selected_json])?;
+        let mut rows = match (cut, recent_through) {
+            (_, Some(through)) => statement.query(params![selected_json, through])?,
+            (Some(cut), None) => statement.query(params![selected_json, cut.0])?,
+            (None, None) => statement.query(params![selected_json])?,
+        };
         while let Some(row) = rows.next()? {
             token.check()?;
             let path_bytes: Option<Vec<u8>> = row.get(6)?;
@@ -385,6 +542,20 @@ struct ChainRow {
 }
 
 impl ChainRow {
+    fn into_behind(self, versions: &[(String, String)]) -> Option<BehindChain> {
+        let due = self.due(versions);
+        (due != Due::No).then_some(BehindChain {
+            input: self.input,
+            current: self.current,
+            source: self.source,
+            chain: self.chain,
+            imported: self.imported,
+            stored: self.stored,
+            state: self.state,
+            due,
+        })
+    }
+
     fn due(&self, versions: &[(String, String)]) -> Due {
         due(
             &self.state,

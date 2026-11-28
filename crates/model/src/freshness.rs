@@ -118,50 +118,136 @@ impl IndexFreshness {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CompletenessReason {
-    MissingDeclaration,
-    MissingCheckpoint,
-    ParseVersionChanged,
-    ParserBehind,
-    /// Some stored inputs failed their origin's shape check.
-    Refused,
-    /// Some stored inputs' bytes could not be parsed under the current parser.
-    ParseFailed,
-    KnownRawOnly,
-    DerivationBehind,
-    SearchPending,
-    IndexBuilding,
-    /// Primary mode: the index has not yet applied the confirmed stream.
-    StreamNotApplied,
-    /// Primary mode: the index is behind Sinex's latest position; the lag is
-    /// in the read's position report.
-    StreamBehind,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum CompletenessReason {
+        /// Some stored inputs are of an origin no reading declaration names.
+        MissingDeclaration => "missing_declaration",
+        MissingCheckpoint => "missing_checkpoint",
+        ParseVersionChanged => "parse_version_changed",
+        ParserBehind => "parser_behind",
+        CapturePending => "capture_pending",
+        /// Some stored inputs failed their origin's shape check.
+        Refused => "refused",
+        /// Some stored inputs' bytes could not be parsed under the current parser.
+        ParseFailed => "parse_failed",
+        DerivationBehind => "derivation_behind",
+        SearchPending => "search_pending",
+        IndexBuilding => "index_building",
+        /// Primary mode: the index has not yet applied the confirmed stream.
+        StreamNotApplied => "stream_not_applied",
+        /// Primary mode: the index is behind Sinex's latest position; the lag is
+        /// in the read's position report.
+        StreamBehind => "stream_behind",
+    }
 }
 
 impl CompletenessReason {
-    /// The reason in words, as notes and the status view say it.
-    pub fn text(self) -> &'static str {
-        match self {
-            CompletenessReason::MissingDeclaration => {
-                "some stored inputs have no recorded reading declaration"
+    /// Whether the daemon ends it by itself, so that waiting for it ends.
+    /// An undeclared origin and a failed or refused parse stand until the
+    /// bytes, the parser or the declarations change.
+    pub fn waiting_ends(self) -> bool {
+        !matches!(
+            self,
+            Self::MissingDeclaration | Self::Refused | Self::ParseFailed
+        )
+    }
+
+    /// What it says: of stored inputs, in the singular and the plural, or
+    /// of the index as a whole.
+    fn words(self) -> Words {
+        Words::Inputs(match self {
+            Self::MissingDeclaration => (
+                "has no recorded reading declaration",
+                "have no recorded reading declaration",
+            ),
+            Self::MissingCheckpoint => ("has not been parsed yet", "have not been parsed yet"),
+            Self::ParseVersionChanged => ("awaits the current parser", "await the current parser"),
+            Self::ParserBehind => ("has bytes not parsed yet", "have bytes not parsed yet"),
+            Self::CapturePending => {
+                return Words::Index("watched inputs are still being collected");
             }
-            CompletenessReason::MissingCheckpoint => "some stored inputs have not been parsed",
-            CompletenessReason::ParseVersionChanged => {
-                "some stored inputs await the current parser"
+            Self::Refused => ("was refused by its parser", "were refused by their parser"),
+            Self::ParseFailed => ("failed to parse", "failed to parse"),
+            Self::DerivationBehind => {
+                return Words::Index("session figures are still being computed");
             }
-            CompletenessReason::ParserBehind => "parsing is behind the stored bytes",
-            CompletenessReason::Refused => "some stored inputs were refused by their parser",
-            CompletenessReason::ParseFailed => "some stored inputs failed to parse",
-            CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
-            CompletenessReason::DerivationBehind => "session figures are still being computed",
-            CompletenessReason::SearchPending => "search text is pending",
-            CompletenessReason::IndexBuilding => "the index is being built",
-            CompletenessReason::StreamNotApplied => "the confirmed stream has not been applied",
-            CompletenessReason::StreamBehind => "the index is behind the confirmed stream",
+            Self::SearchPending => return Words::Index("search text is pending"),
+            Self::IndexBuilding => return Words::Index("the index is being built"),
+            Self::StreamNotApplied => {
+                return Words::Index("the confirmed stream has not been applied");
+            }
+            Self::StreamBehind => return Words::Index("the index is behind the confirmed stream"),
+        })
+    }
+}
+
+enum Words {
+    Inputs((&'static str, &'static str)),
+    Index(&'static str),
+}
+
+/// One reason a reply is not up to date: for stored inputs, how many and
+/// of which origin; and whether waiting ends it.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct CountedReason {
+    pub reason: CompletenessReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    /// Whether the daemon ends it by itself, so that waiting for it ends.
+    pub waiting_ends: bool,
+}
+
+impl CountedReason {
+    /// A reason with no count or origin: the index being built, figures
+    /// being computed.
+    pub fn new(reason: CompletenessReason) -> Self {
+        Self {
+            reason,
+            origin: None,
+            count: None,
+            waiting_ends: reason.waiting_ends(),
+        }
+    }
+
+    /// `count` stored inputs of `origin` held back for `reason`.
+    pub fn inputs(reason: CompletenessReason, origin: &str, count: u64) -> Self {
+        Self {
+            origin: Some(origin.to_owned()),
+            count: Some(count),
+            ..Self::new(reason)
+        }
+    }
+
+    /// The reason in words, as the status view says it: how many, and of
+    /// which origin.
+    pub fn text(&self) -> String {
+        match self.reason.words() {
+            Words::Inputs((one, many)) => match (self.count, &self.origin) {
+                (Some(1), Some(origin)) => format!("1 {origin} input {one}"),
+                (Some(n), Some(origin)) => format!("{n} {origin} inputs {many}"),
+                (Some(1), None) => format!("1 stored input {one}"),
+                (Some(n), None) => format!("{n} stored inputs {many}"),
+                (None, _) => format!("some stored inputs {many}"),
+            },
+            Words::Index(words) => words.to_owned(),
+        }
+    }
+
+    /// The reason as a reply's note: its words, and where what it counts
+    /// is shown.
+    pub fn note(&self) -> String {
+        match self.reason.words() {
+            // Stored inputs are no query unit yet; status counts them.
+            Words::Inputs(_) => format!(
+                "{}; status counts them, and no query lists stored inputs yet",
+                self.text()
+            ),
+            Words::Index(_) => self.text(),
         }
     }
 }
@@ -170,13 +256,20 @@ impl CompletenessReason {
 #[serde(tag = "state", content = "reasons", rename_all = "snake_case")]
 pub enum CompletenessDimension {
     Complete,
-    Incomplete(Vec<CompletenessReason>),
-    Unknown(Vec<CompletenessReason>),
+    Incomplete(Vec<CountedReason>),
+    Unknown(Vec<CountedReason>),
     NotApplicable,
 }
 impl CompletenessDimension {
     fn current(&self) -> bool {
         matches!(self, Self::Complete | Self::NotApplicable)
+    }
+    /// The reasons it is not current.
+    pub fn reasons(&self) -> &[CountedReason] {
+        match self {
+            Self::Incomplete(reasons) | Self::Unknown(reasons) => reasons,
+            Self::Complete | Self::NotApplicable => &[],
+        }
     }
 }
 
@@ -190,6 +283,10 @@ pub struct ReadCompleteness {
     pub kept_chains: u64,
     /// Known nonparsed chains, independently of retained raw-byte coverage.
     pub raw_only_chains: u64,
+    /// Chains whose parse failed or was refused, by origin. Waiting does not
+    /// end them, so a read is up to date beside them; status reports them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_parses: Vec<CountedReason>,
 }
 impl ReadCompleteness {
     /// No outstanding local work, as in a newly created standalone archive.
@@ -201,21 +298,33 @@ impl ReadCompleteness {
             confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains: 0,
             raw_only_chains: 0,
+            failed_parses: Vec::new(),
         }
     }
+    fn dimensions(&self) -> [&CompletenessDimension; 4] {
+        [
+            &self.parsing,
+            &self.derivation,
+            &self.search,
+            &self.confirmed_stream,
+        ]
+    }
     pub fn caught_up(&self) -> bool {
-        self.parsing.current()
-            && self.derivation.current()
-            && self.search.current()
-            && self.confirmed_stream.current()
+        self.dimensions()
+            .into_iter()
+            .all(CompletenessDimension::current)
     }
     /// Whether work the daemon finishes by itself, without its loop, is
     /// still to come: derived figures, search text. Parse states the loop
-    /// cannot finish (no parser, missing earlier bytes) are not such work.
+    /// cannot finish (no parser, a failed or refused parse) are not such
+    /// work.
     pub fn background_work_pending(&self) -> bool {
         self.derivation != CompletenessDimension::Complete
-            || matches!(&self.search, CompletenessDimension::Incomplete(reasons)
-                if reasons.contains(&CompletenessReason::SearchPending))
+            || self
+                .search
+                .reasons()
+                .iter()
+                .any(|reason| reason.reason == CompletenessReason::SearchPending)
     }
 }
 
@@ -230,6 +339,23 @@ pub struct ReadFreshness {
 impl ReadFreshness {
     pub fn up_to_date(&self) -> bool {
         self.local.caught_up() && !self.sinex.degraded()
+    }
+    /// Whether the index is catching up, so that waiting brings it up to
+    /// date: it is behind, and only for reasons the daemon ends by itself.
+    pub fn catching_up(&self) -> bool {
+        !self.up_to_date()
+            && self
+                .local
+                .dimensions()
+                .into_iter()
+                .flat_map(CompletenessDimension::reasons)
+                .all(|reason| reason.waiting_ends)
+            && match &self.sinex {
+                IndexFreshness::Standalone => true,
+                IndexFreshness::Primary { state, .. } => {
+                    matches!(state, FreshnessState::Current | FreshnessState::Behind)
+                }
+            }
     }
     /// The note for a degraded Sinex position, with the state it describes.
     pub fn sinex_note(&self) -> Option<(FreshnessState, &'static str)> {
@@ -251,26 +377,35 @@ impl ReadFreshness {
             _ => (FreshnessState::Unknown, "the Sinex position is unknown"),
         })
     }
-    pub fn notes(&self) -> Vec<&'static str> {
-        let mut notes = std::collections::BTreeSet::new();
-        for dimension in [
-            &self.local.parsing,
-            &self.local.derivation,
-            &self.local.search,
-            &self.local.confirmed_stream,
-        ] {
-            if let CompletenessDimension::Incomplete(reasons)
-            | CompletenessDimension::Unknown(reasons) = dimension
-            {
-                for reason in reasons {
-                    notes.insert(reason.text());
-                }
-            }
-        }
+    /// Why the reply is not up to date, one note for each reason.
+    pub fn notes(&self) -> Vec<String> {
+        self.words(CountedReason::note, false)
+    }
+
+    /// What status says of the index: each reason it is not up to date, and
+    /// each standing failed or refused parse.
+    pub fn status_notes(&self) -> Vec<String> {
+        self.words(CountedReason::text, true)
+    }
+
+    fn words(&self, say: fn(&CountedReason) -> String, failed_parses: bool) -> Vec<String> {
+        let reasons = self
+            .local
+            .dimensions()
+            .into_iter()
+            .flat_map(CompletenessDimension::reasons);
+        let failed: &[CountedReason] = if failed_parses {
+            &self.local.failed_parses
+        } else {
+            &[]
+        };
+        let mut notes: Vec<String> = reasons.chain(failed).map(say).collect();
         if let Some((_, note)) = self.sinex_note() {
-            notes.insert(note);
+            notes.push(note.to_owned());
         }
-        notes.into_iter().collect()
+        notes.sort();
+        notes.dedup();
+        notes
     }
 }
 

@@ -11,7 +11,7 @@ pub(crate) struct Changes;
 #[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChangesArguments {
-    /// The last fully applied feed position (GENERATION:INDEX:ARCHIVE)
+    /// The last fully applied feed position (INDEX_INSTANCE:INDEX:ARCHIVE)
     after: Option<String>,
 }
 

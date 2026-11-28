@@ -1,0 +1,409 @@
+use super::{cli, json, line, printed_cli, query_rows, start_daemon_with, wait_status};
+use serde_json::{Value, json};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::Path;
+
+fn fixture(root: &Path, harness: &str, script: &str) -> (crate::Fixture, super::Daemon) {
+    let home = root.join("home");
+    let sessions = home.join(".claude/projects/-morrow");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let mut message: Value = serde_json::from_str(&line("u1", "s1", "Plan the release")).unwrap();
+    message["cwd"] = json!(root.join("missing-checkout"));
+    std::fs::write(sessions.join("s1.jsonl"), format!("{message}\n")).unwrap();
+
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let program = bin.join(harness);
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(&root.join("archive"), &home, &root.join("config"));
+    let runtime = root.join("runtime").join("r".repeat(108));
+    std::fs::create_dir_all(&runtime).unwrap();
+    let mut command = env.command();
+    command.env("PATH", path).env("XDG_RUNTIME_DIR", runtime);
+    let daemon = start_daemon_with(&env, command);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    (env, daemon)
+}
+
+fn step(value: &Value) -> &Value {
+    let outcome = &value["reply"]["steps"][0]["outcome"];
+    assert_eq!(outcome["status"], "done", "{value}");
+    &outcome["reply"]["reply"]
+}
+
+#[test]
+fn hosted_start_reports_the_harness_exit_and_records_why_it_ended() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, _daemon) = fixture(
+        root.path(),
+        "claude",
+        "#!/bin/sh\nprintf '%s\\n' 'sign-in required' >&2\nexit 3\n",
+    );
+    let out = cli(
+        &env,
+        &["--json", "start", "Plan the release", "--in", "claude-code"],
+    );
+    assert_eq!(out.status.code(), Some(4), "{out:?}");
+    let failure = json(&out);
+    assert_eq!(failure["error"]["kind"], "io");
+    assert_eq!(
+        failure["error"]["message"],
+        "claude_stream_json: exit status: 3: sign-in required"
+    );
+
+    let ended = || {
+        query_rows(&cli(
+            &env,
+            &[
+                "--json",
+                "--fields",
+                "session,kind,data",
+                "events where kind:registry_hosted_ended",
+            ],
+        ))
+    };
+    wait_status(&env, |_| ended()["count"] == 1);
+    let events = ended();
+    let event = &events["rows"][0];
+    assert_eq!(event["kind"], "registry_hosted_ended");
+    assert_eq!(event["data"]["detail"], "exit status: 3: sign-in required");
+    let session = format!("session:{}", event["session"].as_str().unwrap());
+    let out = cli(&env, &[&session, "read", "--view", "live"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("exit status: 3: sign-in required")
+    );
+}
+
+#[test]
+fn send_to_a_gone_directory_reports_not_sent_and_exits_five() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, _daemon) = fixture(root.path(), "claude", "#!/bin/sh\nexit 99\n");
+    let out = cli(
+        &env,
+        &["--json", "session:claude-code:s1", "send", "continue"],
+    );
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+    let value = json(&out);
+    let row = &step(&value)["reached"][0]["deliveries"][0];
+    assert_eq!(row["session"], "claude-code:s1");
+    assert_eq!(row["outcome"], "not_sent");
+    assert_eq!(row["channel"], "resume");
+    assert_eq!(
+        row["reason"],
+        json!({"kind": "directory_missing", "path": root.path().join("missing-checkout")})
+    );
+}
+
+#[test]
+fn send_to_two_sessions_reports_the_skipped_state_and_exits_five() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, _daemon) = fixture(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+IFS= read -r line || exit 1
+printf '%s\n' '{"type":"system","subtype":"init"}'
+IFS= read -r line || exit 1
+printf '%s\n' '{"type":"result"}'
+"#,
+    );
+    let started = cli(&env, &["--json", "start", "Begin", "--in", "claude-code"]);
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let started = json(&started);
+    let hosted = started["session"].as_str().unwrap();
+    let out = printed_cli(
+        &env,
+        &format!(
+            "printf '%s\\n' session:claude-code:s1 {} | polylogue --json - send continue",
+            polylogue_render::shell_quote(&format!("session:{hosted}"))
+        ),
+    );
+    assert_eq!(out.status.code(), Some(5), "{out:?}");
+    let value = json(&out);
+    assert_eq!(value["reply"]["resolved"]["count"], 2);
+    let report = step(&value);
+    assert_eq!(
+        report["skipped"],
+        json!([{
+            "session": "claude-code:s1",
+            "reason": {"kind": "session_not_running", "state": "ended"},
+            "line": "polylogue claude-code:s1 send continue"
+        }])
+    );
+    assert_eq!(report["reached"].as_array().unwrap().len(), 1);
+    assert_eq!(report["reached"][0]["deliveries"][0]["session"], hosted);
+    assert_eq!(
+        report["reached"][0]["deliveries"][0]["outcome"],
+        "delivered"
+    );
+}
+
+#[test]
+fn an_answer_without_a_matching_option_reports_cancellation() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, _daemon) = fixture(
+        root.path(),
+        "gemini",
+        r#"#!/bin/sh
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"session/new"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"sessionId":"morrow"}}\n' "$id" ;;
+        *'"session/prompt"'*)
+            printf '%s\n' '{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"morrow","options":[{"optionId":"no","kind":"reject_once"}]}}' ;;
+        *'"outcome":"cancelled"'*)
+            printf '%s\n' "$line" > cancelled.json
+            exit 0 ;;
+    esac
+done
+"#,
+    );
+    let started = cli(
+        &env,
+        &[
+            "--json",
+            "start",
+            "Begin",
+            "--in",
+            "gemini-cli",
+            "--cwd",
+            root.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    assert_eq!(json(&started)["session"], "gemini-cli:morrow");
+    let answer = cli(
+        &env,
+        &["--json", "session:gemini-cli:morrow", "answer", "allow"],
+    );
+    assert_eq!(answer.status.code(), Some(0), "{answer:?}");
+    let value = json(&answer);
+    let row = &step(&value)[0];
+    assert_eq!(row["request"], "request:gemini-cli:morrow#7");
+    assert_eq!(row["channel"], "protocol");
+    assert_eq!(row["outcome"], "cancelled");
+    assert_eq!(row["cancellation"], json!({"options": ["reject_once"]}));
+    wait_status(&env, |_| root.path().join("cancelled.json").exists());
+    let sent: Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("cancelled.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        sent,
+        json!({"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"cancelled"}}})
+    );
+}
+
+#[test]
+fn retrying_a_continuation_with_a_failed_interrupt_starts_one_session() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, _daemon) = fixture(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+IFS= read -r line || exit 1
+printf '%s\n' "$line" >> first-turns.jsonl
+printf '%s\n' '{"type":"result"}'
+"#,
+    );
+    let args = [
+        "--json",
+        "--request-id",
+        "morrow-continue",
+        "session:claude-code:s1",
+        "resume",
+        "--in",
+        "claude-code",
+        "--cwd",
+        root.path().to_str().unwrap(),
+        "--stop-source",
+    ];
+    let mut replies = Vec::new();
+    for _ in 0..2 {
+        let out = cli(&env, &args);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let value = json(&out);
+        let reply = &step(&value)[0];
+        assert_eq!(reply["briefed_from"], "claude-code:s1");
+        assert_eq!(reply["stop_source"]["error"]["kind"], "refused");
+        replies.push(reply["session"].clone());
+    }
+    assert_eq!(replies[0], replies[1]);
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("first-turns.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn hosted_send_replays_the_receipt_and_submits_each_request_once() {
+    let root = tempfile::tempdir().unwrap();
+    let (env, daemon) = fixture(
+        root.path(),
+        "gemini",
+        r#"#!/bin/sh
+n=0
+while IFS= read -r line; do
+    id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+    case "$line" in
+        *'"initialize"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"protocolVersion":1}}\n' "$id" ;;
+        *'"session/new"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"sessionId":"morrow"}}\n' "$id" ;;
+        *'"session/prompt"'*)
+            case "$line" in *'finish the fixture'*) exit 0 ;; esac
+            printf '%s\n' "$line" >> prompts.jsonl
+            n=$((n+1)); prompt=$id
+            printf '{"jsonrpc":"2.0","id":%s,"method":"session/request_permission","params":{"sessionId":"morrow","options":[{"optionId":"yes","kind":"allow_once"}]}}\n' "$n" ;;
+        *'"optionId":"yes"'*)
+            if [ "$n" -eq 1 ]; then
+                tries=0
+                while [ ! -f release-first-prompt ]; do
+                    tries=$((tries+1))
+                    [ "$tries" -lt 3000 ] || exit 4
+                    sleep 0.01
+                done
+            fi
+            printf '{"jsonrpc":"2.0","id":"%s","result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
+    esac
+done
+"#,
+    );
+    let started = cli(
+        &env,
+        &[
+            "--json",
+            "start",
+            "Begin",
+            "--in",
+            "gemini-cli",
+            "--cwd",
+            root.path().to_str().unwrap(),
+        ],
+    );
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+
+    let sent = |id: &str, expected_exit: i32| {
+        let out = cli(
+            &env,
+            &[
+                "--json",
+                "--request-id",
+                id,
+                "session:gemini-cli:morrow",
+                "send",
+                "continue the work",
+            ],
+        );
+        assert_eq!(out.status.code(), Some(expected_exit), "{out:?}");
+        step(&json(&out))["reached"][0]["deliveries"][0].clone()
+    };
+    let release_prompt = || {
+        let result = cli(
+            &env,
+            &["--json", "session:gemini-cli:morrow", "answer", "allow"],
+        );
+        assert_eq!(result.status.code(), Some(0), "{result:?}");
+    };
+    let log = root.path().join("prompts.jsonl");
+    let prompt_count = || std::fs::read_to_string(&log).unwrap().lines().count();
+    let wait_for_state = |wanted: &str| {
+        wait_status(&env, |status| {
+            status["running"]["sessions"]
+                .as_array()
+                .is_some_and(|sessions| {
+                    sessions.iter().any(|session| {
+                        session["session"] == "gemini-cli:morrow" && session["state"] == wanted
+                    })
+                })
+        });
+    };
+    let wait_for_prompt = |n| {
+        wait_status(&env, |status| {
+            prompt_count() == n && status["pending_writes"]["delivery_outcomes"] == 0
+        });
+        wait_for_state("waiting");
+    };
+
+    let queued = sent("queued", 0);
+    assert_eq!(queued["outcome"], "prepared");
+    assert_eq!(sent("queued", 0), queued);
+    assert_eq!(prompt_count(), 1);
+    let lost = sent("lost", 0);
+    assert_eq!(lost["outcome"], "prepared");
+
+    release_prompt();
+    // The relay can receive the queued prompt, but the daemon cannot commit
+    // its outcome while this connection holds the archive's write lock.
+    let mut archive = rusqlite::Connection::open(env.archive().join("archive.db")).unwrap();
+    let locked = archive
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    std::fs::write(root.path().join("release-first-prompt"), "").unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while prompt_count() != 2 {
+        assert!(
+            std::time::Instant::now() < until,
+            "relay did not receive the queued prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    drop(daemon);
+    drop(locked);
+    let mut command = env.command();
+    command.env(
+        "XDG_RUNTIME_DIR",
+        root.path().join("runtime").join("r".repeat(108)),
+    );
+    let _daemon = start_daemon_with(&env, command);
+    let replay = sent("lost", 5);
+    assert_eq!(replay["outcome"], "unknown");
+    assert_eq!(replay["delivery"], lost["delivery"]);
+    assert_eq!(prompt_count(), 2);
+
+    let claim = cli(
+        &env,
+        &[
+            "--json",
+            "internal",
+            "mail-claim",
+            "--session",
+            "gemini-cli:morrow",
+        ],
+    );
+    assert_eq!(claim.status.code(), Some(0), "{claim:?}");
+    assert_eq!(json(&claim)["deliveries"], json!([]));
+
+    release_prompt();
+    wait_for_state("idle");
+    let completed = sent("queued", 0);
+    assert_eq!(completed["outcome"], "delivered");
+    assert_eq!(completed["delivery"], queued["delivery"]);
+    let intentional = sent("new", 0);
+    assert_eq!(intentional["outcome"], "delivered");
+    assert_ne!(intentional["delivery"], completed["delivery"]);
+    assert_eq!(sent("new", 0), intentional);
+    wait_for_prompt(3);
+    release_prompt();
+    wait_for_state("idle");
+
+    let stopped = cli(
+        &env,
+        &[
+            "--json",
+            "session:gemini-cli:morrow",
+            "send",
+            "finish the fixture",
+        ],
+    );
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+}

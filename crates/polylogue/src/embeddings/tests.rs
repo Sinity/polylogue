@@ -83,7 +83,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
 }
 
 #[test]
-fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
+fn embedding_selection_refuses_aggregate_and_disabled_semantic_search() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
     let daemon = crate::test_daemon::start("synthetic selected text");
     let operation = daemon
@@ -100,7 +100,7 @@ fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
         ("sessions | group by origin | count", "bad_request"),
         (
             "sessions where similar:\"synthetic selected text\"",
-            "not_yet_available",
+            "embeddings_off",
         ),
     ] {
         let response = query_sessions(&reader, query, &operation).unwrap_err();

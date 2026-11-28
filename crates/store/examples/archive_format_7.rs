@@ -1,5 +1,5 @@
 //! One-time operation: brings an `archive.db` of format 6 to the current
-//! format (9) in place, beside its segment log. Not part of the product; it is run on a
+//! format (10) in place, beside its segment log. Not part of the product; it is run on a
 //! reflinked copy first and once on the operator's archive, then deleted.
 //!
 //! `cargo run -p polylogue-store --example archive_format_7 -- <archive root>`
@@ -39,7 +39,7 @@
 //!
 //! Format 8, in place on the new file: a read's run record keeps its reading
 //! options as the caller wrote them (`show` and `hide` words, `neutral_names`,
-//! one `alternate`), and its hashes and its completion's follow.
+//! one `alternate`); the step from 9 computes its hashes again.
 //!
 //! Format 9 renames stored names without rewriting a value (`RENAMED`):
 //! `kept_result` is `saved_rows` and `annotation_slot` is
@@ -48,11 +48,18 @@
 //! comes from is its `origin`). The format-6 rows are copied under the new
 //! names, so every later step reads and writes them under those names, and
 //! each renamed table holds as many rows after as before.
+//!
+//! Format 10, in place: keys inside stored payloads that the wire also
+//! carries say what they hold (`stored_keys`), with the hashes over those
+//! payloads computed again.
 use polylogue_store::archive::writer::agreement::Chains;
 use polylogue_store::blobs::{ChainSource, StoredChain};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+#[path = "archive_format_7/stored_keys.rs"]
+mod stored_keys;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -387,6 +394,20 @@ const STEPS: &[Step] = &[
         name: "reading options as written",
         tables: &["query_run"],
         run: read_options,
+    },
+    Step {
+        from: 9,
+        name: "stored keys say what they hold",
+        tables: &[
+            "client_request",
+            "query",
+            "query_run",
+            "saved_rows",
+            "delivery",
+            "annotation",
+            "signal_event",
+        ],
+        run: stored_keys::step,
     },
 ];
 
@@ -750,10 +771,11 @@ fn earlier_shaped(conn: &Connection) -> Result<u64, Error> {
     Ok(n)
 }
 
-/// Format 8 records a read's options as the caller writes them; the run's
-/// binding and record hashes, and its completion's copies of them, are
-/// computed again over the rewritten run. Nothing else holds those hashes:
-/// a run is cited by its ID, which does not change.
+/// Format 8 records a read's options as the caller writes them. The run is
+/// rewritten as JSON: its hashes, and its completion's copies, are computed
+/// again by the step from 9 with the build's types, as the run then reads.
+/// Nothing else holds those hashes: a run is cited by its ID, which does not
+/// change.
 ///
 /// Not carried, on purpose: a run that rendered several alternates (the
 /// `reading.alternates` setting) names none, so reading it again follows
@@ -762,44 +784,25 @@ fn earlier_shaped(conn: &Connection) -> Result<u64, Error> {
 /// alternates.
 fn read_options(conn: &Connection, _: &Context<'_>) -> Result<(), Error> {
     let before = earlier_shaped(conn)?;
-    let pack = |value: &[u8]| zstd::bulk::compress(value, 1);
     let (mut rewritten, mut several) = (0, 0);
-    let visited = each_query_run(conn, |id, run, completion| {
+    let visited = each_query_run(conn, |id, run, _| {
         let Some(run) = run else { return Ok(()) };
         let mut value = unpack(&run)?;
         if rewrite(&mut value, &mut several) == 0 {
             return Ok(());
         }
-        let run: polylogue_model::query_objects::QueryRun = serde_json::from_value(value)?;
-        let binding_hash = run.binding_hash()?;
-        let run_hash = run.record_hash()?;
         conn.execute(
-            "UPDATE main.query_run SET run = ?2, binding_hash = ?3, run_hash = ?4 WHERE id = ?1",
-            params![
-                id,
-                pack(&serde_json::to_vec(&run)?)?,
-                binding_hash.to_string(),
-                run_hash.to_string()
-            ],
+            "UPDATE main.query_run SET run = ?2 WHERE id = ?1",
+            params![id, zstd::bulk::compress(&serde_json::to_vec(&value)?, 1)?],
         )?;
-        if let Some(completion) = completion {
-            let mut outcome: polylogue_model::query_objects::QueryRunOutcome =
-                serde_json::from_slice(&zstd::decode_all(&completion[..])?)?;
-            outcome.binding_hash = binding_hash;
-            outcome.run_hash = run_hash;
-            conn.execute(
-                "UPDATE main.query_run SET completion = ?2 WHERE id = ?1",
-                params![id, pack(&serde_json::to_vec(&outcome)?)?],
-            )?;
-        }
         rewritten += 1;
         Ok(())
     })?;
     let after = earlier_shaped(conn)?;
-    println!("reading options as written	runs visited	{visited}	{visited}");
-    println!("reading options as written	runs rewritten	-	{rewritten}");
-    println!("reading options as written	runs in the earlier shape	{before}	{after}");
-    println!("reading options as written	runs that rendered several alternates	{several}	-");
+    println!("reading options as written\truns visited\t{visited}\t{visited}");
+    println!("reading options as written\truns rewritten\t-\t{rewritten}");
+    println!("reading options as written\truns in the earlier shape\t{before}\t{after}");
+    println!("reading options as written\truns that rendered several alternates\t{several}\t-");
     if after != 0 {
         return Err(format!("{after} runs keep the earlier reading options").into());
     }
@@ -986,8 +989,8 @@ mod tests {
         (options, written)
     }
 
-    /// A run of an object read as the product writes it, with its read
-    /// options replaced by `options`.
+    /// A run of an object read as format 7 wrote it, with its read options
+    /// replaced by `options`: the keys format 10 renamed are as they were.
     fn run_json(options: &serde_json::Value) -> serde_json::Value {
         use polylogue_model::query_objects::{
             ExecutionPresentation, ObjectExecutionBinding, QueryRun, RunBinding,
@@ -1003,10 +1006,10 @@ mod tests {
                 &hash[20..32]
             ))
             .unwrap(),
-            question: None,
+            query_id: None,
             at: polylogue_model::Timestamp::from_unix_ms(1_763_000_000_000).unwrap(),
-            read_at: polylogue_model::ChangePosition {
-                generation: "synthetic".into(),
+            read_position: polylogue_model::ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
             },
@@ -1020,7 +1023,7 @@ mod tests {
                     reference: polylogue_model::Reference::parse("request:synthetic-request")
                         .unwrap(),
                     content_hash: polylogue_model::BlobHash::of(b"request"),
-                    scope_fingerprint: None,
+                    access_fingerprint: None,
                     versions: Default::default(),
                     presentation: ExecutionPresentation::Read {
                         options: Default::default(),
@@ -1035,7 +1038,13 @@ mod tests {
         };
         let mut value = serde_json::to_value(run).unwrap();
         value["binding"]["execution"]["presentation"]["options"] = options.clone();
-        value
+        let text = value
+            .to_string()
+            .replace(r#""query_id":"#, r#""question":"#)
+            .replace(r#""read_position":"#, r#""read_at":"#)
+            .replace(r#""index_instance":"#, r#""generation":"#)
+            .replace(r#""access_fingerprint":"#, r#""scope_fingerprint":"#);
+        serde_json::from_str(&text).unwrap()
     }
 
     #[test]
@@ -1216,8 +1225,9 @@ mod tests {
         assert_eq!(cases, View::ALL.len() * (4 * 4 * 4 * 4 + 243 * 6));
     }
 
-    /// The step rewrites an archive's read runs, recomputes both hashes in
-    /// the row and in its completion, and leaves other runs as they were.
+    /// The step rewrites an archive's read runs; with the step from 9 after
+    /// it, both hashes in the row and in its completion are those of the run
+    /// as it then reads.
     #[test]
     fn read_runs_are_rewritten_with_their_hashes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1260,6 +1270,7 @@ mod tests {
         };
         read_options(&conn, &context).unwrap();
         assert_eq!(earlier_shaped(&conn).unwrap(), 0);
+        stored_keys::convert(&conn).unwrap();
         let (stored, hashes, done): (Vec<u8>, (String, String), Vec<u8>) = conn
             .query_row(
                 "SELECT run, binding_hash, run_hash, completion FROM query_run WHERE id = ?1",

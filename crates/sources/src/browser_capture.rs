@@ -15,7 +15,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 parser_modules! {
     mod files;
@@ -26,12 +26,11 @@ use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
-use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, Event, IdKind, Json, Message, PromptKind,
-    Role, Session, SessionKind, TitleSource,
+    Attachment, AttachmentDirection, AttachmentFailure, BlobHash, Block, Event, IdKind, Json,
+    Message, PromptKind, Role, Session, SessionKind, TitleSource,
 };
 use std::path::Path;
 
@@ -44,7 +43,8 @@ const KIND_KEY: &str = "polylogue_capture_kind";
 /// Recognizes capture logs and single captures, including ones that start
 /// with `schema_version`, without treating an unrelated schema-versioned
 /// JSON file as one.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.extension().is_some_and(|e| e == "json")
         && (head.starts_with(polylogue_model::capture_log::MAGIC)
             || (first_byte(head) == Some(b'{')
@@ -533,11 +533,11 @@ fn turn_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
 
 /// An attachment the extension observed, as the block holding it, and the
 /// text the page extracted from it when it shows one.
-fn attachment(
-    a: &Json,
-    direction: AttachmentDirection,
-    stored: Option<(BlobHash, Option<u64>)>,
-) -> Vec<Block> {
+fn attachment(a: &Json, direction: AttachmentDirection, bytes: AttachmentBytes) -> Vec<Block> {
+    let (stored, failure) = match bytes {
+        Ok(stored) => (stored, None),
+        Err(failure) => (None, Some(failure)),
+    };
     let media_type = a
         .str("mime_type")
         .filter(|s| !s.is_empty())
@@ -548,6 +548,7 @@ fn attachment(
             .and_then(|(_, size)| size)
             .or_else(|| a.u64("size_bytes")),
         blob: stored.map(|(hash, _)| hash),
+        failure,
         url: a.str("url").filter(|s| !s.is_empty()).map(str::to_owned),
         source_id: a
             .str("provider_attachment_id")
@@ -578,19 +579,23 @@ fn attachment(
     out
 }
 
-fn attachment_bytes(a: &Json, sink: &mut Sink<'_>) -> Option<(BlobHash, Option<u64>)> {
-    a.str("content_base64")
-        .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
-        .map(|bytes| {
-            let hash = BlobHash::of(&bytes);
-            let size = bytes.len() as u64;
-            sink.out.blobs.push(ExtractedBlob { hash, size, bytes });
-            (hash, Some(size))
-        })
-        .or_else(|| {
-            let hash = BlobHash::parse(a.str("blob").filter(|s| !s.is_empty())?).ok()?;
-            Some((hash, a.u64("size_bytes")))
-        })
+type AttachmentBytes = Result<Option<(BlobHash, Option<u64>)>, AttachmentFailure>;
+
+fn attachment_bytes(a: &Json, sink: &mut Sink<'_>) -> AttachmentBytes {
+    let inline_failure = match a.get("content_base64").filter(|value| !value.is_null()) {
+        Some(data) => match crate::inline_bytes::decode(data.as_str(), &mut sink.out.blobs) {
+            Ok((hash, size)) => return Ok(Some((hash, Some(size)))),
+            Err(failure) => Some(failure),
+        },
+        None => None,
+    };
+    if let Some(value) = a.get("blob").filter(|value| !value.is_null()) {
+        if let Some(hash) = value.as_str().and_then(|hash| BlobHash::parse(hash).ok()) {
+            return Ok(Some((hash, a.u64("size_bytes"))));
+        }
+        return Err(inline_failure.unwrap_or(AttachmentFailure::InvalidBlobHash));
+    }
+    inline_failure.map_or(Ok(None), Err)
 }
 
 /// Links the session's attachment list to its messages: stores the bytes
@@ -632,11 +637,16 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
                 };
                 if same {
                     matched = true;
-                    if let Some((hash, size)) = stored
-                        && x.blob.is_none()
-                    {
-                        x.blob = Some(hash);
-                        x.size = size.or(x.size);
+                    if x.blob.is_none() {
+                        match stored {
+                            Ok(Some((hash, size))) => {
+                                x.blob = Some(hash);
+                                x.size = size.or(x.size);
+                                x.failure = None;
+                            }
+                            Err(failure) => x.failure = Some(failure),
+                            Ok(None) => {}
+                        }
                     }
                 }
             }

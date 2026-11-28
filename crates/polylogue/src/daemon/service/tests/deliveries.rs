@@ -230,7 +230,7 @@ fn a_repeated_delivery_event_is_applied_once() {
     let id = format!("{id}-1");
     let event = crate::test_daemon::Call::new(
         "internal delivery-event",
-        serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
+        serde_json::json!({"delivery": id.clone(), "outcome": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
     );
     for _ in 0..2 {
         let answer = crate::test_answers::ok((event.clone()).answer(&d.daemon));
@@ -304,7 +304,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
                 name: None,
                 query: "sessions".into(),
                 rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-                read_at: "{}".into(),
+                read_position: "{}".into(),
                 denominator: None,
                 watch: None,
                 outcomes: None,
@@ -331,7 +331,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     let id = format!("{id}-1");
     assert_eq!(answer["delivery"], id.as_str());
     // Its outcome waits behind it, in order.
-    let event = crate::test_answers::ok(crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
+    let event = crate::test_answers::ok(crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": id.clone(), "outcome": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
     assert_eq!(event["queued"], true);
     pause.release();
     held.join().unwrap();
@@ -379,7 +379,7 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     let prepared = brief(&d, &id, StartSource::Startup);
     let id = format!("{id}-1");
     let event = |delivery: &str| {
-        crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
+        crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": delivery, "outcome": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
     };
     let unknown = crate::test_answers::ok(event("unconfirmed-prepare"));
     let known = crate::test_answers::ok(event(&id));
@@ -400,7 +400,7 @@ fn delivered(d: &test_daemon::TestDaemon, delivery: &str) {
     crate::test_answers::ok(
         crate::test_daemon::Call::new(
             "internal delivery-event",
-            serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::Delivered, "detail": "written to the harness hook output"}),
+            serde_json::json!({"delivery": delivery, "outcome": polylogue_model::DeliveryOutcome::Delivered, "detail": "written to the harness hook output"}),
         )
         .answer(&d.daemon),
     );
@@ -437,6 +437,7 @@ fn other_delivery(d: &test_daemon::TestDaemon, event: polylogue_model::DeliveryE
             text: "handed over".into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         }),
     )
     .unwrap();
@@ -576,6 +577,95 @@ fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
     );
 }
 
+/// A brief prepared before a note committed, whose delivery commits after
+/// the note, counts from the read it was prepared at: the next brief still
+/// carries the note once both rows are committed.
+#[test]
+fn a_committed_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
+    use polylogue_store::writer::{DispatchPhase, Queued};
+    let d = daemon_with_a_project();
+    let at = polylogue_model::Timestamp::from_unix_ms(1_800_000_000_000).unwrap();
+    let brief = |request_id: &str, source: StartSource| {
+        let request = crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
+        ).id(request_id).channel(command_surface::Via::Hook).at(at);
+        match crate::test_answers::step(request.answer(&d.daemon)) {
+            crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+            other => panic!("expected a directory brief: {other:?}"),
+        }
+    };
+    let (pause, held) = hold_writer(&d, "held-before-committed-note");
+    let writer = d.daemon.writes.as_ref().unwrap();
+    let invocation = d
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    let note = invocation.request(
+        "note-before-committed-delivery".into(),
+        UserWrite::Assert {
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Lesson,
+                key: None,
+                value: Some(serde_json::json!("the otter release needs a changelog")),
+                valid_until: None,
+                links: vec![NewAnnotationLink {
+                    role: LinkRole::About,
+                    reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
+                }],
+            }],
+        },
+    );
+    let Queued::Committing(note) = writer.archive().try_submit(note).unwrap() else {
+        panic!("the note fits in the writer queue");
+    };
+    let delivery_pause =
+        writer.pause_user_dispatch_for_test("brief-before-committed-note-1", DispatchPhase::Owned);
+    let startup = brief("brief-before-committed-note", StartSource::Startup);
+    let delivery = startup["delivery"].as_str().unwrap().to_owned();
+    assert!(
+        !startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs a changelog")
+    );
+    delivered(&d, &delivery);
+    pause.release();
+    delivery_pause.wait().unwrap();
+    let note = note.recv().unwrap().unwrap();
+    delivery_pause.release();
+    held.join().unwrap();
+    writer.archive().flush().unwrap();
+    assert!(writer.archive().pending_deliveries().is_empty());
+
+    let reader = d.daemon.reads.reader().unwrap();
+    let row = reader
+        .deliveries_to("claude-code:newcomer")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == delivery)
+        .expect("the brief's delivery is committed");
+    let prepared = row.prepared_position.expect("the brief records its read");
+    let note = i64::try_from(note.position.0).unwrap();
+    // The note committed between the brief's read and its delivery's commit.
+    assert!(
+        prepared < note && note < row.seq,
+        "{prepared} {note} {}",
+        row.seq
+    );
+    drop(reader);
+
+    let resume = brief("brief-after-committed-note", StartSource::Resume);
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("the otter release needs a changelog"),
+        "{text}"
+    );
+}
+
 #[test]
 fn a_pending_outcome_makes_a_committed_brief_the_start_of_the_next_delta() {
     let d = daemon_with_a_project();
@@ -676,6 +766,7 @@ fn a_delivery_sent_while_the_writer_is_busy_is_committed_and_read_by_the_next_br
             .unwrap()
             .contains("Nothing changed.")
     );
+    d.wait_for(|_| true);
     let status = crate::test_answers::ok(
         crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
     );

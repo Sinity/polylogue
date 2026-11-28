@@ -44,12 +44,8 @@ fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::Parse
         .skip(1)
         .map(|word| (*word).to_owned())
         .collect::<Vec<_>>();
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .map_err(|error| error.message)?;
+    let parsed = crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false)
+        .map_err(|error| error.message)?;
     if parsed.first == crate::cli::line::FirstWord::Command {
         return crate::cli::parse(argv);
     }
@@ -272,11 +268,7 @@ fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authors
     expected
 }
 
-// A read's first page records its run after the answer has gone
-// (docs/reading.md: "handed to the writer without waiting and committed on
-// its next turn"), so the previous call's run
-// may still be landing. Observe each invocation's descriptor once the
-// position has stopped moving, from a fresh reader released before the call.
+// Observe the archive position for each invocation independently of its reply.
 fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition {
     let observe = || w.daemon.reads.reader().unwrap().change_position().unwrap();
     let mut last = observe();
@@ -295,7 +287,7 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
     let value = answer.as_ref().expect("session read succeeds");
     let page = crate::test_answers::read(command_surface::Answer::ok(value.clone()));
     assert_eq!(
-        &page.snapshot.read_at, position,
+        &page.snapshot.read_position, position,
         "the page must report the independently observed position"
     );
     assert!(
@@ -344,6 +336,35 @@ fn internal_completion_http_returns_candidates() {
     assert_eq!(values, ["error"], "{candidates}");
 }
 
+fn listing_identity(
+    w: &test_daemon::TestDaemon,
+    answer: &Answer,
+    authorship: &Authorship,
+    position: &polylogue_model::ChangePosition,
+) -> Option<(String, Value)> {
+    let value = answer.as_ref().ok()?;
+    if value["kind"] != "listing" {
+        return None;
+    }
+    let reply = &value["reply"];
+    let run_ref = reply["resolved"]["run"].as_str().expect("listing run");
+    let polylogue_model::Reference::Run(id) = polylogue_model::Reference::parse(run_ref).unwrap()
+    else {
+        panic!("listing reference must name its run");
+    };
+    let reader = w.daemon.reads.reader().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
+    assert_eq!(&run.authorship, authorship);
+    assert_eq!(&run.read_position, position);
+    let outcome = reader.query_run_outcome(&id).unwrap().unwrap();
+    assert_eq!(outcome.count, reply["count"].as_u64());
+    let read = &reply["read_position"];
+    assert_eq!(read["index_instance"], position.index_instance);
+    assert_eq!(read["index"], position.index);
+    assert_eq!(read["archive"], position.archive);
+    Some((run_ref.to_owned(), read.clone()))
+}
+
 #[test]
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
@@ -385,7 +406,7 @@ fn every_client_answers_the_same_request_identically() {
         }
         argv.extend(*args);
         let (c, values) = parse_line(&argv).unwrap();
-        let cli_position = (args.last() == Some(&"read")).then(|| read_position(&w));
+        let cli_position = read_position(&w);
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
         let owned = crate::daemon::handler::policy(
             c,
@@ -398,7 +419,7 @@ fn every_client_answers_the_same_request_identically() {
         let stored = |id: &str| w.daemon.reads.reader().unwrap().user_request(id).unwrap();
         let original =
             owned.then(|| stored(&request_id).expect("the owned line retains its accepted intent"));
-        let mcp_position = (args.last() == Some(&"read")).then(|| read_position(&w));
+        let mcp_position = read_position(&w);
         let mcp = mcp_answer(&w, c, &values, &request_id);
         if let Some(original) = &original {
             assert_eq!(original.authorship, socket_author);
@@ -411,7 +432,7 @@ fn every_client_answers_the_same_request_identically() {
             assert_eq!((&same, exit), (&cli, cli_exit));
             assert_eq!(stored(&request_id).as_ref(), Some(original));
         }
-        let http_position = (args.last() == Some(&"read")).then(|| read_position(&w));
+        let http_position = read_position(&w);
         let http_id = if owned {
             let (refused, _) = http_answer(&web, c, &values, &request_id);
             assert_eq!(
@@ -465,17 +486,17 @@ fn every_client_answers_the_same_request_identically() {
         assert_transport_authorship(&mcp, name, &socket_author);
         assert_transport_authorship(&http, name, &web_author);
         if args.last() == Some(&"read") && args.first() == Some(&"session:claude-code:s1") {
-            assert_read_page(&cli, cli_position.as_ref().unwrap());
-            assert_read_page(&mcp, mcp_position.as_ref().unwrap());
-            assert_read_page(&http, http_position.as_ref().unwrap());
+            assert_read_page(&cli, &cli_position);
+            assert_read_page(&mcp, &mcp_position);
+            assert_read_page(&http, &http_position);
             // Keep the complete raw answer. Only its expected per-invocation
             // descriptor differs, and that value was observed outside the answer.
             let mut expected = cli.as_ref().unwrap().clone();
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
-                serde_json::to_value(mcp_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
+                serde_json::to_value(mcp_position).unwrap();
             assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
-            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
-                serde_json::to_value(http_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_position"] =
+                serde_json::to_value(http_position).unwrap();
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
@@ -497,6 +518,24 @@ fn every_client_answers_the_same_request_identically() {
                 mcp.as_ref().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
                 Value::Null
             );
+        }
+        if let Some((cli_run, _)) = listing_identity(&w, &cli, &socket_author, &cli_position) {
+            let (mcp_run, mcp_read) =
+                listing_identity(&w, &mcp, &socket_author, &mcp_position).unwrap();
+            let (http_run, http_read) =
+                listing_identity(&w, &http, &web_author, &http_position).unwrap();
+            assert_ne!(cli_run, mcp_run);
+            assert_ne!(cli_run, http_run);
+            assert_ne!(mcp_run, http_run);
+            let mut expected = cli.clone().unwrap();
+            expected["reply"]["resolved"]["run"] = serde_json::json!(mcp_run);
+            expected["reply"]["read_position"] = mcp_read;
+            assert_eq!(Ok(expected), mcp, "whole MCP listing");
+            let mut expected = expected_transport_answer(&cli, name, &web_author).unwrap();
+            expected["reply"]["resolved"]["run"] = serde_json::json!(http_run);
+            expected["reply"]["read_position"] = http_read;
+            assert_eq!(Ok(expected), http, "whole HTTP listing");
+            continue;
         }
         assert_eq!(
             cli,

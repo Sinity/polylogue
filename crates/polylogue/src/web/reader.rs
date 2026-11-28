@@ -4,7 +4,10 @@
 //! reader, any other line as its text in the frame.
 use super::*;
 use crate::daemon::service::line::Line;
-use crate::protocol::line::{LineAnswer, Rows, StepAnswer, StepOutcome};
+use crate::protocol::line::{LineAnswer, Rows, Step, StepAnswer, StepOutcome};
+use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
+use polylogue_model::read::View;
+use serde::Deserialize;
 
 /// The row a reader route reads through.
 fn row() -> &'static crate::commands::Command {
@@ -25,46 +28,23 @@ async fn render(
     parameters: &[(String, String)],
 ) -> HttpResponse {
     let row = row();
-    let request = match super::api::query_request(row, parameters) {
+    let request = match super::api::get_request(row, parameters) {
         Ok(request) => request,
-        Err(reason) => return failed(StatusCode::BAD_REQUEST, "bad_request", &reason),
+        Err(failure) => return failed_with(&failure),
     };
-    // A reader route is a GET: it runs only a line that reads.
-    match crate::daemon::handler::policy(
-        row,
-        &request.arguments,
-        polylogue_model::authorship::Channel::Web,
-    ) {
-        Ok(policy) if policy.takes_get() => {}
-        Ok(_) => {
-            return failed(
-                StatusCode::BAD_REQUEST,
-                "bad_request",
-                "a reader page only reads; write through POST /api/v1/rows",
-            );
-        }
-        Err(failure) => return failed_with(&failure.error),
-    }
-    let arguments: Rows = match serde_json::from_value(request.arguments.clone()) {
-        Ok(arguments) => arguments,
-        Err(error) => return failed(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()),
-    };
-    let daemon = Arc::clone(&web.daemon);
     let caller = lifetime.caller(&Default::default());
-    let mut cancel = polylogue_store::cancellation::CancelOnDrop::new(caller.stop.clone());
-    let cursor = request.cursor.clone();
-    let answer = tokio::task::spawn_blocking(move || {
-        crate::daemon::handler::ask::<Line>(&daemon, arguments, cursor, &caller)
-    })
-    .await
-    .unwrap_or_else(|_| {
-        crate::daemon::Failure::internal("the reader's task ended without an answer").answer()
-    });
-    cancel.disarm();
+    let (answer, step_status) = match super::api::execute(web, request.clone(), caller).await {
+        super::api::HttpReply::Answer(answer, step_status) => (*answer, step_status),
+        super::api::HttpReply::Stream(response) => return response,
+    };
     let declarations = crate::commands::declarations();
     let mut answer = browser_response(answer, &web.daemon.archive.root);
+    let line = match answer.value().map(LineAnswer::deserialize).transpose() {
+        Ok(line) => line,
+        Err(error) => return failed_with(&Failure::new(FailureKind::Internal, error.to_string())),
+    };
     // A single failed step is the failure of this view, with the line's details.
-    if let Some(LineAnswer::Steps(steps)) = answer.value()
+    if let Some(LineAnswer::Steps(steps)) = &line
         && steps.steps.len() == 1
         && let StepOutcome::Failed { error } = &steps.steps[0].outcome
     {
@@ -74,14 +54,22 @@ async fn render(
         Ok(cli) => cli,
         Err(failure) => return failed_with(&failure),
     };
-    if let Some(LineAnswer::Steps(steps)) = answer.value()
+    if let Some(LineAnswer::Steps(steps)) = &line
         && steps.steps.len() == 1
         && let StepOutcome::Done {
             reply: StepAnswer::Read(page),
             ..
         } = &steps.steps[0].outcome
     {
-        return match polylogue_render::web::read(page, declarations, &request) {
+        let rows: Rows = match Rows::deserialize(&request.arguments) {
+            Ok(rows) => rows,
+            Err(error) => {
+                return failed_with(&Failure::new(FailureKind::Internal, error.to_string()));
+            }
+        };
+        return match polylogue_render::web::read(page, declarations, &request, |view| {
+            view_url(declarations, &request, rows.clone(), view)
+        }) {
             Ok(html) => answer_page(&[(&answer, &cli)], || html),
             Err(failure) => {
                 answer.outcome = command_surface::Outcome::Error(failure);
@@ -89,22 +77,57 @@ async fn render(
             }
         };
     }
-    let mut answer = answer.map(|line| serde_json::to_value(line).expect("line reply serializes"));
     let rendered = declarations.render_text(row.name, &answer, command_surface::TextStyle::Plain);
     match rendered {
-        Ok(text) => answer_page(&[(&answer, &cli)], || {
-            pages::layout(
-                "Polylogue",
-                "",
-                &cli,
-                &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
-            )
-        }),
+        Ok(text) => {
+            let mut response = answer_page(&[(&answer, &cli)], || {
+                pages::layout(
+                    "Polylogue",
+                    "",
+                    &cli,
+                    &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
+                )
+            });
+            if let Some(status) = step_status {
+                *response.status_mut() = status;
+            }
+            response
+        }
         Err(failure) => {
             answer.outcome = command_surface::Outcome::Error(failure);
             answer_page(&[(&answer, &cli)], String::new)
         }
     }
+}
+
+/// Change only the read step, with a fresh identity and no continuation.
+fn view_url(
+    declarations: &OperationDeclarations,
+    request: &RunnableRequest,
+    mut rows: Rows,
+    view: View,
+) -> Result<String, Failure> {
+    let [Step::Read(read)] = rows.steps.as_mut_slice() else {
+        return Err(Failure::new(
+            FailureKind::Internal,
+            "a read page needs a read step",
+        ));
+    };
+    read.options
+        .set_view(view)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
+    read.cursor = None;
+    let arguments = serde_json::to_value(rows)
+        .map_err(|error| Failure::new(FailureKind::Internal, error.to_string()))?;
+    polylogue_render::ready::reader_url(
+        declarations,
+        &RunnableRequest {
+            arguments,
+            cursor: None,
+            request_id: polylogue_store::user_writes::new_request_id(),
+            ..request.clone()
+        },
+    )
 }
 
 /// The reader for one object: its reference as the selection, read with

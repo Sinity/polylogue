@@ -2,7 +2,8 @@
 pub mod acts;
 pub mod browser;
 pub mod complete {
-    //! Full query completion uses the shared replacement span and candidate type.
+    //! Completion of a query, or of a setting's key or value, uses the shared
+    //! replacement span and candidate type.
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,12 @@ pub mod complete {
         pub text: String,
         /// UTF-8 byte offset of the cursor (default: end of text)
         pub position: Option<u64>,
+        /// Complete setting keys instead of a query: the text is the typed
+        /// start of the key
+        #[serde(default)]
+        pub setting: bool,
+        /// With `setting`, complete this key's values instead
+        pub key: Option<String>,
     }
     pub type Answer = Vec<query_language::complete::Completion>;
 }
@@ -49,10 +56,6 @@ pub mod help {
         /// Print the full reference
         #[serde(default)]
         pub all: bool,
-        /// Write the reference to a file or browser
-        pub to: Option<String>,
-        /// The reference's document format
-        pub format: Option<String>,
         /// List fields for this unit
         #[schemars(extend("unlisted" = true))]
         pub unit: Option<String>,
@@ -80,9 +83,6 @@ pub mod import {
         /// Read the paths as this declared structure (an origin name), or python-vectors for one of Python Polylogue's vector stores
         #[serde(default)]
         pub origin: Option<String>,
-        /// Withdraw page blocks missing from an imported working copy
-        #[serde(default)]
-        pub withdraw_missing: bool,
         /// Fetch provider conversations changed since this time
         pub since: Option<String>,
         /// Cancel a provider import
@@ -256,13 +256,14 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::RowNumbersOffTerminal => FailureKind::BadRequest,
         Code::Ambiguous => FailureKind::Ambiguous,
         Code::StaleCursor => FailureKind::StaleCursor,
-        Code::NotBuilt
-        | Code::NotYetAvailable
+        Code::NotBuilt => FailureKind::NotBuilt,
+        Code::NotYetAvailable
         | Code::IndexBuilding
         | Code::PrimaryContextMissing
         | Code::PrimaryContextPending
         | Code::PrimaryContextStale => FailureKind::NotYetAvailable,
-        Code::Refused
+        Code::ModelCallsOff
+        | Code::Refused
         | Code::OperatorRequired
         | Code::EmbeddingsOff
         | Code::Confirm
@@ -293,10 +294,7 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         Code::DeadlineExceeded | Code::Busy => FailureKind::Timeout,
         Code::Internal => FailureKind::Internal,
         Code::Cancelled => FailureKind::Cancelled,
-        Code::Empty
-        | Code::ModelCallsOff
-        | Code::Degraded
-        | Code::Demo
+        Code::Demo
         | Code::AttachmentOutput
         | Code::ReaderUnavailable
         | Code::Schema
@@ -328,6 +326,9 @@ pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Fail
 pub fn failure(code: polylogue_model::Code, message: impl Into<String>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
     failure.code = Some(code.as_str().to_owned());
+    if code == polylogue_model::Code::Cancelled {
+        failure.retryable = true;
+    }
     failure
 }
 
@@ -466,7 +467,7 @@ pub fn read<T>(value: T, freshness: &polylogue_model::freshness::ReadFreshness) 
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
                 value,
-                missing: freshness.notes().into_iter().map(str::to_owned).collect(),
+                missing: freshness.notes(),
             },
             envelope: command_surface::Envelope {
                 next: vec![],

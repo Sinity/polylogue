@@ -102,10 +102,17 @@ fn session_changed(source: &Source) -> Error {
 }
 struct Segment {
     item: ReadItem,
-    pair: Option<(MessageId, u64)>,
+    pair: Option<PairAt>,
     start: u64,
     count: u64,
     attachment_index: Option<u64>,
+}
+struct PairAt {
+    message: MessageId,
+    block: u64,
+    /// The indexed call falls outside the reading. Show the pair at its
+    /// selected result, keeping the rest of that result at its own position.
+    at_result: bool,
 }
 fn check(reader: &Reader<'_>) -> Result<(), Error> {
     reader.scope_token().check()?;
@@ -172,22 +179,28 @@ fn segments(
                 && (call.reference == item.source.reference
                     || visible(reader, &call, layout.options)?)
             {
-                // The source's result extras are replaced by the same indexed pair's
-                // extras, or suppressed with its already-selected call.
-                folded_record = Some(item.source.reference.clone());
-                if layout.per_item_source && call.reference != item.source.reference {
-                    // The call's combined presentation was emitted at the call.
-                    // Keep this result's ordinary typed data and attachment items
-                    // here, rather than buffering them from that earlier message.
-                    if layout.options.tools() == Expansion::Full {
-                        folded_record = None;
+                let other_call = call.reference != item.source.reference;
+                let at_result = layout.per_item_source && other_call;
+                if at_result {
+                    if (layout.selected)(&call)? {
+                        // The selected call owns the paired output. Only the
+                        // typed data and attachments remain at this result.
+                        if layout.options.tools() != Expansion::Full {
+                            folded_record = Some(item.source.reference.clone());
+                        }
+                        continue;
                     }
-                    continue;
+                } else {
+                    folded_record = Some(item.source.reference.clone());
+                    if other_call && (layout.selected)(&call)? {
+                        continue;
+                    }
                 }
-                if call.reference != item.source.reference && (layout.selected)(&call)? {
-                    continue;
-                }
-                pair_at = Some((message.clone(), ordinal));
+                pair_at = Some(PairAt {
+                    message: message.clone(),
+                    block: ordinal,
+                    at_result,
+                });
                 if !layout.per_item_source
                     && layout.options.tools() == Expansion::Full
                     && let Some(result) = &result
@@ -236,14 +249,14 @@ fn pair_parts(
     layout: &Layout<'_>,
     mut visit: impl FnMut(ReadItem, Option<u64>) -> Result<bool, Error>,
 ) -> Result<bool, Error> {
-    let Some((message, ordinal)) = &segment.pair else {
+    let Some(at) = &segment.pair else {
         return visit(segment.item.clone(), segment.attachment_index);
     };
     check(reader)?;
-    let pair = if layout.options.tools() == Expansion::Full {
-        reader.message_tool_pair(message, *ordinal)
-    } else {
-        reader.message_tool_pair_header(message, *ordinal)
+    let pair = match (layout.options.tools() == Expansion::Full, at.at_result) {
+        (true, true) => reader.message_tool_pair_result(&at.message, at.block),
+        (true, false) => reader.message_tool_pair(&at.message, at.block),
+        (false, _) => reader.message_tool_pair_header(&at.message, at.block),
     }?;
     let mut pair = pair.ok_or_else(|| session_changed(&segment.item.source))?;
     if layout.options.view == View::Context
@@ -277,10 +290,16 @@ fn pair_parts(
     let mut continuing = true;
     let mut attachment_index = 0u64;
     polylogue_render::visit_source_block(&source, layout.options, &detail, |mut item| {
-        if layout.per_item_source && item.source.reference != segment.item.source.reference {
+        if at.at_result {
+            let ItemKind::Call { call } = &mut item.kind else {
+                // The original result supplies its other items below.
+                return true;
+            };
+            item.source = source.source.clone();
+            call.input = None;
+        } else if layout.per_item_source && item.source.reference != segment.item.source.reference {
             return true;
-        }
-        if item.source.reference == segment.item.source.reference
+        } else if item.source.reference == segment.item.source.reference
             && let ItemKind::Call { call: selected } = &segment.item.kind
             && let ItemKind::Call { call } = &mut item.kind
         {

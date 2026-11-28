@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 15;
 
 parser_modules! {
     mod fields;
@@ -30,7 +30,7 @@ parser_modules! {
 pub mod database;
 
 use crate::lines::Record;
-use crate::origin::Root;
+use crate::origin::{RecordedId, Root};
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
@@ -42,7 +42,7 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -59,7 +59,76 @@ pub const LOCATIONS: &[&str] = &[
 
 pub use header::{recorded_directory, rollout_id};
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+/// The images a rollout's records attach by local path, and the working
+/// directory a relative path resolves against.
+pub const LOCAL_REFERENCES: crate::origin::LocalReferences = crate::origin::LocalReferences {
+    directory: recorded_directory,
+    each: local_references,
+};
+
+/// Each local file a record refers to: `local_images` entries, typed
+/// `local_image` items and `file://` image URLs, anywhere in the record.
+fn local_references(
+    value: &Json,
+    emit: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match value {
+        Json::Object(o) => {
+            if let Some(images) = value.array("local_images") {
+                for image in images {
+                    // A typed entry is emitted once by the recursion below.
+                    let path = image.as_str().or_else(|| {
+                        image
+                            .str("path")
+                            .filter(|_| image.str("type") != Some("local_image"))
+                    });
+                    if let Some(path) = path {
+                        emit(path)?;
+                    }
+                }
+            }
+            if value.str("type") == Some("local_image")
+                && let Some(path) = value.str("path")
+            {
+                emit(path)?;
+            }
+            if matches!(value.str("type"), Some("input_image" | "image"))
+                && let Some(path) = o
+                    .get("image_url")
+                    .or_else(|| o.get("url"))
+                    .and_then(Json::as_str)
+                    .filter(|p| p.starts_with("file://"))
+            {
+                emit(path)?;
+            }
+            for value in o.values() {
+                local_references(value, emit)?;
+            }
+        }
+        Json::Array(values) => {
+            for value in values {
+                local_references(value, emit)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A rollout is named by the session its first record states
+/// (`codex:rollout:<session id>`), wherever Codex moves or compresses it.
+pub const ROLLOUT_ID: crate::origin::ProviderId = crate::origin::ProviderId {
+    named: |path| matches!(File::from_path(path), Some(File::Rollout { .. })),
+    read: |reader| {
+        Ok(match rollout_id(reader)? {
+            RecordedId::Named(id) => RecordedId::Named(format!("codex:rollout:{id}")),
+            other => other,
+        })
+    },
+};
+
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     File::from_path(path).is_some() && crate::document::starts_object_lines(head)
 }
 
@@ -204,6 +273,9 @@ pub struct ParserState {
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
+    /// The subagent threads whose `started` activity has stated a spawn.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    spawned: BTreeSet<String>,
     model: Option<String>,
     #[serde(default)]
     usage: usage::Observer,
@@ -462,7 +534,7 @@ impl Rollout {
             parser_state.branch_relation = Some(Link {
                 kind,
                 copies_prefix: false,
-                how: None,
+                reason: None,
                 parent: fork_parent,
                 child: id.clone(),
                 branch_point: None,
@@ -484,7 +556,7 @@ impl Rollout {
                 parser_state.branch_relation = Some(Link {
                     kind,
                     copies_prefix: true,
-                    how: None,
+                    reason: None,
                     parent: copied_parent.clone(),
                     child: id,
                     branch_point: None,
@@ -1003,12 +1075,16 @@ impl Rollout {
                 RecordOutcome::Used
             }
             "SubAgentActivity" => {
-                if let (Some(parent), Some(child)) = (
-                    self.own(parser_state),
-                    item.str("agent_thread_id")
-                        .filter(|s| !s.is_empty())
-                        .and_then(session_id),
-                ) {
+                // An interaction may name the current agent's parent or peer.
+                if item.str("kind") == Some("started")
+                    && let (Some(parent), Some(child)) = (
+                        self.own(parser_state),
+                        item.str("agent_thread_id")
+                            .filter(|s| !s.is_empty())
+                            .and_then(session_id),
+                    )
+                    && parser_state.spawned.insert(child.to_string())
+                {
                     let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
                     link(
                         out,
@@ -1224,7 +1300,7 @@ fn link(
     let value = Link {
         kind,
         copies_prefix: false,
-        how: None,
+        reason: None,
         parent,
         child,
         branch_point: at,

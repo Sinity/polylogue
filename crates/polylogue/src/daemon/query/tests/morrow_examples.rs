@@ -162,6 +162,10 @@ fn compare(
 ) -> Result<(), String> {
     let v = match (got, want) {
         (Err(f), _) if want.get("outcome") == Some(&json!("error")) => {
+            if number == "33" {
+                assert_eq!(f.code(), want["code"].as_str().unwrap());
+                assert_eq!(f.message, want["message"].as_str().unwrap());
+            }
             if number == "35" {
                 let detail =
                     super::query_failure_detail(f, query_language::ErrorKind::UnknownField, 0);
@@ -479,9 +483,12 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
 fn a_query_on_an_absent_id_answers_empty() {
     use crate::daemon::service::ArchiveMode;
     let archive = Morrow::build(Set::Main);
+    let mut config = archive.config();
+    // This fixture supplies a complete durable record. Watching its home
+    // would introduce a separate discovery phase with unknown coverage.
+    config.reads_sources = false;
     let mut runtime =
-        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
-            .unwrap();
+        crate::test_daemon::start_runtime(&archive.root, config, ArchiveMode::Standalone).unwrap();
     let mut server =
         crate::daemon::server::Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
     let absent = "sessions where id:claude-code:7f3a2c10-0009-4000-8000-000000000009";

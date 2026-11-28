@@ -11,17 +11,17 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 7;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSnapshot {
     pub query: String,
     pub query_text: String,
     pub ran_at: Timestamp,
-    pub read_at: ChangePosition,
+    pub read_position: ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
     pub enabled_alternates: Vec<String>,
     pub author: Author,
@@ -41,7 +41,7 @@ pub struct Manifest {
     pub query: String,
     pub query_text: String,
     pub ran_at: Timestamp,
-    pub read_at: ChangePosition,
+    pub read_position: ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
     pub counts: Counts,
     pub flags: Flags,
@@ -76,6 +76,11 @@ pub struct Counts {
     pub text_fragments: u64,
     pub blobs: u64,
 }
+impl Counts {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -85,13 +90,14 @@ pub struct Flags {
     pub read: crate::read::ReadOptions,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Format {
-    Json,
-    Jsonl,
-    Markdown,
-    Html,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Format {
+        Json => "json",
+        Jsonl => "jsonl",
+        Markdown => "markdown",
+        Html => "html",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -113,12 +119,13 @@ pub struct InventoryRecord {
     pub file: FileDescriptor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemberKind {
-    Records,
-    Rendered,
-    Blob,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemberKind {
+        Records => "records",
+        Rendered => "rendered",
+        Blob => "blob",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -483,7 +490,7 @@ impl Manifest {
             query: snapshot.query,
             query_text: snapshot.query_text,
             ran_at: snapshot.ran_at,
-            read_at: snapshot.read_at,
+            read_position: snapshot.read_position,
             freshness: snapshot.freshness,
             enabled_alternates: snapshot.enabled_alternates,
             author: snapshot.author,
@@ -513,7 +520,9 @@ impl Manifest {
         {
             return Err(BundleError::InvalidQuery);
         }
-        if self.read_at.generation.is_empty() || self.read_at.index < 0 || self.read_at.archive < 0
+        if self.read_position.index_instance.is_empty()
+            || self.read_position.index < 0
+            || self.read_position.archive < 0
         {
             return Err(BundleError::InvalidPosition);
         }

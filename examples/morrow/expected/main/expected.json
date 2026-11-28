@@ -174,15 +174,9 @@
       ]
     ],
     "33 similar:\"ambiguous date formats\"": {
-      "outcome": "incomplete",
-      "rows": [
-        "#8",
-        "#5",
-        "#7",
-        "#4",
-        "#2",
-        "#1"
-      ]
+      "outcome": "error",
+      "code": "embeddings_off",
+      "message": "semantic search is off; enable it with `polylogue set embed.provider local`"
     },
     "34 repo:other": {
       "outcome": "empty",

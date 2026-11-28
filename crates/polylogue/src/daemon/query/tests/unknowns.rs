@@ -123,7 +123,13 @@ fn near_says_how_many_rows_have_no_vector() {
 #[test]
 fn similar_with_the_provider_down_answers_unranked_and_incomplete() {
     let w = morrow();
-    let near = |_: &str| Err("the embedding provider refused the connection".to_owned());
+    let near = |_: &str| {
+        Err(polylogue_store::StoreError::from(
+            polylogue_model::Reason::EmbeddingProvider {
+                problem: "connection refused".into(),
+            },
+        ))
+    };
     let mut request = ask("kind:* similar:\"ambiguous date formats\"");
     request.embeddings = true;
     request.near = Some(&near);
@@ -136,7 +142,7 @@ fn similar_with_the_provider_down_answers_unranked_and_incomplete() {
             .iter()
             .any(|n| n.as_str()
                 == Some(
-                    "semantic ranking failed (the embedding provider refused the connection); rows are unranked"
+                    "the embedding provider failed: connection refused; rows are ordered by time and unranked"
                 )),
         "{v}"
     );
@@ -340,7 +346,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     assert_eq!(usage["data"], named["data"], "{usage}");
     let mut unranked = ask("similar:dates | limit 1 | measure usage");
     unranked.embeddings = true;
-    assert_eq!(run_q(&w, unranked).unwrap_err().code(), "embed");
+    assert_eq!(run_q(&w, unranked).unwrap_err().code(), "embeddings_off");
 }
 
 #[test]

@@ -295,19 +295,6 @@ pub fn find(what: &str) -> Option<(&'static Measure, &str)> {
         .map(|m| (m, metric))
 }
 
-/// Every measure as `| measure` takes it, for help and errors.
-pub fn names() -> String {
-    MEASURES
-        .iter()
-        .map(|m| match (m.argument, m.metrics) {
-            (Some(argument), _) => format!("{}[:{}]", m.name, argument),
-            (None, []) => m.name.to_owned(),
-            (None, metrics) => format!("{}:<{}>", m.name, metrics.join("|")),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 pub fn run(
     reader: &Reader<'_>,
     what: &str,
@@ -353,7 +340,15 @@ fn bad_request(message: String) -> Failure {
 
 pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {
     let Some((m, metric)) = find(what) else {
-        return Err(bad_request(format!("no measurement `{what}`: {}", names())));
+        let mut known = MEASURES
+            .iter()
+            .map(|measure| measure.name)
+            .collect::<Vec<_>>();
+        known.sort_unstable();
+        return Err(Failure::refusal(polylogue_model::Reason::UnknownMeasure {
+            value: what.to_owned(),
+            known: known.into_iter().collect(),
+        }));
     };
     if m.argument.is_none() && m.metrics.is_empty() && !metric.is_empty() {
         return Err(bad_request(format!("{} takes no arguments", m.name)));

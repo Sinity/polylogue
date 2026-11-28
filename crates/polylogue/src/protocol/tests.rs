@@ -2,6 +2,59 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
+fn line_explanation_access_keeps_wire_and_family_names() {
+    use crate::commands::{Tool, ToolAccess};
+    let wire = r#"["read","write","act"]"#;
+    assert_eq!(serde_json::to_string(ToolAccess::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<ToolAccess>>(wire).unwrap(),
+        ToolAccess::ALL
+    );
+    assert_eq!(Tool::ALL.map(Tool::family), ["read", "write", "act"]);
+}
+
+#[test]
+fn act_outcomes_keep_their_wire_names() {
+    use crate::protocol::acts::ActOutcome;
+    let wire = r#"["delivered","prepared","started","queued","not_sent","unknown","cancelled"]"#;
+    assert_eq!(serde_json::to_string(ActOutcome::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<ActOutcome>>(wire).unwrap(),
+        ActOutcome::ALL
+    );
+}
+
+#[test]
+fn unread_status_figures_keep_their_wire_milestones() {
+    use crate::protocol::status::{AnswersFrom, NotReadSince};
+    for (since, wire) in [
+        (
+            NotReadSince::Start,
+            r#"{"kind":"not_read_yet","since":"start"}"#,
+        ),
+        (
+            NotReadSince::Install,
+            r#"{"kind":"not_read_yet","since":"install"}"#,
+        ),
+    ] {
+        let value = AnswersFrom::NotReadYet { since };
+        assert_eq!(serde_json::to_string(&value).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<AnswersFrom>(wire).unwrap(), value);
+    }
+}
+
+#[test]
+fn selection_forms_keep_their_wire_bytes() {
+    use crate::protocol::line::SelectionForm;
+    let wire = r#"["none","query","reference","references","kept_result"]"#;
+    assert_eq!(serde_json::to_string(SelectionForm::ALL).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_str::<Vec<SelectionForm>>(wire).unwrap(),
+        SelectionForm::ALL
+    );
+}
+
+#[test]
 fn a_pending_write_is_degraded_with_its_note_and_http_success() {
     let write_result = json!({"id":"record:one", "pending":true});
     let answer = written(write_result.clone(), true);
@@ -23,39 +76,212 @@ fn a_pending_write_is_degraded_with_its_note_and_http_success() {
 
 #[test]
 fn failures_follow_the_shared_table() {
-    for (code, exit, http) in [
-        (polylogue_model::Code::InvalidQuery, 2, Some(400)),
-        (polylogue_model::Code::StaleCursor, 2, Some(400)),
-        (polylogue_model::Code::NotBuilt, 2, Some(501)),
-        (polylogue_model::Code::Refused, 3, Some(403)),
-        (polylogue_model::Code::Conflict, 4, Some(409)),
-        (polylogue_model::Code::ScopeChanged, 4, Some(409)),
-        (polylogue_model::Code::NotTheClaimant, 4, Some(409)),
-        (polylogue_model::Code::JobEnded, 4, Some(409)),
-        (polylogue_model::Code::BrowserActionsOff, 4, Some(409)),
-        (polylogue_model::Code::UnknownChatAction, 4, Some(404)),
-        (polylogue_model::Code::AttachmentUnavailable, 4, Some(404)),
-        (polylogue_model::Code::UnsupportedProvider, 2, Some(400)),
+    use polylogue_model::Code::*;
+    // Expected transport behavior is written from the Exit codes table.
+    let rows = [
         (
-            polylogue_model::Code::SubmissionReceiptRequired,
+            FailureKind::InvalidQuery,
             2,
             Some(400),
+            false,
+            &[Query, Sql, InvalidQuery][..],
         ),
         (
-            polylogue_model::Code::SubmissionConversationMismatch,
+            FailureKind::UnknownField,
             2,
             Some(400),
+            false,
+            &[UnknownField][..],
         ),
-        (polylogue_model::Code::Io, 4, Some(500)),
-        (polylogue_model::Code::StoppedEarly, 5, Some(500)),
-        (polylogue_model::Code::DaemonRequired, 6, None),
-        (polylogue_model::Code::DeadlineExceeded, 7, Some(504)),
-        (polylogue_model::Code::Cancelled, 7, None),
+        (FailureKind::BadValue, 2, Some(400), false, &[BadValue][..]),
+        (
+            FailureKind::NotAQuery,
+            2,
+            Some(400),
+            false,
+            &[NotAQuery][..],
+        ),
+        (
+            FailureKind::BadRequest,
+            2,
+            Some(400),
+            false,
+            &[
+                BadRequest,
+                Invalid,
+                IncompleteParents,
+                UnsupportedProvider,
+                EmptyText,
+                ModelRequired,
+                AttachmentNameNotABasename,
+                InvalidAction,
+                SubmissionReceiptRequired,
+                SubmissionConversationMismatch,
+                SinceIsADateOrTime,
+                UnknownOutcome,
+                UnknownAttachment,
+                UnknownReport,
+                NotAVerb,
+                NeedsAll,
+                RowNumbersOffTerminal,
+            ][..],
+        ),
+        (
+            FailureKind::Ambiguous,
+            2,
+            Some(400),
+            false,
+            &[Ambiguous][..],
+        ),
+        (
+            FailureKind::StaleCursor,
+            2,
+            Some(400),
+            false,
+            &[StaleCursor][..],
+        ),
+        (FailureKind::NotBuilt, 2, Some(501), false, &[NotBuilt][..]),
+        (
+            FailureKind::NotYetAvailable,
+            2,
+            Some(501),
+            true,
+            &[
+                NotYetAvailable,
+                IndexBuilding,
+                PrimaryContextMissing,
+                PrimaryContextPending,
+                PrimaryContextStale,
+            ][..],
+        ),
+        (
+            FailureKind::Refused,
+            3,
+            Some(403),
+            false,
+            &[
+                ModelCallsOff,
+                Refused,
+                OperatorRequired,
+                EmbeddingsOff,
+                Confirm,
+                Rejected,
+                PrimaryContextRefused,
+            ][..],
+        ),
+        (
+            FailureKind::NotFound,
+            4,
+            Some(404),
+            false,
+            &[
+                NotFound,
+                UnknownChatAction,
+                UnknownChatActionAttachment,
+                AttachmentMissing,
+                AttachmentUnavailable,
+                UnknownImportJob,
+            ][..],
+        ),
+        (
+            FailureKind::Conflict,
+            4,
+            Some(409),
+            false,
+            &[
+                Conflict,
+                Stale,
+                ScopeChanged,
+                ResyncRequired,
+                IdempotencyKeyReused,
+                ActionFinished,
+                NotTheClaimant,
+                StageOnlyActionCannotSubmit,
+                NotAwaitingApproval,
+                JobEnded,
+                BrowserActionsOff,
+            ][..],
+        ),
+        (
+            FailureKind::StoppedEarly,
+            5,
+            Some(500),
+            false,
+            &[StoppedEarly][..],
+        ),
+        (
+            FailureKind::NotRunning,
+            6,
+            None,
+            true,
+            &[
+                NotRunning,
+                DaemonRequired,
+                ShuttingDown,
+                DaemonProtocolMismatch,
+            ][..],
+        ),
+        (
+            FailureKind::Timeout,
+            7,
+            Some(504),
+            true,
+            &[DeadlineExceeded, Busy][..],
+        ),
+        (FailureKind::Internal, 4, Some(500), false, &[Internal][..]),
+        (FailureKind::Cancelled, 7, None, true, &[Cancelled][..]),
+        (
+            FailureKind::Io,
+            4,
+            Some(500),
+            false,
+            &[
+                Demo,
+                AttachmentOutput,
+                ReaderUnavailable,
+                Schema,
+                ReadOutput,
+                Io,
+                BlobCorrupt,
+                Store,
+                Import,
+                Embed,
+                SinexUnavailable,
+                PrimaryContextUnavailable,
+                PrimaryContextInvalid,
+            ][..],
+        ),
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for &(kind, exit, http, retryable, codes) in &rows {
+        for &code in codes {
+            assert!(seen.insert(code), "duplicate {code:?}");
+            let answer = Answer::<Value>::error(failure(code, "failed"));
+            let error = answer.failure().unwrap();
+            assert_eq!(
+                (
+                    error.kind,
+                    answer.exit_code(),
+                    answer.http_status(),
+                    error.retryable
+                ),
+                (kind, exit, http, retryable),
+                "{code:?}"
+            );
+        }
+    }
+    assert_eq!(seen, polylogue_model::Code::ALL.iter().copied().collect());
+    for (answer, exit) in [
+        (Answer::empty(Value::Null), 1),
+        (
+            Answer::degraded(Value::Null, vec!["missing source".into()]),
+            5,
+        ),
     ] {
-        let answer = Answer::<Value>::error(failure(code, "failed"));
-        assert_eq!(answer.exit_code(), exit, "{code:?}");
-        assert_eq!(answer.http_status(), http, "{code:?}");
-        assert!(answer.value().is_none());
+        assert_eq!(
+            (answer.exit_code(), answer.http_status(), answer.failure()),
+            (exit, Some(200), None)
+        );
     }
 }
 
@@ -169,8 +395,7 @@ fn typed_failure_codes_keep_their_wire_names_and_classes() {
     use polylogue_model::Code;
     for (code, wire, expected) in [
         (Code::Io, "io", FailureKind::Io),
-        (Code::Empty, "empty", FailureKind::Io),
-        (Code::ModelCallsOff, "model_calls_off", FailureKind::Io),
+        (Code::ModelCallsOff, "model_calls_off", FailureKind::Refused),
         (Code::Store, "store", FailureKind::Io),
         (Code::Internal, "internal", FailureKind::Internal),
         (
@@ -474,8 +699,8 @@ fn every_store_error_variant_has_a_code_and_kind() {
                 what: "a feature".into(),
             }),
             Code::NotBuilt,
-            FailureKind::NotYetAvailable,
-            true,
+            FailureKind::NotBuilt,
+            false,
         ),
         (
             E::ReferenceUnavailable {

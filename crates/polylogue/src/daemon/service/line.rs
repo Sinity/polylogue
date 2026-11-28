@@ -33,6 +33,22 @@ impl Operation for Line {
     fn failure(line: &LineAnswer) -> Option<command_surface::FailureKind> {
         line.failed_step().map(|failure| failure.kind)
     }
+    /// Each read pages instead of streaming or following.
+    fn without_stream(rows: &Rows) -> Option<Rows> {
+        if !streams(rows) {
+            return None;
+        }
+        let mut paged = rows.clone();
+        for step in &mut paged.steps {
+            if let Step::Read(read) = step {
+                read.follow = false;
+                read.delivery = polylogue_model::read::ReadDelivery::Page;
+            }
+        }
+        Some(paged)
+    }
+    const MODEL_TEXT: Option<crate::daemon::handler::ModelText<LineAnswer>> =
+        Some(crate::mcp::line_text);
     /// A line's access is its highest step's. It changes the archive when a
     /// step writes or acts, or a brief records its delivery to a model or a
     /// hook; a line with a streamed read takes only a deadline its caller
@@ -44,7 +60,9 @@ impl Operation for Line {
         Ok(Policy {
             access: rows.access(),
             changes_archive,
-            bound: if streams(rows) {
+            // A waiting listing is bounded by its wait, like a stream by
+            // its caller: the default read deadline would end it early.
+            bound: if streams(rows) || rows.wait.is_some() {
                 Bound::CallerOnly
             } else if changes_archive {
                 Bound::UntilHandOver
@@ -170,6 +188,7 @@ fn named(text: &str) -> Option<Reference> {
     }
     Reference::parse(text.trim()).ok().filter(|reference| {
         polylogue_query::catalog::reference_unit(reference).is_some()
+            || matches!(reference, Reference::Span { container, .. } if matches!(container.as_ref(), Reference::ToolCall(..)))
             || matches!(
                 reference,
                 Reference::Result { .. }
@@ -387,7 +406,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         Some(UserWrite::ResolveLine {
             resolved, retained, ..
         }) => Selection {
-            question: match &given {
+            query: match &given {
                 Given::Query(text) => Some(text.clone()),
                 _ => None,
             },
@@ -496,7 +515,7 @@ fn resolve(
             Failure::not_found(format!("no current authored saved query query:{name}"))
         })?;
         let mut selection = resolve(Given::Reference(target), steps, return_selection, call)?;
-        selection.question = Some(text.clone());
+        selection.query = Some(text.clone());
         selection.given = given;
         return Ok(selection);
     }
@@ -520,7 +539,14 @@ fn resolve(
             Given::None => None,
         };
         if let Some(text) = text {
-            let (retained, query_rows) = retain_selection(&text, call)?;
+            let (retained, query_rows) = retain_selection(
+                &text,
+                matches!(
+                    given,
+                    Given::Query(_) | Given::Reference(Reference::Query { .. })
+                ),
+                call,
+            )?;
             if return_selection && query_rows.is_none() {
                 return Err(Failure::bad_request(
                     "pick needs archive rows with native identities",
@@ -542,7 +568,7 @@ fn resolve(
             };
             return Ok(Selection {
                 given,
-                question,
+                query: question,
                 resolved,
                 retained: Some(Box::new(retained)),
             });
@@ -574,7 +600,7 @@ fn resolve(
     Ok(Selection {
         given,
         resolved,
-        question,
+        query: question,
         retained: None,
     })
 }
@@ -583,6 +609,7 @@ fn resolve(
 /// line population. Only derived relation values remain in the journal.
 fn retain_selection(
     text: &str,
+    record_history: bool,
     call: &Call<'_>,
 ) -> Result<(polylogue_model::user::LineSelection, Option<Vec<Reference>>), Failure> {
     let reader = call.reader()?;
@@ -606,6 +633,7 @@ fn retain_selection(
                     near: Some(near),
                     fields: &[],
                 },
+                record_history.then_some(call),
             )
         },
     )
@@ -637,7 +665,7 @@ fn selects_rows(
 fn summary(selection: &Selection) -> Option<Resolved> {
     let resolved = selection.resolved.as_ref()?;
     Some(Resolved {
-        question: selection.question.clone(),
+        query: selection.query.clone(),
         count: resolved.len() as u64,
         named: !matches!(selection.given, Given::Query(_)),
         first: resolved.iter().take(20).map(ToString::to_string).collect(),
@@ -651,7 +679,7 @@ fn attach_population(answer: &mut Answer<StepsAnswer>, selection: &Selection, ca
     let population = (|| {
         let reader = call.reader()?;
         let text = selection
-            .question
+            .query
             .clone()
             .or_else(|| selection.query_text())
             .ok_or_else(|| Failure::bad_request("pick needs a selection"))?;
@@ -725,12 +753,8 @@ impl Stream<'_> {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         if read.follow {
-            if read.until_idle {
-                return Err(verbs::not_built("read", "until-idle"));
-            }
             let target = verbs::read::target(selection)?;
-            let marks =
-                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            let marks = super::follow::run(&call.call, self.context, &target, None, self.output)?;
             return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
         let answer = verbs::read::stream(
@@ -762,6 +786,7 @@ fn execute_steps(
     let mut envelope = Envelope::default();
     let mut outcome = Outcome::Empty(());
     let mut failed = false;
+    let mut after_write = None;
     for (index, step) in steps.into_iter().enumerate() {
         let verb = step.verb();
         if failed {
@@ -773,7 +798,8 @@ fn execute_steps(
             continue;
         }
         let request_id = step_request(call.request_id, index);
-        let step_call = StepCall::new(call, &request_id);
+        let mut step_call = StepCall::new(call, &request_id);
+        step_call.call.after_write = after_write;
         let work = || {
             if let Some(limit) = limit {
                 limit.check()?;
@@ -797,7 +823,12 @@ fn execute_steps(
         let reported = match result {
             Ok(done) => {
                 verbs::merge_outcome(&mut outcome, done.outcome());
-                let StepDone { answer, undo } = done;
+                let StepDone {
+                    answer,
+                    undo,
+                    position,
+                } = done;
+                after_write = after_write.max(position);
                 envelope.notes.extend(answer.envelope.notes);
                 if !answer.envelope.next.is_empty() {
                     envelope.next = answer.envelope.next;
@@ -825,7 +856,10 @@ fn execute_steps(
             request_id: Some(request_id),
             outcome: reported,
         });
-        if let Some(stream) = &mut stream {
+        if !failed
+            && limit.is_none_or(|limit| limit.check().is_ok())
+            && let Some(stream) = &mut stream
+        {
             stream.reports(selection, &mut reports, &mut envelope)?;
         }
     }
@@ -852,18 +886,19 @@ pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Fai
 }
 
 /// The listing's page of rows, with the ranking the archive's settings
-/// allow. While a wait has no rows, its read phase stays open.
-fn rows_page(
-    call: &Call<'_>,
+/// allow, and whether an empty page should wait for another read. Only
+/// a terminal page hands over to the optional count.
+fn rows_page<'daemon>(
+    call: &Call<'daemon>,
     rows: &Rows,
     query: &str,
-    waiting: bool,
-) -> Result<Answer<LineAnswer>, Failure> {
+    waiting: Option<&mut Option<crate::daemon::query::history::StartedQuery<'daemon>>>,
+) -> Result<polylogue_reading::execution::Completed<(Answer<LineAnswer>, bool)>, Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
     let freshness = d.freshness(&reader)?;
-    Ok(crate::daemon::query::with_ranking(
+    crate::daemon::query::with_ranking(
         &reader,
         &d.warm,
         &d.config,
@@ -874,26 +909,50 @@ fn rows_page(
                 page_size: rows.page_size.map(std::num::NonZeroU64::get),
                 why: rows.why,
                 session: None,
-                context,
+                context: std::sync::Arc::clone(&context),
                 embeddings,
                 ranking_identity,
                 near: Some(near),
                 fields: &rows.fields,
             };
-            match crate::daemon::query::prepare(&reader, ask).and_then(|prepared| {
-                if !waiting || !prepared.is_empty() || !freshness.up_to_date() {
-                    call.hand_over("optional query count")?;
-                    prepared.complete_within(call.limit)
+            let may_wait = waiting.is_some();
+            crate::daemon::query::listing(&reader, ask, call, waiting, |prepared| {
+                let wait_again = may_wait
+                    && prepared.is_empty()
+                    && (freshness.up_to_date() || freshness.catching_up());
+                let answer = if wait_again {
+                    prepared.without_count()
                 } else {
-                    prepared.complete()
-                }
-            }) {
-                Ok(answer) => super::query_outcome(answer, &freshness),
-                Err(failure) => failure.answer(),
-            }
+                    call.hand_over("optional query count")?;
+                    prepared.complete_within(call.limit)?
+                };
+                let next = answer
+                    .value
+                    .next()
+                    .zip(context.accepted_request())
+                    .map(|(cursor, request)| {
+                        let mut request = request.clone();
+                        request.cursor = Some(cursor.to_owned());
+                        d.ready_call(&request).map_err(|error| Failure { error })
+                    })
+                    .transpose()?;
+                let count = answer.value.count();
+                let exact = count.is_some()
+                    && freshness.up_to_date()
+                    && answer.outcome != crate::daemon::query::Outcome::Incomplete;
+                Ok(polylogue_reading::execution::Completed {
+                    value: (
+                        super::query_outcome(answer, &freshness)
+                            .map(|found| LineAnswer::Listing(Box::new(found))),
+                        wait_again,
+                    ),
+                    count,
+                    exact,
+                    next,
+                })
+            })
         },
     )
-    .map(|found| LineAnswer::Listing(Box::new(found))))
 }
 
 /// The selection alone: its rows, a page at a time.
@@ -901,7 +960,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let query = Selection {
         given,
         resolved: None,
-        question: None,
+        query: None,
         retained: None,
     }
     .query_text()
@@ -909,7 +968,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let Some(wait) = rows.wait.as_deref() else {
         call.runs_query(&query);
         crate::daemon::query::prefetch_ranking(call, &query);
-        return rows_page(call, &rows, &query, false);
+        return rows_page(call, &rows, &query, None).map(|completed| completed.value.0);
     };
     let mut duration = listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
@@ -917,6 +976,8 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
     }
     let until = Instant::now() + duration;
+    // Subscribe before starting the run. A recheck only reads, so even waits
+    // over the run history cannot generate further commits by waking each other.
     let commits = call
         .daemon
         .writes
@@ -931,29 +992,23 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         }
         _ => None,
     };
-    loop {
+    let mut started = None;
+    let observed = (|| loop {
         super::accepting(call.daemon)?;
         if let Some(limit) = &limit {
             limit.check()?;
         }
-        let answer = rows_page(call, &rows, &query, true)?;
-        // A listing waits for rows: an answer with none keeps waiting, also
-        // when it is degraded because the index is behind its archive.
-        let no_rows = match &answer.outcome {
-            command_surface::Outcome::Empty(_) => true,
-            command_surface::Outcome::Degraded { value, .. } => matches!(
-                value,
-                LineAnswer::Listing(found)
-                    if matches!(&**found, crate::protocol::query::Answer::Rows(rows) if rows.rows.is_empty())
-            ),
-            _ => false,
-        };
-        if !no_rows {
-            return Ok(answer);
+        let mut completed = rows_page(call, &rows, &query, Some(&mut started))?;
+        if !completed.value.1 {
+            return Ok(completed);
         }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Ok(answer.with_next("wait again", repeated(&rows, call)?));
+            completed.value.0 = completed
+                .value
+                .0
+                .with_next("wait again", repeated(&rows, call)?);
+            return Ok(completed);
         }
         let left = limit
             .as_ref()
@@ -966,7 +1021,12 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             }
             None => std::thread::sleep(left),
         }
-    }
+    })();
+    let completed = match started {
+        Some(started) => started.finish(observed)?,
+        None => observed?,
+    };
+    Ok(completed.value.0)
 }
 
 /// How the line is read and what each step would do; nothing resolves.
@@ -989,7 +1049,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
         _ => None,
     };
     let selection = Selection {
-        question: match &given {
+        query: match &given {
             Given::Query(text) => Some(text.clone()),
             _ => None,
         },
@@ -1007,7 +1067,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
             let plain = || format!("would {} {}", step.verb(), selection.described());
             // A step that acts on rows one by one cannot look at a query's
             // rows here, which are not resolved.
-            let would = if selection.question.is_some() && step.rows() != RowRule::Any {
+            let would = if selection.query.is_some() && step.rows() != RowRule::Any {
                 plain()
             } else {
                 step.would(&selection, &step_call)

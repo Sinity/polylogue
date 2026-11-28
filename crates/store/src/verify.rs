@@ -13,6 +13,7 @@
 //! from another copy of the same inputs can be compared byte for byte.
 
 use crate::ConnExt as _;
+use crate::row::{Rows as _, Statement, row};
 use crate::{ReadPool, Result, StoreError};
 use polylogue_model::hex;
 use rusqlite::params;
@@ -27,6 +28,149 @@ use std::sync::Arc;
 const BLOB_BATCH: i64 = 256;
 /// Inputs listed per query when writing a manifest.
 const INPUT_BATCH: i64 = 256;
+
+row! {
+    struct OriginCount {
+        origin: String,
+        inputs: i64,
+        revisions: i64,
+        revision_bytes: i64,
+    }
+    statements {
+        const ALL = "SELECT i.origin, count(DISTINCT i.id) AS inputs,
+            count(r.number) AS revisions, coalesce(sum(r.length), 0) AS revision_bytes
+            FROM source_input i LEFT JOIN source_revision r ON r.input = i.id
+            GROUP BY i.origin ORDER BY i.origin";
+    }
+}
+
+row! {
+    struct CountByClass {
+        class: String,
+        count: i64,
+    }
+    statements {
+        const OBSERVATIONS = "SELECT class, count(*) AS count FROM source_observation
+            GROUP BY class ORDER BY class";
+        const REVISIONS = "SELECT produced AS class, count(*) AS count FROM source_revision
+            GROUP BY produced ORDER BY produced";
+    }
+}
+
+row! {
+    struct StoredCount {
+        name: String,
+        count: i64,
+    }
+    statements {
+        const ALL = "SELECT name, count FROM source_row_count ORDER BY name";
+    }
+}
+
+row! {
+    struct ProblemRow {
+        subject: String,
+        detail: String,
+    }
+    statements {
+        const EXTENTS_WITHOUT_BLOBS = "SELECT e.input || '/' || e.chain || '@' || e.offset AS subject, 'blob ' || lower(hex(e.blob)) AS detail
+         FROM source_extent e
+         WHERE NOT EXISTS (SELECT 1 FROM source_blob b WHERE b.hash = e.blob)
+         ORDER BY e.input, e.chain, e.offset";
+        const EXTENTS_OUTSIDE_BLOBS = "SELECT e.input || '/' || e.chain || '@' || e.offset AS subject,
+                'bytes ' || e.blob_offset || '..' || (e.blob_offset + e.length)
+                || ' of a blob of ' || b.size AS detail
+         FROM source_extent e JOIN source_blob b ON b.hash = e.blob
+         WHERE e.length <= 0 OR e.offset < 0 OR e.blob_offset < 0
+            OR e.blob_offset + e.length > b.size
+         ORDER BY e.input, e.chain, e.offset";
+        const EXTENT_GAPS = "SELECT g.input || '/' || g.chain || '@' || g.start AS subject,
+                CASE WHEN g.start > g.previous_end THEN 'gap after ' ELSE 'overlap with bytes before ' END
+                || g.previous_end AS detail
+         FROM (SELECT x.input AS input, x.chain AS chain, x.offset AS start,
+                      lag(x.offset + x.length, 1, 0)
+                        OVER (PARTITION BY x.input, x.chain ORDER BY x.offset) AS previous_end
+               FROM source_extent x) g
+         WHERE g.start != g.previous_end
+         ORDER BY g.input, g.chain, g.start";
+        const UNCOVERED_REVISIONS = "SELECT r.input || '#' || r.number AS subject,
+                'length ' || r.length || ', extents of chain ' || r.chain || ' cover '
+                || coalesce((SELECT max(e.offset + e.length) FROM source_extent e
+                             WHERE e.input = r.input AND e.chain = r.chain), 0) AS detail
+         FROM source_revision r
+         WHERE r.length < 0
+            OR r.length > coalesce((SELECT max(e.offset + e.length) FROM source_extent e
+                                    WHERE e.input = r.input AND e.chain = r.chain), 0)
+         ORDER BY r.input, r.number";
+    }
+}
+
+row! {
+    struct DatabaseFile {
+        seq: i64,
+        name: String,
+        file: String,
+    }
+    statements {
+        const ALL = "PRAGMA database_list";
+    }
+}
+
+row! {
+    struct QuickCheck {
+        quick_check: String,
+    }
+    statements {
+        const MAIN = "PRAGMA \"main\".quick_check";
+    }
+}
+
+row! {
+    struct BlobRow {
+        hash: Vec<u8>,
+        size: i64,
+        stored_size: i64,
+        storage: Vec<u8>,
+    }
+    statements {
+        const BATCH = "SELECT hash, size, stored_size, storage FROM source_blob
+            WHERE hash > ?1 ORDER BY hash LIMIT ?2";
+    }
+}
+
+row! {
+    struct ManifestInput {
+        id: String,
+    }
+    statements {
+        const BATCH = "SELECT id FROM source_input WHERE id > ?1 ORDER BY id LIMIT ?2";
+    }
+}
+
+row! {
+    struct ManifestRevision {
+        chain: i64,
+        number: i64,
+        length: i64,
+    }
+    statements {
+        const OF_INPUT = "SELECT chain, number, length FROM source_revision
+            WHERE input = ?1 ORDER BY chain, length, number";
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<OriginCount>();
+    check.row::<CountByClass>();
+    check.row::<StoredCount>();
+    check.row::<ProblemRow>();
+    check.row::<DatabaseFile>();
+    check.row::<QuickCheck>();
+    check.row::<BlobRow>();
+    check.row::<ManifestInput>();
+    check.row::<ManifestRevision>();
+}
 
 /// What one verification found.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -167,8 +311,11 @@ pub fn verify(
     pace: &mut Pace<'_>,
 ) -> Result<Verification> {
     let mut found = Verification::default();
-    pace(&|| ())?;
-    rows(pool, &mut found)?;
+    {
+        let _checking = crate::activity::doing("checking archive rows");
+        pace(&|| ())?;
+        rows(pool, &mut found)?;
+    }
     pace(&|| ())?;
     databases(pool, &mut found)?;
     blob_bytes(pool, blobs.root(), &mut found, pace)?;
@@ -197,44 +344,31 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         blobs: count(one("SELECT count(*) FROM source_blob")?),
         blob_bytes: count(one("SELECT coalesce(sum(size), 0) FROM source_blob")?),
     };
-    let mut statement = conn.prepare(
-        "SELECT i.origin, count(DISTINCT i.id), count(r.number), coalesce(sum(r.length), 0)
-         FROM source_input i LEFT JOIN source_revision r ON r.input = i.id
-         GROUP BY i.origin ORDER BY i.origin",
-    )?;
-    found.formats = statement
-        .query_map([], |row| {
-            Ok(FormatCount {
-                format: row.get(0)?,
-                inputs: count(row.get(1)?),
-                revisions: count(row.get(2)?),
-                revision_bytes: count(row.get(3)?),
+    found.formats = conn
+        .all(&OriginCount::ALL, [])?
+        .into_iter()
+        .map(|row| FormatCount {
+            format: row.origin,
+            inputs: count(row.inputs),
+            revisions: count(row.revisions),
+            revision_bytes: count(row.revision_bytes),
+        })
+        .collect();
+    let classes = |statement: &Statement<CountByClass>| -> Result<Vec<ClassCount>> {
+        Ok(conn
+            .all(statement, [])?
+            .into_iter()
+            .map(|row| ClassCount {
+                class: row.class,
+                count: count(row.count),
             })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    let classes = |sql: &str| -> Result<Vec<ClassCount>> {
-        let mut statement = conn.prepare(sql)?;
-        Ok(statement
-            .query_map([], |row| {
-                Ok(ClassCount {
-                    class: row.get(0)?,
-                    count: count(row.get(1)?),
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
+            .collect())
     };
-    found.observation_classes =
-        classes("SELECT class, count(*) FROM source_observation GROUP BY class ORDER BY class")?;
-    found.revision_kinds = classes(
-        "SELECT produced, count(*) FROM source_revision GROUP BY produced ORDER BY produced",
-    )?;
+    found.observation_classes = classes(&CountByClass::OBSERVATIONS)?;
+    found.revision_kinds = classes(&CountByClass::REVISIONS)?;
 
     // The counters `status` reads instead of counting.
-    let kept: Vec<(String, i64)> = conn
-        .prepare("SELECT name, count FROM source_row_count ORDER BY name")?
-        .query_map([], |row| <(_, _)>::try_from(row))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (name, n) in kept {
+    for StoredCount { name, count: n } in conn.all(&StoredCount::ALL, [])? {
         let counted = match name.as_str() {
             "input" => found.counts.inputs,
             "revision" => found.counts.revisions,
@@ -250,57 +384,25 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         }
     }
 
-    let mut listed = |kind: ProblemKind, sql: &str| -> Result<()> {
-        let mut statement = conn.prepare(sql)?;
-        let rows: Vec<(String, String)> = statement
-            .query_map([], |row| <(_, _)>::try_from(row))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (subject, detail) in rows {
+    for (kind, statement) in [
+        (
+            ProblemKind::ExtentWithoutBlob,
+            &ProblemRow::EXTENTS_WITHOUT_BLOBS,
+        ),
+        (
+            ProblemKind::ExtentOutsideBlob,
+            &ProblemRow::EXTENTS_OUTSIDE_BLOBS,
+        ),
+        (ProblemKind::ExtentGap, &ProblemRow::EXTENT_GAPS),
+        (
+            ProblemKind::RevisionUncovered,
+            &ProblemRow::UNCOVERED_REVISIONS,
+        ),
+    ] {
+        for ProblemRow { subject, detail } in conn.all(statement, [])? {
             found.problem(kind, subject, detail);
         }
-        Ok(())
-    };
-    listed(
-        ProblemKind::ExtentWithoutBlob,
-        "SELECT e.input || '/' || e.chain || '@' || e.offset, 'blob ' || lower(hex(e.blob))
-         FROM source_extent e
-         WHERE NOT EXISTS (SELECT 1 FROM source_blob b WHERE b.hash = e.blob)
-         ORDER BY e.input, e.chain, e.offset",
-    )?;
-    listed(
-        ProblemKind::ExtentOutsideBlob,
-        "SELECT e.input || '/' || e.chain || '@' || e.offset,
-                'bytes ' || e.blob_offset || '..' || (e.blob_offset + e.length)
-                || ' of a blob of ' || b.size
-         FROM source_extent e JOIN source_blob b ON b.hash = e.blob
-         WHERE e.length <= 0 OR e.offset < 0 OR e.blob_offset < 0
-            OR e.blob_offset + e.length > b.size
-         ORDER BY e.input, e.chain, e.offset",
-    )?;
-    listed(
-        ProblemKind::ExtentGap,
-        "SELECT g.input || '/' || g.chain || '@' || g.start,
-                CASE WHEN g.start > g.previous_end THEN 'gap after ' ELSE 'overlap with bytes before ' END
-                || g.previous_end
-         FROM (SELECT x.input AS input, x.chain AS chain, x.offset AS start,
-                      lag(x.offset + x.length, 1, 0)
-                        OVER (PARTITION BY x.input, x.chain ORDER BY x.offset) AS previous_end
-               FROM source_extent x) g
-         WHERE g.start != g.previous_end
-         ORDER BY g.input, g.chain, g.start",
-    )?;
-    listed(
-        ProblemKind::RevisionUncovered,
-        "SELECT r.input || '#' || r.number,
-                'length ' || r.length || ', extents of chain ' || r.chain || ' cover '
-                || coalesce((SELECT max(e.offset + e.length) FROM source_extent e
-                             WHERE e.input = r.input AND e.chain = r.chain), 0)
-         FROM source_revision r
-         WHERE r.length < 0
-            OR r.length > coalesce((SELECT max(e.offset + e.length) FROM source_extent e
-                                    WHERE e.input = r.input AND e.chain = r.chain), 0)
-         ORDER BY r.input, r.number",
-    )?;
+    }
     Ok(())
 }
 
@@ -308,11 +410,10 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
 fn databases(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     let reader = pool.reader()?;
     let conn = reader.conn()?;
-    let attached: Vec<(String, String)> = conn
-        .prepare("PRAGMA database_list")?
-        .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (schema, file) in attached {
+    for DatabaseFile {
+        name: schema, file, ..
+    } in conn.all(&DatabaseFile::ALL, [])?
+    {
         if schema == "temp"
             || !schema
                 .chars()
@@ -320,10 +421,19 @@ fn databases(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         {
             continue;
         }
+        let _checking = crate::activity::doing_on("checking database pages", schema.clone());
+        let attached;
+        let statement = if schema == "main" {
+            &QuickCheck::MAIN
+        } else {
+            attached = Statement::built(format!("PRAGMA \"{schema}\".quick_check"));
+            &attached
+        };
         let result: Vec<String> = conn
-            .prepare(&format!("PRAGMA \"{schema}\".quick_check"))?
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
+            .all(statement, [])?
+            .into_iter()
+            .map(|row| row.quick_check)
+            .collect();
         if result != ["ok"] {
             found.problem(ProblemKind::Database, &file, result.join("; "));
         }
@@ -345,27 +455,27 @@ fn blob_bytes(
     found: &mut Verification,
     pace: &mut Pace<'_>,
 ) -> Result<()> {
+    let _checking = crate::activity::doing("checking archive blobs");
     let segments = hashed_blobs::Reader::new(root);
     let mut after: Vec<u8> = Vec::new();
     loop {
-        let batch: Vec<(Vec<u8>, i64, i64, Vec<u8>)> = {
+        let batch = {
             let reader = pool.reader()?;
-            let conn = reader.conn()?;
-            let mut statement = conn.prepare(
-                "SELECT hash, size, stored_size, storage FROM source_blob
-                 WHERE hash > ?1 ORDER BY hash LIMIT ?2",
-            )?;
-            statement
-                .query_map(params![after, BLOB_BATCH], |row| {
-                    <(_, _, _, _)>::try_from(row)
-                })?
-                .collect::<rusqlite::Result<_>>()?
+            reader
+                .conn()?
+                .all(&BlobRow::BATCH, params![after, BLOB_BATCH])?
         };
         let Some(last) = batch.last() else {
             return Ok(());
         };
-        after = last.0.clone();
-        for (hash, size, stored_size, storage) in batch {
+        after = last.hash.clone();
+        for BlobRow {
+            hash,
+            size,
+            stored_size,
+            storage,
+        } in batch
+        {
             pace(&|| ())?;
             let name = hex(&hash);
             found.blobs.checked += 1;
@@ -414,6 +524,7 @@ fn blob_bytes(
                 found.problem(ProblemKind::BlobBytes, name, mismatch.error.clone());
             }
         }
+        crate::activity::progressed();
     }
 }
 
@@ -425,24 +536,22 @@ fn write_manifest(
     found: &mut Verification,
     pace: &mut Pace<'_>,
 ) -> Result<ManifestSummary> {
+    let _hashing = crate::activity::doing("hashing archive revisions");
     let mut summary = ManifestSummary::default();
     let mut after = String::new();
     loop {
-        let inputs: Vec<String> = {
+        let inputs = {
             let reader = pool.reader()?;
-            let conn = reader.conn()?;
-            let mut statement =
-                conn.prepare("SELECT id FROM source_input WHERE id > ?1 ORDER BY id LIMIT ?2")?;
-            statement
-                .query_map(params![after, INPUT_BATCH], |row| row.get(0))?
-                .collect::<rusqlite::Result<_>>()?
+            reader
+                .conn()?
+                .all(&ManifestInput::BATCH, params![after, INPUT_BATCH])?
         };
         let Some(last) = inputs.last() else {
             out.flush()?;
             return Ok(summary);
         };
-        after = last.clone();
-        for input in inputs {
+        after = last.id.clone();
+        for ManifestInput { id: input } in inputs {
             pace(&|| ())?;
             let mut lines = input_revisions(pool, blobs, &input, &mut summary, found, pace)?;
             lines.sort_by_key(|line| line.0);
@@ -450,6 +559,7 @@ fn write_manifest(
                 writeln!(out, "{input}\t{number}\t{length}\t{hash}")?;
                 summary.revisions += 1;
             }
+            crate::activity::progressed();
         }
     }
 }
@@ -474,14 +584,12 @@ fn input_revisions(
     {
         let reader = pool.reader()?;
         let conn = reader.conn()?;
-        let revisions: Vec<(i64, i64, i64)> = conn
-            .prepare(
-                "SELECT chain, number, length FROM source_revision
-                 WHERE input = ?1 ORDER BY chain, length, number",
-            )?
-            .query_map([input], |row| <(_, _, _)>::try_from(row))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (chain, number, length) in revisions {
+        for ManifestRevision {
+            chain,
+            number,
+            length,
+        } in conn.all(&ManifestRevision::OF_INPUT, [input])?
+        {
             let length = count(length);
             match chains.last_mut() {
                 Some((current, members, _)) if *current == chain => members.push((number, length)),

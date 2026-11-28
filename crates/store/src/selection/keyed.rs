@@ -30,7 +30,10 @@ impl Reader<'_> {
         let page = program.statements.page(
             &program.order,
             program.params.len(),
-            true,
+            Some(crate::query::compile::in_second_part(
+                &program.order,
+                &at.values,
+            )),
             true,
             crate::query::compile::PageColumns::Order,
         );

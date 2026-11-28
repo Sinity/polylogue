@@ -65,6 +65,7 @@ impl EnvSnapshot {
             "XDG_CACHE_HOME",
             "XDG_RUNTIME_DIR",
             "POLYLOGUE_LISTEN",
+            "POLYLOGUE_MCP_SOCKET",
             "POLYLOGUE_AUTH_TOKEN_FILE",
             "PAGER",
             "ZDOTDIR",
@@ -351,12 +352,6 @@ impl Paths {
             .join("git-roots")
             .join(format!("{}.json", &key.to_hex()[..32]))
     }
-    pub fn completion_catalog(&self, archive: &Path) -> PathBuf {
-        self.cache
-            .join("polylogue")
-            .join(crate::runtime_dir::archive_key(archive))
-            .join("catalog")
-    }
 }
 #[derive(Clone)]
 pub struct HttpConfig {
@@ -422,6 +417,7 @@ impl Config {
 pub struct Client {
     pub paths: Paths,
     pub archive: PathBuf,
+    pub(crate) mcp_socket: Option<PathBuf>,
     pub clock: WallClock,
     pub output: OutputConfig,
     /// The pager a terminal read is shown through: `$PAGER`, else `less -FRX`.
@@ -556,6 +552,25 @@ impl Client {
             .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?
             .to_owned();
         let archive = paths.archive(&overrides, &cwd, file.archive.as_deref(), &base);
+        let mcp_socket = if overrides.archive.is_none() && overrides.config_file.is_none() {
+            process
+                .environment
+                .get_os("POLYLOGUE_MCP_SOCKET")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .map(|path| {
+                    if path.is_absolute() && path.file_name().is_some() {
+                        Ok(path)
+                    } else {
+                        Err(Error::Invalid(
+                            "POLYLOGUE_MCP_SOCKET must be an absolute socket path".into(),
+                        ))
+                    }
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let DayFile { zone, start } = file.day.unwrap_or(DayFile {
             zone: None,
             start: None,
@@ -575,6 +590,7 @@ impl Client {
                 .unwrap_or_else(|| paths.home.clone()),
             paths,
             archive,
+            mcp_socket,
             clock: process.clock.clone(),
             output: process.output,
             pager: process
@@ -791,6 +807,7 @@ impl Client {
         Self {
             paths: config.paths.clone(),
             archive: config.archive.clone(),
+            mcp_socket: None,
             clock,
             output: OutputConfig::new(false, false, true, None),
             pager: "cat".into(),

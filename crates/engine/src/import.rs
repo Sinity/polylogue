@@ -67,7 +67,7 @@ impl Engine {
         report.user_state.applied += report.pass.authored.applied;
         report.user_state.present += report.pass.authored.present;
         report.user_state.pending += report.pass.authored.pending;
-        self.refresh_import_assets(&mut report.pass)?;
+        self.refresh_import_assets(&mut report.pass, None)?;
         let changed = !report.imported.is_empty()
             || report.pass.bytes_stored != 0
             || report.pass.inputs_seen != 0
@@ -80,9 +80,15 @@ impl Engine {
         } else {
             report.pass.derivation_pending = self.writer.derive_in_background()?;
         }
-        if let Some(build) = self.archive.index_build() {
+        // With a current installed index the import was parsed into it;
+        // with none, the rebuild in progress or the incremental update
+        // after its install parses it.
+        if !self.archive.index_files()?.serves()
+            && let Some(build) = self.archive.index_build()
+        {
             report.readable = Readable::AfterBuild { build };
         }
+        report.position = self.writer.archive().committed_position();
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }
@@ -235,14 +241,15 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut executed = BTreeSet::new();
-        // Retain the raw group before feeding independent line streams to the
-        // pool. Repeated inputs or paths need the preceding parse checkpoint.
-        // Other formats keep their authored and document execution order.
+        // Retain the raw group before feeding independent line streams (any
+        // input its origin reads line by line) to the pool. Repeated inputs
+        // or paths need the preceding parse checkpoint. Other formats keep
+        // their authored and document execution order.
         const LINE_PLANS: usize = 128;
         let mut lines: Vec<Plan> = Vec::with_capacity(LINE_PLANS);
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
-            let batch_lines = matches!(origin.name, "hook-spool" | "codex" | "claude-code")
-                && matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
+            let batch_lines =
+                matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
             if !batch_lines
                 || outcome.is_err()
                 || lines.len() == LINE_PLANS

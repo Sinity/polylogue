@@ -26,13 +26,15 @@ use crate::staging::StoredInput;
 use crate::{Batch, OptionExt as _, Result, ResultExt as _, StoreError, WriteReport};
 use polylogue_model::LockExt as _;
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod after;
+#[cfg(test)]
+pub(crate) use after::declared_rows as declared_after_rows;
 pub mod agreement;
 pub(crate) mod captured;
 mod dispatch;
@@ -128,14 +130,6 @@ impl From<UserRequest> for UserSubmission {
     }
 }
 
-/// A delivery accepted by the writer and not yet committed.
-#[derive(Clone, Debug)]
-pub struct PendingDelivery {
-    pub request: UserRequest,
-    /// The archive read counter of the snapshot used to prepare the brief.
-    pub prepared_at: Option<i64>,
-}
-
 type Written = Result<Committed<crate::user_writes::WriteResult>>;
 
 enum UserMsg {
@@ -154,7 +148,7 @@ enum UserMsg {
         Box<polylogue_model::query_objects::QueryRunOutcome>,
         SyncSender<Result<()>>,
     ),
-    History(Box<query_objects::History>),
+    History(Box<query_objects::History>, SyncSender<Result<()>>),
 }
 
 /// User writes waiting before their senders block.
@@ -191,7 +185,7 @@ struct Shared {
     users: Arc<user_queue::UserQueue>,
     location: Archive,
     /// Delivery records accepted and not yet committed, by request ID.
-    pending: Mutex<Vec<PendingDelivery>>,
+    pending: Mutex<Vec<UserRequest>>,
     report: Arc<Mutex<WriteReport>>,
     /// The position of the last commit, which the index writer follows.
     followed: Arc<Mutex<Position>>,
@@ -391,7 +385,6 @@ impl ArchiveSender {
     pub fn accept_delivery(
         &self,
         submission: impl Into<UserSubmission>,
-        prepared_at: Option<i64>,
     ) -> Result<Receiver<Written>> {
         let submission = submission.into();
         if !is_delivery(&submission.request.write) {
@@ -406,10 +399,7 @@ impl ArchiveSender {
             .users
             .push_unbounded(UserMsg::Request(Box::new(submission), reply))
             .map_err(|_| StoreError::WriterGone)?;
-        pending.push(PendingDelivery {
-            request,
-            prepared_at,
-        });
+        pending.push(request);
         drop(pending);
         self.wake();
         Ok(wait)
@@ -417,7 +407,7 @@ impl ArchiveSender {
 
     /// The delivery records accepted and not yet committed, in the order
     /// they were accepted.
-    pub fn pending_deliveries(&self) -> Vec<PendingDelivery> {
+    pub fn pending_deliveries(&self) -> Vec<UserRequest> {
         self.0.pending.locked().clone()
     }
 
@@ -440,8 +430,23 @@ impl ArchiveSender {
     }
 
     /// The position of the last commit, for the index writer to follow.
-    pub(crate) fn committed_position(&self) -> Position {
+    pub fn committed_position(&self) -> Position {
         *self.0.followed.locked()
+    }
+
+    /// The outcomes committed on a delivery, including those recorded while
+    /// the index was unavailable.
+    pub fn delivery_events(
+        &self,
+        id: &str,
+    ) -> Result<Vec<polylogue_model::authored::DeliveryEvent>> {
+        let conn = crate::archive::open_read(&self.0.location.archive_db())?;
+        crate::authored_records::delivery_events_from(
+            &conn,
+            crate::source::Source::Standalone,
+            id,
+            None,
+        )
     }
 
     /// The pauses tests set on both writers' work.
@@ -669,10 +674,7 @@ impl Inner {
                         });
                     if is_delivery(&request.write) {
                         let mut pending = self.shared.pending.locked();
-                        if let Some(at) = pending
-                            .iter()
-                            .position(|known| known.request.id == request.id)
-                        {
+                        if let Some(at) = pending.iter().position(|known| known.id == request.id) {
                             pending.remove(at);
                         }
                     }
@@ -712,13 +714,14 @@ impl Inner {
                     }
                     let _ = reply.send(result);
                 }
-                UserMsg::History(history) => {
-                    if let Err(error) = self
+                UserMsg::History(history, reply) => {
+                    let result = self
                         .check_user_parent(history.run.id.as_str(), None)
-                        .and_then(|()| self.write_history(&history))
-                    {
-                        self.failed(format_args!("query history {}", history.run.id), &error);
+                        .and_then(|()| self.write_history(&history));
+                    if let Err(error) = &result {
+                        self.failed(format_args!("query history {}", history.run.id), error);
                     }
+                    let _ = reply.send(result);
                 }
             }
         }
@@ -766,15 +769,16 @@ impl Inner {
         let scope = scope.or(prepared_scope.as_ref());
         let tx = self.begin()?;
         scoped::require_current(&location, scope)?;
-        let known = crate::ConnExt::exists(
-            &*tx,
-            "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
-            [&request.id],
-        )?;
-        let seq = if known {
-            crate::write_counter(&tx)?
-        } else {
-            bump_counter(&tx)?
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT commit_seq FROM client_request WHERE id=?1",
+                [&request.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let seq = match previous {
+            Some(seq) => seq,
+            None => bump_counter(&tx)?,
         };
         let outcome = {
             let source_snapshot = rusqlite::Transaction::new_unchecked(
@@ -790,8 +794,14 @@ impl Inner {
             )?
         };
         scoped::require_current(&location, scope)?;
-        if known || (matches!(request.write, UserWrite::MarkSeen { .. }) && outcome.outcome.repeat)
-        {
+        if let Some(seq) = previous {
+            // A retry requires the original write to be visible in the index.
+            // Later query-only commits do not advance the index's position.
+            tx.rollback()?;
+            let position = Position(u64::try_from(seq).or_stored("negative commit sequence")?);
+            return Ok(Committed { position, outcome });
+        }
+        if matches!(request.write, UserWrite::MarkSeen { .. }) && outcome.outcome.repeat {
             tx.rollback()?;
             return Ok(Committed {
                 position: self.position()?,
@@ -824,4 +834,4 @@ impl Inner {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

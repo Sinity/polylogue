@@ -207,7 +207,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             query: format!("query:{}", "0".repeat(64)),
             query_text: "synthetic session and authored state".into(),
             ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
-            read_at: reader.change_position().unwrap(),
+            read_position: reader.change_position().unwrap(),
             freshness: polylogue_model::freshness::ReadFreshness {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
@@ -247,7 +247,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
     );
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
     let writes = e.writer();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
@@ -318,7 +318,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         name: Some("kept".into()),
         query: "sessions".into(),
         rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-        read_at: "{}".into(),
+        read_position: "{}".into(),
         denominator: None,
         watch: None,
         outcomes: None,
@@ -332,10 +332,11 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         text: "a synthetic brief".into(),
         refs: vec!["session:claude-code:s1".into()],
         left_out: vec![],
+        prepared_position: None,
     }));
     write(UserWrite::DeliveryEvent {
         delivery,
-        what: DeliveryOutcome::Delivered,
+        outcome: DeliveryOutcome::Delivered,
         detail: None,
     });
     let chat_request = serde_json::json!({"provider": "chatgpt", "text": "synthetic"});
@@ -435,7 +436,7 @@ fn conflicting_forks_survive_bundle_export_and_import() {
         record["forkedFrom"] = serde_json::json!({"sessionId":"parent","messageUuid":fork_point});
         original.append("child.jsonl", &format!("{record}\n"));
     }
-    let (mut source, _lock) = original.engine(64 << 20);
+    let (mut source, _lock) = original.installed_engine(64 << 20);
     let pass = source.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let child = SessionId::parse("claude-code:child").unwrap();
@@ -447,7 +448,7 @@ fn conflicting_forks_survive_bundle_export_and_import() {
     );
     let path = export_file(&original, &["claude-code:child"]);
     let receiving = ClaudeHome::new();
-    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
     let report = target.import(&[path]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -506,7 +507,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
         .unwrap(),
     )
     .unwrap();
-    let (mut source, _source_lock) = original.engine(64 << 20);
+    let (mut source, _source_lock) = original.installed_engine(64 << 20);
     let report = source.import(&[path]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -514,7 +515,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
     let whole = export_file(&original, &["chatgpt:parent", "chatgpt:child"]);
     let later = export_file(&original, &["chatgpt:parent"]);
     let receiving = ClaudeHome::new();
-    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
     for file in [whole, later] {
         let report = target.import(&[file]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
@@ -551,7 +552,7 @@ fn copied_file_subset_survives_export_with_parent() {
         "child.jsonl",
         &(user("first", "parent", "copied first") + &user("own", "child", "own child")),
     );
-    let (mut source, _source_lock) = original.engine(64 << 20);
+    let (mut source, _source_lock) = original.installed_engine(64 << 20);
     let pass = source.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let child = SessionId::parse("claude-code:child").unwrap();
@@ -572,7 +573,7 @@ fn copied_file_subset_survives_export_with_parent() {
     assert_eq!(bodies(&original), ["copied first", "own child"]);
     let file = export_file(&original, &["claude-code:parent", "claude-code:child"]);
     let target = ClaudeHome::new();
-    let (mut engine, _target_lock) = target.engine(64 << 20);
+    let (mut engine, _target_lock) = target.installed_engine(64 << 20);
     let report = engine.import(&[file]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -604,7 +605,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         );
         original.append("other.jsonl", &user("other-own", "other", "other own"));
         original.append("child.jsonl", &user("own", "child", "own"));
-        let (mut source, _source_lock) = original.engine(64 << 20);
+        let (mut source, _source_lock) = original.installed_engine(64 << 20);
         assert!(source.run_pass().unwrap().errors.is_empty());
         let sessions = [
             "claude-code:parent",
@@ -647,7 +648,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         }
         drop(file);
         let receiving = ClaudeHome::new();
-        let (mut target, _target_lock) = receiving.engine(64 << 20);
+        let (mut target, _target_lock) = receiving.installed_engine(64 << 20);
         let report = target.import(&[base]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -678,7 +679,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         );
         let portable = export_file(&receiving, &sessions);
         let final_home = ClaudeHome::new();
-        let (mut final_engine, _final_lock) = final_home.engine(64 << 20);
+        let (mut final_engine, _final_lock) = final_home.installed_engine(64 << 20);
         let report = final_engine.import(&[portable]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -693,4 +694,36 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             [copied_for]
         );
     }
+}
+
+/// A copy ends at EOF even without a trailing newline. The same copy
+/// rebuilt from the archive must finish the record too.
+#[test]
+fn rebuilding_an_import_keeps_a_record_without_a_final_newline() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let file = w.dir.path().join("imported.jsonl");
+    let bytes = polylogue_testkit::claude_user("at-eof", "copy", "Last record");
+    fs::write(&file, bytes.trim_end_matches('\n')).unwrap();
+    {
+        let (mut engine, _lock) = w.installed_engine(64 << 20);
+        let report = engine
+            .import_with_options(
+                &[file],
+                &polylogue_engine::ImportOptions {
+                    origin: Some("claude-code".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    }
+    let messages = || w.count("SELECT count(*) AS n FROM message WHERE id='claude-code:at-eof'");
+    assert_eq!(messages(), 1);
+    polylogue_testkit::delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    assert_eq!(messages(), 1);
 }

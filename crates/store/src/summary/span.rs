@@ -11,7 +11,7 @@
 use super::Output;
 use super::fold::{CallRow, Context, Flow, Fold, MessageRow, SessionRow};
 use crate::Result;
-use crate::measure::time::{Message, Prefix, Rows, Tool, settled};
+use crate::measure::time::{Message, Prefix, Rows, Tool, settled, tool_time_key};
 use polylogue_model::derived::CLUSTER_GAP_MS;
 use serde::{Deserialize, Serialize};
 
@@ -63,17 +63,14 @@ impl Part {
         });
         self.pending.keys.push((m.order.clone(), m.id.clone()));
         for call in m.calls.iter().filter(|c| counted(c)) {
-            let key = match call.action.as_deref() {
-                Some("shell") => call
-                    .command_norm
-                    .clone()
-                    .unwrap_or_else(|| call.tool.clone()),
-                Some(action) => action.to_owned(),
-                None => call.tool.clone(),
-            };
             self.pending.tools.push(Tool {
                 message_index: index,
-                key,
+                key: tool_time_key(
+                    call.action.as_deref(),
+                    &call.tool,
+                    call.command.as_deref(),
+                    call.command_norm.as_deref(),
+                ),
                 start: call.at,
                 end: call.result.as_ref().and_then(|r| r.own_at),
                 paired: call.paired,
@@ -134,7 +131,7 @@ impl Part {
 impl Fold for SessionSpan {
     type State = State;
     const NAME: &'static str = "session_span";
-    const VERSION: i64 = 4;
+    const VERSION: i64 = 6;
 
     fn step(state: &mut State, row: &SessionRow, _: &Context<'_>, _: &mut Output) -> Result<Flow> {
         match row {

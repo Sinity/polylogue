@@ -2,6 +2,11 @@ use super::*;
 use crate::parse::run;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn lines(records: &[Json]) -> Vec<u8> {
     let mut out = Vec::new();
     for r in records {
@@ -48,6 +53,30 @@ fn each_line_is_an_event_on_the_harness_session() {
     );
     assert_eq!(step.counts.skipped["Stop: event names no session"], 1);
     assert_eq!(step.counts.records, 3);
+}
+
+#[test]
+fn unreadable_hook_payload_has_its_recorded_reason() {
+    let input = lines(&[
+        json!({"event_id":"e1", "event":"Stop", "provider":"claude-code",
+            "unreadable_payload":{"bytes_base64":"/w==", "reason":"hook payload is not JSON"}}),
+        json!({"event_id":"e2", "event":"Stop", "provider":"claude-code",
+            "session_id":"s1", "payload":{"cwd":"/repo"}}),
+    ]);
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
+    assert_eq!(step.counts.unreadable["Stop: hook payload is not JSON"], 1);
+    assert!(step.counts.unread_fields.is_empty());
+    let [event] = &step.output.events[..] else {
+        panic!("unexpected events: {:?}", step.output.events);
+    };
+    assert_eq!(event.data["event_id"], "e2");
+    assert_eq!(event.data["cwd"], "/repo");
 }
 
 #[test]

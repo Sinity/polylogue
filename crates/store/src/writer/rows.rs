@@ -12,7 +12,7 @@ use polylogue_model::chain::ChainState;
 mod state;
 
 /// How a step's rows are written.
-pub(super) struct StepWrite<'a> {
+pub(crate) struct StepWrite<'a> {
     /// The chain the step's bytes were stored in.
     pub chain: i64,
     /// The record commit that holds the step's bytes.
@@ -25,10 +25,10 @@ pub(super) struct StepWrite<'a> {
 
 /// Writes a parse step's rows into its chain's reading, recording what they
 /// state in `touched`.
-pub(super) fn write_step(
+pub(crate) fn write_step(
     tx: &Transaction<'_>,
     b: &Batch,
-    p: &ParseStep,
+    p: &ParsePart,
     w: StepWrite<'_>,
     touched: &mut Touched,
 ) -> Result<()> {
@@ -41,9 +41,9 @@ pub(super) fn write_step(
         return Ok(());
     }
     tx.prepare_cached(
-        "INSERT INTO input_ref(id,format,route) VALUES (?1,?2,?3)
-         ON CONFLICT(id) DO UPDATE SET format=excluded.format,route=excluded.route
-         WHERE format IS NOT excluded.format OR route IS NOT excluded.route",
+        "INSERT INTO input_ref(id,origin,route) VALUES (?1,?2,?3)
+         ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,route=excluded.route
+         WHERE origin IS NOT excluded.origin OR route IS NOT excluded.route",
     )?
     .execute(params![b.input.id, b.input.format, b.input.route.as_str()])?;
     let input_pk: i64 = tx
@@ -106,9 +106,9 @@ pub(super) fn write_step(
     for (prefix, map, counted_only) in groups {
         for (what, count) in map {
             tx.prepare_cached(
-                "INSERT INTO unused(input_pk, chain, format, what, count, counted_only)
+                "INSERT INTO unused(input_pk, chain, origin, item, count, counted_only)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(input_pk, chain, what) DO UPDATE SET count = count + excluded.count",
+                 ON CONFLICT(input_pk, chain, item) DO UPDATE SET count = count + excluded.count",
             )?
             .execute(params![
                 input_pk,
@@ -146,7 +146,7 @@ pub(crate) fn finish(
 
 /// Marks the sessions a transaction's shown rows changed due for their
 /// summaries. Nothing of a summary is computed here.
-pub(super) fn finish_summaries(
+pub(crate) fn finish_summaries(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     counter: i64,
@@ -155,7 +155,7 @@ pub(super) fn finish_summaries(
     changes.finish_links(tx)
 }
 
-fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
+fn validate_range(batch: &Batch, step: &ParsePart) -> Result<()> {
     if step.start > step.parsed_upto
         || step.parsed_upto > batch.length
         || i64::try_from(batch.length).is_err()

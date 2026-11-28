@@ -172,6 +172,12 @@ impl<'a> ReferenceText<'a> {
             Reference::Message(_) | Reference::Block { .. } | Reference::Document(_) => {
                 self.source_text_while(reference, complete, None, &mut |_, text| visit(text))
             }
+            Reference::ToolCall(session, call) => {
+                let Some(result) = crate::read::tool_result_reference(conn, session, call)? else {
+                    return Ok(false);
+                };
+                self.source_text_while(&result, complete, None, &mut |_, text| visit(text))
+            }
             Reference::MessageRange { first, last } => self.range_text(first, last, visit),
             Reference::Alternate { revision, part } => {
                 let alternate = if let Some(id) = &revision.revision {
@@ -287,7 +293,7 @@ impl<'a> ReferenceText<'a> {
             first: first.clone(),
             last: last.clone(),
         };
-        type Position = (i64, String, String, bool);
+        type Position = (i64, Vec<u8>, String, bool);
         let conn = self.original;
         let position = |id: &polylogue_model::MessageId| -> Result<Option<Position>> {
             Ok(conn.query_row("SELECT session_pk,session_order,id,duplicate_of IS NOT NULL FROM message WHERE id=?1",[id.to_string()],|row| <(_, _, _, _)>::try_from(row)).optional()?)
@@ -314,7 +320,7 @@ impl<'a> ReferenceText<'a> {
         while let Some(row) = rows.next()? {
             self.require_complete_message(row.get(0)?, &reference)?;
         }
-        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.session_order,m.id,b.idx"))?;
+        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.session_order,m.id,b.position"))?;
         let mut rows = statement.query(params![first.0, first.1, first.2, last.1, last.2])?;
         let mut text = Text {
             visit,

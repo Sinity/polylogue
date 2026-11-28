@@ -21,9 +21,9 @@ pub struct Drift {
 /// design come after the rest.
 pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
     let mut stmt = reader.conn()?.prepare(
-        "SELECT format, what, sum(count), count(DISTINCT input_pk), max(counted_only)
-         FROM unused GROUP BY format, what
-         ORDER BY max(counted_only), sum(count) DESC, format, what",
+        "SELECT origin, item, sum(count), count(DISTINCT input_pk), max(counted_only)
+         FROM unused GROUP BY origin, item
+         ORDER BY max(counted_only), sum(count) DESC, origin, item",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok(Drift {

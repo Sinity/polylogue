@@ -49,6 +49,9 @@ pub(crate) const ARCHIVE_ID: &str = "archive_id";
 /// The index's meta key holding the record position it has taken in.
 pub(crate) const ARCHIVE_POSITION: &str = "archive_position";
 
+/// The checked archive cut carried by an index reused offline.
+pub const REUSED_FROM: &str = "reused_from";
+
 /// The index's meta key holding why it replaced the index before it.
 const REBUILD: &str = "index_rebuild";
 
@@ -199,6 +202,12 @@ pub enum Installed {
     Unusable { why: RebuildReason },
 }
 
+impl Installed {
+    pub(crate) fn is_current(&self) -> bool {
+        matches!(self, Self::Current { .. })
+    }
+}
+
 /// The rebuild in `index-rebuild/`, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -237,11 +246,23 @@ impl IndexFiles {
     /// The index files under `root`, beside the archive `archive` at record
     /// `position`.
     pub fn at(root: &Path, archive: &ArchiveId, position: Position) -> Result<Self> {
+        Self::inspect(root, archive, position).map(|(files, _)| files)
+    }
+
+    /// Inspects the installed file and keeps its SQLite log open while
+    /// the writer opens its own connection.
+    pub(crate) fn inspect(
+        root: &Path,
+        archive: &ArchiveId,
+        position: Position,
+    ) -> Result<(Self, Option<Connection>)> {
         let paths = Paths::of(root);
-        Ok(Self {
+        let index = open_installed(&paths.index)?;
+        let files = Self {
             rebuilding: rebuilding(&paths)?,
-            installed: installed(&paths.index, Some((archive, position)))?,
-        })
+            installed: installed_in(index.as_ref(), Some((archive, position)))?,
+        };
+        Ok((files, index))
     }
 
     /// [`Self::at`] for a process that does not hold the archive: the
@@ -261,7 +282,7 @@ impl IndexFiles {
 
     /// Whether reads are served from `index.db`.
     pub fn serves(&self) -> bool {
-        matches!(self.installed, Installed::Current { .. })
+        self.installed.is_current()
     }
 
     /// Why a rebuild runs, or else why no index can be read.
@@ -325,7 +346,9 @@ impl IndexFiles {
                 self.installed = current(&crate::archive::open_read(&paths.index)?)?;
                 crate::fault::check("index.install.after_rename", &root.to_string_lossy())?;
                 // A reader of the replaced index keeps its open files.
-                if let Some(replaced) = replaced {
+                if let Some(replaced) = replaced
+                    && crate::search::files::named_on_disk(&paths.index).as_ref() != Some(&replaced)
+                {
                     crate::search::files::remove(&replaced)?;
                 }
                 remove_rebuild_dir(root, &paths)?;
@@ -390,23 +413,38 @@ fn rebuilding(paths: &Paths) -> Result<Rebuilding> {
 
 /// What `index` is beside the archive `archive` at its position; `None`
 /// when there is no archive, so that any index there is of another one.
-fn installed(index: &Path, archive: Option<(&ArchiveId, Position)>) -> Result<Installed> {
-    if !index.exists() {
+pub(crate) fn installed(
+    index: &Path,
+    archive: Option<(&ArchiveId, Position)>,
+) -> Result<Installed> {
+    installed_in(open_installed(index)?.as_ref(), archive)
+}
+
+fn open_installed(path: &Path) -> Result<Option<Connection>> {
+    path.exists()
+        .then(|| crate::archive::open_read(path))
+        .transpose()
+}
+
+fn installed_in(
+    index: Option<&Connection>,
+    archive: Option<(&ArchiveId, Position)>,
+) -> Result<Installed> {
+    let Some(conn) = index else {
         return Ok(Installed::None);
-    }
-    let conn = crate::archive::open_read(index)?;
-    if let Err(error) = schema::check_standalone_index(&conn) {
+    };
+    if let Err(error) = schema::check_standalone_index(conn) {
         let Some(why) = RebuildReason::of(&error) else {
             return Err(error);
         };
         // An index that differs only in its indexes is this build's tables:
         // it is read as it is until a rebuild replaces it.
         let readable = why == RebuildReason::SchemaDiffers
-            && schema::index_identity(&conn)? == schema::build_index_identity()?;
+            && schema::index_identity(conn)? == schema::build_index_identity()?;
         if !readable {
             return Ok(Installed::Unusable { why });
         }
-    } else if schema::version(&conn)? == 0 {
+    } else if schema::version(conn)? == 0 {
         // An empty file: an index whose creation did not commit.
         return Ok(Installed::None);
     }
@@ -415,7 +453,7 @@ fn installed(index: &Path, archive: Option<(&ArchiveId, Position)>) -> Result<In
             why: RebuildReason::OtherArchive,
         });
     };
-    match current(&conn)? {
+    match current(conn)? {
         Installed::Current {
             archive: built_from,
             position: taken_in,
@@ -468,8 +506,9 @@ fn remove_rebuild_dir(root: &Path, paths: &Paths) -> Result<()> {
     if !paths.dir.exists() {
         return Ok(());
     }
-    remove_database(&paths.build)?;
-    remove_database(&paths.ready)?;
+    let serving_search = crate::search::files::named_on_disk(&paths.index);
+    remove_database_except(&paths.build, serving_search.as_deref())?;
+    remove_database_except(&paths.ready, serving_search.as_deref())?;
     remove_tree(&paths.dir)?;
     sync_directory(root)
 }
@@ -477,11 +516,17 @@ fn remove_rebuild_dir(root: &Path, paths: &Paths) -> Result<()> {
 /// Removes a SQLite database file with its journal, log and shared-memory
 /// siblings, then the full-text files it names.
 pub(crate) fn remove_database(path: &Path) -> Result<()> {
+    remove_database_except(path, None)
+}
+
+fn remove_database_except(path: &Path, serving_search: Option<&[PathBuf]>) -> Result<()> {
     let search = crate::search::files::named_on_disk(path);
     for suffix in ["-journal", "-wal", "-shm", ""] {
         remove(&with_suffix(path, suffix))?;
     }
-    if let Some(search) = search {
+    if let Some(search) = search
+        && Some(search.as_slice()) != serving_search
+    {
         crate::search::files::remove(&search)?;
     }
     Ok(())

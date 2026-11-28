@@ -144,11 +144,9 @@ pub(crate) fn visit_rows(
             polylogue_store::read::VisitFrom::Before(&row_position),
             rendering.near,
             |row| {
-                ordinal = ordinal.checked_sub(1).ok_or_else(|| {
-                    Error::Internal(
-                        "a backward page counted more than 2^32 rows before its start".into(),
-                    )
-                })?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
                 keys.keys.insert(ordinal, row.position.clone());
                 Ok(if walk.visit_row(ordinal, row, None, start.direction)? {
                     ControlFlow::Continue(())
@@ -159,9 +157,9 @@ pub(crate) fn visit_rows(
             },
         )?;
         if !full && let Some(history) = history {
-            let row = ordinal.checked_sub(1).ok_or_else(|| {
-                Error::internal("saved history lies before the row coordinate range")
-            })?;
+            let row = ordinal
+                .checked_add(1)
+                .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
             visit_history(reader, history, rendering, None, row, true, emit)?;
         }
     } else {
@@ -318,6 +316,41 @@ impl Walk<'_, '_, '_, '_> {
         };
         let options = self.rendering.options;
         let mixed = self.selection.direct_target().is_none();
+        let clock = &self.selection.cursor_context().clock;
+        if options.view == View::Live
+            && let ReadTarget::Session(id) = &target
+            && self.reader.session_commit(id)?.is_none()
+        {
+            let at = SelectionLocator {
+                row: ordinal,
+                record: ReadRecordLocator {
+                    kind: ReadRecordKind::Presentation,
+                    ordinal: 0,
+                },
+            };
+            if place.is_some_and(|place| place.selection != at || place.item != 0) {
+                return Err(missing_row(self.rendering.target));
+            }
+            let session = id.to_string();
+            let card = live::card(
+                self.reader,
+                &session,
+                clock.now.as_millisecond(),
+                clock.day.zone(),
+            )?;
+            return (self.emit)(
+                &ReadRecord::Presentation {
+                    parts: vec![ReadPart::Item(ReadItem {
+                        source: Source::record(target.to_string()),
+                        kind: ItemKind::Card {
+                            card: Box::new(card),
+                        },
+                    })],
+                },
+                at,
+                Some(0),
+            );
+        }
         if self.rendering.page
             && let ReadTarget::Document(id) = &target
         {
@@ -372,8 +405,8 @@ impl Walk<'_, '_, '_, '_> {
                 facts.cards.push(live::card(
                     reader,
                     &row.session.id.to_string(),
-                    selection.cursor_context().clock.now.as_millisecond(),
-                    selection.cursor_context().clock.day.zone(),
+                    clock.now.as_millisecond(),
+                    clock.day.zone(),
                 )?);
             }
             if options.annotations()

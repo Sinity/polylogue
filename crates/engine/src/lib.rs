@@ -130,8 +130,7 @@ impl polylogue_model::Caused for EngineError {
 }
 
 impl EngineError {
-    /// The source file changed since its read was planned in a way the read
-    /// cannot take as growth ([`read::read_source_range`]).
+    /// The source file changed since its read was planned.
     pub(crate) fn source_changed(&self) -> bool {
         let store = match self {
             Self::Store(error) => Some(error),
@@ -350,6 +349,9 @@ pub struct Pass {
     #[serde(default)]
     pub derivation_pending: bool,
     pub seconds: f64,
+    /// Each phase's name and total seconds, in order of first use.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<(String, f64)>,
     pub unreadable_roots: Vec<PathBuf>,
     /// What failed in the pass, each with what it happened to and its cause.
     pub errors: Vec<polylogue_model::Failure>,
@@ -359,7 +361,7 @@ pub struct Pass {
 
 impl Pass {
     /// Adds a later pass's work to this one; unreadable roots and errors
-    /// accumulate.
+    /// accumulate. Phases describe one pass and are not aggregated.
     pub fn add(&mut self, next: Pass) {
         self.authored.applied += next.authored.applied;
         self.authored.present += next.authored.present;
@@ -467,11 +469,24 @@ impl SharedLoopStatus {
         self.state.locked().1
     }
 
-    /// Waits until the count of changes passes `seen` or `until` comes, and
-    /// returns the count then.
-    pub fn wait_past(&self, seen: u64, until: Instant) -> u64 {
+    /// Waits until the count of changes passes `seen`, `until` comes, or
+    /// the caller cancels. A cancellation wakes the wait without counting
+    /// a status change.
+    pub fn wait_past(
+        self: &Arc<Self>,
+        seen: u64,
+        until: Instant,
+        cancellation: Option<&polylogue_store::cancellation::Cancellation>,
+    ) -> u64 {
+        let _wake = cancellation.map(|stop| {
+            let status = Arc::clone(self);
+            stop.on_cancel(move || {
+                let _state = status.state.locked();
+                status.signal.notify_all();
+            })
+        });
         let mut state = self.state.locked();
-        while state.1 <= seen {
+        while state.1 <= seen && cancellation.is_none_or(|stop| !stop.is_cancelled()) {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
@@ -552,12 +567,16 @@ pub struct ImportReport {
     /// When what the import stored can be read.
     #[serde(default)]
     pub readable: Readable,
+    /// The archive position after the import's commits: a reader that
+    /// waits for the index to follow it reads what the import stored.
+    #[serde(default)]
+    pub position: polylogue_store::archive::writer::Position,
 }
 
 /// When an import's inputs can be read. An import parses and derives what
 /// it stored before it answers, so its rows are readable at once, except
-/// while an index is built: the build reads them, and they are readable
-/// once it is installed.
+/// while an index is rebuilt with no installed index to parse them into:
+/// they are readable once the rebuild is installed.
 #[derive(
     Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -643,6 +662,7 @@ pub struct Engine {
     watched_loaded: bool,
     readings_pending: bool,
     stored_planning: Option<pass::StoredPlanning>,
+    recent_replay_pending: bool,
     captures: Databases,
     /// Rollout captures waiting for a parse worker, the live ones first
     /// ([`compressed::RolloutCapture`]).
@@ -676,7 +696,10 @@ impl Engine {
 
     /// Commits the rows the writer holds and reports how many of each it wrote.
     fn flush_writes(&mut self) -> Result<WriteReport, EngineError> {
-        Ok(self.writer.flush_rows()?)
+        let _doing = polylogue_store::activity::doing("waiting for the writer");
+        let report = self.writer.flush_rows()?;
+        polylogue_store::activity::progressed();
+        Ok(report)
     }
 
     /// Starts the writer on an archive the caller has locked.
@@ -704,6 +727,7 @@ impl Engine {
             watched_loaded: false,
             readings_pending: false,
             stored_planning: None,
+            recent_replay_pending: true,
             captures: Databases::default(),
             rollout_captures: Default::default(),
             build_step: None,

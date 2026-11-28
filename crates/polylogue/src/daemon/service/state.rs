@@ -15,7 +15,6 @@ pub struct Daemon {
     pub reads: ReadPool,
     /// The requests being answered, which a stop waits for.
     pub(crate) requests: Requests,
-    pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::hook::open_calls::OpenCalls,
 
     pub(crate) warm: crate::daemon::warm::Warm,
@@ -33,6 +32,7 @@ pub struct Daemon {
     pub(super) mode: ModeState,
     pub(super) loop_tx: Mutex<crossbeam_channel::Sender<LoopMsg>>,
     pub(crate) status: Arc<SharedLoopStatus>,
+    pub(super) captures_sources: bool,
     pub(super) started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
@@ -170,8 +170,30 @@ impl Daemon {
         &self,
         reader: &polylogue_store::Reader<'_>,
     ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
+        // The filesystem can still hold not-yet-discovered inputs, which
+        // a snapshot of the archive cannot count.
+        let loop_status = self.status.get();
         let local = reader.completeness(&polylogue_engine::reading_contracts())?;
-        Ok(freshness_of(local))
+        Ok(self.freshness_at(local, &loop_status))
+    }
+
+    pub(super) fn freshness_at(
+        &self,
+        mut local: polylogue_model::freshness::ReadCompleteness,
+        status: &polylogue_engine::LoopStatus,
+    ) -> polylogue_model::freshness::ReadFreshness {
+        use polylogue_model::freshness::{
+            CompletenessDimension, CompletenessReason, CountedReason,
+        };
+        if self.captures_sources
+            && (status.full_scans == 0 || status.last_pass.capture_pending)
+            && local.parsing == CompletenessDimension::Complete
+        {
+            local.parsing = CompletenessDimension::Incomplete(vec![CountedReason::new(
+                CompletenessReason::CapturePending,
+            )]);
+        }
+        freshness_of(local)
     }
 }
 

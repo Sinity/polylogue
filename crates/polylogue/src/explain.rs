@@ -6,16 +6,6 @@ use polylogue_query::{ast::Unit, fields, units};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-pub const SUBJECTS: &[&str] = &[
-    "syntax",
-    "units",
-    "fields",
-    "transforms",
-    "operators",
-    "capabilities",
-    "derived",
-];
-
 const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe transforms sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit transform selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
 
 /// The line `polylogue help WORD` prints for a word that left the surface:
@@ -74,12 +64,6 @@ fn declarations(
     page_size: Option<u64>,
     cursor: Option<&str>,
 ) -> Result<Value, String> {
-    if !SUBJECTS.contains(&subject) {
-        return Err(format!(
-            "unknown subject {subject:?}; choose {}",
-            SUBJECTS.join(", ")
-        ));
-    }
     if unit.is_some() && subject != "fields" {
         return Err("unit applies to fields".into());
     }
@@ -119,7 +103,6 @@ fn declarations(
 
 fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
     Ok(match subject {
-        "derived" => polylogue_model::derived::all().into_iter().map(|p|json!(p)).collect(),
         "syntax" => {
             let catalog = polylogue_query::catalog::catalog(&[]);
             let keywords: Vec<_> = polylogue_query::catalog::FUNCTIONS.iter().copied()
@@ -146,26 +129,40 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
                 "metrics": m.metrics, "whole_archive": m.whole_archive,
             })))
             .collect(),
-        "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {
             // MCP tools list only their operations' common arguments and
-            // carry no answer schema; both are published here in full.
-            let declared = |name: &str| {
-                commands::declarations()
-                    .descriptions()
+            // carry no answer schema; both are published here in full, with
+            // the arguments each command and verb leaves out of the tool list.
+            let declarations = commands::declarations();
+            let unlisted = |arguments: &[command_surface::ArgumentSpec]| {
+                arguments
                     .iter()
-                    .find(|description| description.spec.name == name)
+                    .filter(|argument| !argument.listed && !argument.calling_process)
+                    .map(|argument| argument.name.clone())
+                    .collect::<Vec<_>>()
             };
-            let mut entries: Vec<_> = COMMANDS.iter().map(|c| {
-                let description = declared(c.name);
-                json!({
-                    "kind": "command", "name": c.name, "help": c.help,
-                    "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
-                    "arguments": description.map(|d| d.input_schema.clone()),
-                    "unlisted": description.map(|d| d.spec.arguments.as_slice()).unwrap_or_default().iter().filter(|a| !a.listed && !a.calling_process).map(|a| a.name.as_str()).collect::<Vec<_>>(),
-                    "answer": description.map(|d| d.output_schema.clone()),
+            let mut entries: Vec<_> = COMMANDS
+                .iter()
+                .map(|c| {
+                    let description = declarations
+                        .descriptions()
+                        .iter()
+                        .find(|description| description.spec.name == c.name);
+                    json!({
+                        "kind": "command", "name": c.name, "help": c.help,
+                        "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
+                        "arguments": description.map(|d| d.input_schema.clone()),
+                        "unlisted": description.map(|d| unlisted(&d.spec.arguments)).unwrap_or_default(),
+                        "answer": description.map(|d| d.output_schema.clone()),
+                    })
                 })
-            }).collect();
+                .collect();
+            entries.extend(crate::daemon::verbs::declarations().verbs().iter().map(|verb| {
+                json!({
+                    "kind": "verb", "name": verb.verb(), "signature": verb.signature(),
+                    "arguments": verb.input_schema(), "unlisted": unlisted(verb.arguments()),
+                })
+            }));
             entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));
             entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));

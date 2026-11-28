@@ -125,9 +125,9 @@ async function readCurrent(subscriber, signal) {
     const page = answer.value.reply;
     if (!subscribers.has(subscriber)) return;
     if (!initial) {
-      initial = page.read_at.cursor;
+      initial = page.read_position.cursor;
       position ??= initial;
-      await subscriber.begin?.({ type: "begin", position: null, generation: page.read_at.generation, replacement: true, generation_changed: false });
+      await subscriber.begin?.({ type: "begin", position: null, index_instance: page.read_position.index_instance, replacement: true, index_instance_changed: false });
     }
     if (subscriber.page) await subscriber.page(page);
     else for (const row of page.rows) await subscriber.apply?.({ type: "change", component: row.kind === "annotation" ? "archive" : "index", change: row });

@@ -215,7 +215,12 @@ fn demo_steps_run_through_rows() {
     };
     let daemon = super::cli::start_daemon(&env);
     let status = super::cli::wait_status(&env, |_| true);
-    assert_eq!(status["store"]["sessions"], 8);
+    // Logical sessions as `sessions` lists them, and every session: #3
+    // folds into #2 and #6 into #5, while the copy #4 has no recorded
+    // provider relationship and stays its own root (docs/measures.md,
+    // logical session).
+    assert_eq!(status["store"]["sessions"], 6);
+    assert_eq!(status["store"]["sessions_physical"], 8);
     assert_eq!(status["store"]["inputs"], before.inputs);
     assert_eq!(status["store"]["revisions"], before.revisions);
     assert_eq!(status["store"]["stored_bytes"], before.stored_bytes);

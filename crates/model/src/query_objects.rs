@@ -67,7 +67,7 @@ impl QueryObject {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SavedQueryDefinition {
-    pub question: QuestionId,
+    pub query_id: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
     pub query: Query,
@@ -81,7 +81,7 @@ pub struct FrozenDefinition {
     pub name: String,
     pub root: String,
     pub revision: String,
-    pub question: QuestionId,
+    pub query_id: QuestionId,
     pub ast: Query,
 }
 
@@ -120,7 +120,7 @@ pub struct ReplayBinding {
     pub source_outputs: Vec<SourceOutput>,
     pub definitions: Vec<FrozenDefinition>,
     pub context: CursorContext<ClockWire>,
-    pub scope_fingerprint: Option<String>,
+    pub access_fingerprint: Option<String>,
     pub original_text: String,
 }
 
@@ -135,7 +135,7 @@ impl PartialEq for ReplayBinding {
             && self.context.random_seed == other.context.random_seed
             && self.context.read_positions == other.context.read_positions
             && self.context.versions == other.context.versions
-            && self.scope_fingerprint == other.scope_fingerprint
+            && self.access_fingerprint == other.access_fingerprint
             && self.original_text == other.original_text
     }
 }
@@ -175,7 +175,7 @@ pub enum ExecutionPresentation {
 pub struct ObjectExecutionBinding {
     pub reference: crate::Reference,
     pub content_hash: crate::BlobHash,
-    pub scope_fingerprint: Option<String>,
+    pub access_fingerprint: Option<String>,
     pub versions: BTreeMap<String, String>,
     pub presentation: ExecutionPresentation,
     pub accepted_request: Option<serde_json::Value>,
@@ -301,11 +301,25 @@ fn span_container(origin: &TextSpanOrigin) -> Result<&crate::Reference, TextFrag
     Ok(container)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RunOutcome {
-    Ok,
-    Error { kind: String },
+// The query filter uses the same state names as the tagged outcome.
+macro_rules! run_outcomes {
+    ($($variant:ident $({ $field:ident: $ty:ty })? => $state:literal),+ $(,)?) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+        #[serde(tag = "state", deny_unknown_fields)]
+        pub enum RunOutcome {
+            $(#[serde(rename = $state)] $variant $({ $field: $ty })?),+
+        }
+
+        impl RunOutcome {
+            /// The state names accepted by a `runs` outcome filter.
+            pub const STATES: &'static [&'static str] = &[$($state),+];
+        }
+    };
+}
+
+run_outcomes! {
+    Ok => "ok",
+    Error { kind: String } => "error",
 }
 
 /// One accepted execution. Authorship is computed at the daemon boundary.
@@ -313,9 +327,9 @@ pub enum RunOutcome {
 #[serde(deny_unknown_fields)]
 pub struct QueryRun {
     pub id: crate::RunId,
-    pub question: Option<QuestionId>,
+    pub query_id: Option<QuestionId>,
     pub at: Timestamp,
-    pub read_at: ChangePosition,
+    pub read_position: ChangePosition,
     pub machine: String,
     pub authorship: Authorship,
     pub binding: RunBinding,

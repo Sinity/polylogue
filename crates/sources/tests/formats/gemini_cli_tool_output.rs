@@ -27,7 +27,7 @@ fn parsed(call: &Value) -> Value {
     let origin = polylogue_sources::origin::by_name("gemini-cli").unwrap();
     assert!((origin.recognize)(
         std::path::Path::new(PATH),
-        source.as_bytes()
+        &polylogue_sources::document::Head::new(source.as_bytes())
     ));
     let parsed = parse("gemini-cli", PATH, source.as_bytes());
     assert_eq!(message(&parsed, ":a1")["role"], "assistant");

@@ -4,7 +4,7 @@ use super::*;
 /// before the parsed structured payloads are dropped.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedRows {
-    pub(in crate::writer) messages: Vec<PreparedMessage>,
+    pub(crate) messages: Vec<PreparedMessage>,
     pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
     pub(in crate::writer) texts: crate::text_rows::PreparedTexts,
@@ -147,7 +147,7 @@ impl PreparedRows {
     }
 }
 
-impl ParseStep {
+impl ParsePart {
     /// Packs complete rows off the writer thread. A second call keeps the
     /// original hashes and payloads, which parsed values no longer contain.
     pub fn prepare(&mut self) {
@@ -271,7 +271,7 @@ impl ParseStep {
         }
     }
 }
-impl ParseStep {
+impl ParsePart {
     pub(in crate::writer) fn message_position(&self, index: usize) -> Result<Option<i64>> {
         let order =
             match self.output.message_order.get(&index) {
@@ -295,7 +295,7 @@ impl ParseStep {
     }
 }
 
-impl ParseStep {
+impl ParsePart {
     /// Restores complete domain rows from the worker's codecs.
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
@@ -318,7 +318,7 @@ impl ParseStep {
         Ok(output)
     }
 }
-impl ParseStep {
+impl ParsePart {
     /// An event about its input, not a session, is that input's record: it
     /// has the record's byte range and follows no message.
     pub(crate) fn check_events(&self, input: &str) -> Result<()> {

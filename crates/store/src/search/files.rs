@@ -94,7 +94,7 @@ fn paths_in(index: &Path, name: &str) -> Result<Vec<PathBuf>> {
 /// Names and creates the full-text files of a new index, in the transaction
 /// that creates its schema. A build's files keep a rollback journal until
 /// the build ends, when they switch to WAL with the index
-/// ([`crate::archive::index_build::finish`]); any other index's files are in
+/// ([`crate::archive::index_build::ready`]); any other index's files are in
 /// WAL from the start.
 pub(crate) fn create(conn: &Connection, building: bool) -> Result<()> {
     let Some(index) = main_path(conn) else {

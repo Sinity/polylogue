@@ -99,7 +99,15 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
         rich_key,
         products::key(&contribution(strong, 75), 0).unwrap()
     );
-    for product in [rich, weak] {
+    let reference = contribution(
+        serde_json::from_value(json!({
+            "kind":"reference", "reason":"send", "parent":"claude-code:parent",
+            "child":"claude-code:recipient", "evidence":"send receipt"
+        }))
+        .unwrap(),
+        0,
+    );
+    for product in [rich, weak, reference] {
         let payload = products::payload(&product, 0).unwrap();
         let declaration = declarations("polylogue")
             .into_iter()
@@ -114,6 +122,7 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
         );
         if let Product::Link { facts, .. } = &product {
             assert_eq!(payload["branch_point"], json!(facts.branch_point));
+            assert_eq!(payload["reason"], json!(facts.reason));
         }
         assert_eq!(
             products::decode(
@@ -152,27 +161,26 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 11,
+                "polylogue.message" => 12,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 11,
-                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 9,
+                | "polylogue.request_restore" => 12,
+                "polylogue.session" | "polylogue.parse_progress" | "polylogue.document" => 9,
+                "polylogue.link" => 10,
                 "polylogue.input_observation" => 8,
-                "polylogue.document"
-                | "polylogue.event"
-                | "polylogue.background"
-                | "polylogue.repository" => 8,
-                "polylogue.query_run" => 10,
+                "polylogue.event" | "polylogue.background" | "polylogue.repository" => 8,
+                "polylogue.query_run" => 12,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 6,
-                "polylogue.annotation" | "polylogue.attachment_binding" => 2,
-                "polylogue.annotation_restore" | "polylogue.historical_restore" => 1,
-                "polylogue.query" => 3,
+                "polylogue.annotation" => 3,
+                "polylogue.attachment_binding" | "polylogue.annotation_restore" => 2,
+                "polylogue.historical_restore" => 1,
+                "polylogue.query" => 4,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 4,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 8,
-                "polylogue.line_save" | "polylogue.line_save_restore" => 5,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 10,
+                "polylogue.line_save" | "polylogue.line_save_restore" => 6,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
@@ -530,11 +538,36 @@ fn field_names_version_every_changed_declaration() {
 /// whose definition changed.
 #[test]
 fn read_options_version_every_changed_declaration() {
-    let previous: serde_json::Value =
+    let source15: serde_json::Value =
         serde_json::from_str(include_str!("tests/source15-kind-hashes.json")).unwrap();
+    let source16: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source16-kind-hashes.json")).unwrap();
+    assert_versioned_transition(&source15, &recorded_kinds(&source16), &[], &[]);
+}
+
+/// Source 17 names the keys of stored payloads for what they hold (query ID,
+/// read position, index instance, access, saved rows, a delivery event's
+/// outcome, a left-out item, a signal event's request position, a slot's
+/// position) and records a delivery's prepared read position, and raised
+/// every declaration whose definition changed.
+#[test]
+fn stored_keys_version_every_changed_declaration() {
+    let source16: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source16-kind-hashes.json")).unwrap();
+    let source17: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
+    assert_versioned_transition(&source16, &recorded_kinds(&source17), &[], &[]);
+}
+
+/// Source 18 names link reasons and adds message windows. Source 19 adds
+/// attachment failures to the previously unchanged message and document kinds.
+#[test]
+fn current_source_versions_declarations_that_changed_after_source17() {
+    let previous: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source17-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
-        previous["source"]["version"].as_u64().unwrap() + 1
+        previous["source"]["version"].as_u64().unwrap() + 2
     );
     let current: Vec<_> = declarations("polylogue")
         .iter()

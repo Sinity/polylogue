@@ -13,46 +13,136 @@ fn cond(text: &str) -> ConditionKind {
 }
 #[test]
 fn every_spec_example_parses_through_the_product_catalog() {
-    for text in [
-        "origin:claude-code",
-        "origin:claude-code kind:subagent",
-        "kind:* | agg count, sum(cost)",
-        "sessions | group by origin | count",
-        "repo:morrow",
-        "tag:project:morrow",
-        "sessions where cost > 1",
-        "cost:unknown",
-        "sessions where human_prompts >= 3",
-        "sessions where messages >= 10",
-        "sessions where tool_calls > 5",
-        "messages where written_by:human \"chrono\"",
-        "messages where written_by:human duplicate:* \"chrono\"",
-        "tool_calls where outcome:error",
-        "tool_calls where outcome:error | group by session | count",
-        "tool_calls | group by action | count",
-        "tool_calls where tool:Bash | agg count",
-        "tool_calls where session.tag:project:morrow | agg count",
-        "sessions where exists tool_calls(action:shell AND outcome:error)",
-        "sessions where seq(command:\"cargo test\" AND outcome:error -> tool:Edit -> command:\"cargo test\" AND outcome:ok)",
-        "messages where written_by:human | group by session.origin | count",
-        "messages where active:false",
-        "parent:claude-code:7f3a2c10-0002-4000-8000-000000000002",
-        "connected:codex:01a20000-0005-7000-8000-000000000005",
-        "since:2026-10-05",
-        "started between 2026-10-02 and 2026-10-03",
-        "has:compaction",
-        "model:claude-opus-5-5",
-        "origin:(chatgpt|claude-ai)",
-        "annotations where kind:decision",
-        "origin:codex with messages(id, role)[role:assistant, last:1]",
-        "similar:\"ambiguous date formats\"",
-        "repo:other",
-        "session_links where kind:continuation",
-        "link:fork",
-        "tree_cost > 2.90",
-    ] {
-        p(text);
-    }
+    let catalog = crate::catalog::catalog(&[]);
+    let examples = [
+        ("origin:claude-code", "origin:\"claude-code\""),
+        (
+            "origin:claude-code kind:subagent",
+            "(kind:\"subagent\" AND origin:\"claude-code\")",
+        ),
+        (
+            "kind:* | agg count, sum(cost)",
+            "kind:* | agg count, sum(cost)",
+        ),
+        (
+            "sessions | group by origin | count",
+            "sessions | group by origin | agg count",
+        ),
+        ("repo:morrow", "repo:\"morrow\""),
+        ("tag:project:morrow", "tag:\"project:morrow\""),
+        ("sessions where cost > 1", "sessions where cost > \"1\""),
+        ("cost:unknown", "cost:unknown"),
+        (
+            "sessions where human_prompts >= 3",
+            "sessions where human_prompts >= \"3\"",
+        ),
+        (
+            "sessions where messages >= 10",
+            "sessions where messages >= \"10\"",
+        ),
+        (
+            "sessions where tool_calls > 5",
+            "sessions where tool_calls > \"5\"",
+        ),
+        (
+            "messages where written_by:human \"chrono\"",
+            "messages where (\"chrono\" AND written_by:\"human\")",
+        ),
+        (
+            "messages where written_by:human duplicate:* \"chrono\"",
+            "messages where (\"chrono\" AND duplicate:* AND written_by:\"human\")",
+        ),
+        (
+            "tool_calls where outcome:error",
+            "tool_calls where outcome:\"error\"",
+        ),
+        (
+            "tool_calls where outcome:error | group by session | count",
+            "tool_calls where outcome:\"error\" | group by session | agg count",
+        ),
+        (
+            "tool_calls | group by action | count",
+            "tool_calls | group by action | agg count",
+        ),
+        (
+            "tool_calls where tool:Bash | agg count",
+            "tool_calls where tool:\"Bash\" | agg count",
+        ),
+        (
+            "tool_calls where session.tag:project:morrow | agg count",
+            "tool_calls where session.tag:\"project:morrow\" | agg count",
+        ),
+        (
+            "sessions where exists tool_calls(action:shell AND outcome:error)",
+            "sessions where exists tool_calls((action:\"shell\" AND outcome:\"error\"))",
+        ),
+        (
+            "sessions where seq(command:\"cargo test\" AND outcome:error -> tool:Edit -> command:\"cargo test\" AND outcome:ok)",
+            "sessions where seq((command:\"cargo test\" AND outcome:\"error\") -> tool:\"Edit\" -> (command:\"cargo test\" AND outcome:\"ok\"))",
+        ),
+        (
+            "messages where written_by:human | group by session.origin | count",
+            "messages where written_by:\"human\" | group by session.origin | agg count",
+        ),
+        (
+            "messages where active:false",
+            "messages where active:\"false\"",
+        ),
+        (
+            "parent:claude-code:7f3a2c10-0002-4000-8000-000000000002",
+            "parent:\"claude-code:7f3a2c10-0002-4000-8000-000000000002\"",
+        ),
+        (
+            "connected:codex:01a20000-0005-7000-8000-000000000005",
+            "connected:\"codex:01a20000-0005-7000-8000-000000000005\"",
+        ),
+        ("since:2026-10-05", "since:\"2026-10-05\""),
+        (
+            "started between 2026-10-02 and 2026-10-03",
+            "started between \"2026-10-02\" and \"2026-10-03\"",
+        ),
+        ("has:compaction", "has:\"compaction\""),
+        ("model:claude-opus-5-5", "model:\"claude-opus-5-5\""),
+        (
+            "origin:(chatgpt|claude-ai)",
+            "origin:(\"chatgpt\"|\"claude-ai\")",
+        ),
+        (
+            "annotations where kind:decision",
+            "annotations where kind:\"decision\"",
+        ),
+        (
+            "origin:codex with messages(id, role)[role:assistant, last:1]",
+            "origin:\"codex\" with messages(id, role)[role:\"assistant\", last:1]",
+        ),
+        (
+            "similar:\"ambiguous date formats\"",
+            "similar:\"ambiguous date formats\"",
+        ),
+        ("repo:other", "repo:\"other\""),
+        (
+            "session_links where kind:continuation",
+            "session_links where kind:\"continuation\"",
+        ),
+        ("link:fork", "link:\"fork\""),
+        ("tree_cost > 2.90", "tree_cost > \"2.90\""),
+        ("a OR b AND c", "((b AND c) OR a)"),
+        ("(a OR b) AND c", "((a OR b) AND c)"),
+    ];
+    let actual = examples
+        .iter()
+        .map(|(text, _)| {
+            (
+                *text,
+                query_language::format::format_query(&p(text), &catalog).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = examples
+        .iter()
+        .map(|(text, expected)| (*text, expected.to_string()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -103,13 +193,31 @@ fn shared_tree_keeps_boolean_modes_values_and_spans() {
 
 #[test]
 fn compact_comparisons_and_unknown_fields_have_executable_corrections() {
-    for (text, correction) in [
-        ("messages:>=10", "messages >= 10"),
-        ("reop:morrow", "repo:morrow"),
+    for (text, correction, code, expected) in [
+        (
+            "messages:>=10",
+            "messages >= 10",
+            polylogue_model::Code::InvalidQuery,
+            ConditionKind::Compare {
+                left: Expression::field("messages"),
+                op: Op::Ge,
+                right: Expression::value(Value::scalar("10")),
+            },
+        ),
+        (
+            "reop:morrow",
+            "repo:morrow",
+            polylogue_model::Code::UnknownField,
+            ConditionKind::Match {
+                field: "repo".into(),
+                value: Value::scalar("morrow"),
+            },
+        ),
     ] {
         let error = parse(text).unwrap_err();
+        assert_eq!(error.kind(), code);
         assert_eq!(error.suggestion(), Some(correction));
-        assert!(parse(correction).is_ok());
+        assert_eq!(cond(correction), expected);
     }
 }
 
@@ -202,7 +310,34 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
         panic!()
     };
     assert_eq!(aggregates[2].column(), "p90_duration");
-    assert!(parse("sessions | except (messages where chrono)").is_err());
+    let error = parse("sessions | except (messages where chrono)").unwrap_err();
+    let QueryError::Language { error, .. } = error else {
+        panic!("expected a query language error, got {error:?}");
+    };
+    assert_eq!(error.kind, query_language::ErrorKind::InvalidQuery);
+    assert_eq!(
+        error.message,
+        "except needs rows of one unit or the same projected fields and types; project both sides with `| fields …`"
+    );
+    let accepted = p("sessions | except (sessions where chrono)");
+    let TransformKind::Combine { how, query } = &accepted.transforms[0].kind else {
+        panic!("expected a combination, got {:?}", accepted.transforms);
+    };
+    assert_eq!(*how, Combination::Except);
+    let Source::Unit {
+        unit, condition, ..
+    } = &query.source
+    else {
+        panic!("expected the sessions unit, got {:?}", query.source);
+    };
+    assert_eq!(unit, "sessions");
+    assert_eq!(
+        condition.as_ref().unwrap().kind,
+        ConditionKind::Text {
+            text: "chrono".into(),
+            mode: TextMode::Word
+        }
+    );
     let nested =
         p("origin:codex | union (repo:morrow | where cost > 1) | except (sessions where chrono)");
     assert_eq!(nested.transforms.len(), 2);

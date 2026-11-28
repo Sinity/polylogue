@@ -26,6 +26,51 @@ pub enum QueryPopulation {
     MeasurePopulation,
 }
 
+impl Program {
+    /// Resolve semantic ranking once, with the same notes for listings and readings.
+    pub fn ranking(
+        &mut self,
+        reader: &Reader<'_>,
+        near: Option<&crate::selection::NearFn<'_>>,
+    ) -> Result<Option<std::sync::Arc<crate::vectors::Similarity>>, SelectionError> {
+        let Some(request) = &self.near else {
+            return Ok(None);
+        };
+        let result = match near {
+            Some(near) => near(&request.text),
+            None => Err(polylogue_model::Reason::EmbeddingsOff {}.into()),
+        };
+        reader.check()?;
+        match result {
+            Ok(similarity) => Ok(Some(similarity)),
+            Err(crate::StoreError::Refused(
+                reason @ (polylogue_model::Reason::EmbeddingsOff {}
+                | polylogue_model::Reason::EmbeddingStore { .. }
+                | polylogue_model::Reason::EmbeddingConfiguration { .. }
+                | polylogue_model::Reason::NoVectors { .. }
+                | polylogue_model::Reason::EmbeddingProvider { .. }
+                | polylogue_model::Reason::EmbeddingCallsOff {}),
+            )) => {
+                if matches!(reason, polylogue_model::Reason::EmbeddingsOff {})
+                    && !request.text_ranked
+                {
+                    return Err(crate::StoreError::Refused(reason).into());
+                }
+                let order = if request.text_ranked {
+                    "rows are ranked by text relevance alone"
+                } else {
+                    "rows are ordered by time and unranked"
+                };
+                self.incomplete.push(format!("{reason}; {order}"));
+                Ok(Some(std::sync::Arc::new(
+                    crate::vectors::Similarity::unknown(),
+                )))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 impl Reader<'_> {
     /// Ranking and calendar inputs are injected; this never chooses a provider.
     pub fn with_query_context<T, E>(
@@ -40,17 +85,12 @@ impl Reader<'_> {
         self.with_clock(&program.clock, || {
             if let Some(request) = &program.near {
                 let near = near.ok_or_else(|| {
-                    E::from(SelectionError::invalid(
-                        polylogue_model::Code::Embed,
-                        "semantic search unavailable",
-                    ))
+                    E::from(SelectionError::from(crate::StoreError::from(
+                        polylogue_model::Reason::EmbeddingsOff {},
+                    )))
                 })?;
-                let similarity = near(&request.text).map_err(|message| {
-                    E::from(SelectionError::invalid(
-                        polylogue_model::Code::Embed,
-                        message,
-                    ))
-                })?;
+                let similarity =
+                    near(&request.text).map_err(|error| E::from(SelectionError::from(error)))?;
                 crate::read::limit::ReadLimit::set_stage("similarity");
                 self.rank_selection(
                     &similarity,
@@ -230,7 +270,7 @@ impl Reader<'_> {
         let page = program.statements.page(
             &program.order,
             program.params.len(),
-            after.is_some(),
+            after.map(|after| super::compile::in_second_part(&program.order, after)),
             reverse,
             if row_at.is_some() {
                 PageColumns::Order
@@ -265,7 +305,7 @@ impl Reader<'_> {
                         &scope.by_scope,
                         &program.order,
                         program.params.len(),
-                        after.is_some(),
+                        after.map(|after| super::compile::in_second_part(&program.order, after)),
                         reverse,
                         PageColumns::All,
                     ),
@@ -362,7 +402,7 @@ impl Reader<'_> {
                 source,
                 &program.order,
                 params,
-                after.is_some(),
+                after.map(|after| super::compile::in_second_part(&program.order, after)),
                 false,
                 PageColumns::All,
             )
@@ -437,7 +477,7 @@ impl Reader<'_> {
             &search.by_index,
             &program.order,
             program.params.len() + 1,
-            after.is_some(),
+            after.map(|after| super::compile::in_second_part(&program.order, after)),
             false,
             PageColumns::All,
         );
@@ -1018,10 +1058,12 @@ pub fn prepare_measure(
                 super::OrderKey {
                     column: "family".into(),
                     descending: false,
+                    ..Default::default()
                 },
                 super::OrderKey {
                     column: "value".into(),
                     descending: false,
+                    ..Default::default()
                 },
             ];
         }
@@ -1043,6 +1085,7 @@ pub fn prepare_measure(
                 .map(|column| super::OrderKey {
                     column: column.into(),
                     descending: false,
+                    ..Default::default()
                 })
                 .collect();
         }

@@ -4,11 +4,73 @@
 use crate::row::{BlockPk, Rows as _, row};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
-    Block, ErrorReason, MessageId, SessionId, ToolOutcome,
+    Block, ErrorReason, MessageId, Reference, SessionId, ToolOutcome,
     bundle::ShownBlocks,
     read::{Source, SourceBlock, ToolPair, ValueState},
 };
-use rusqlite::params;
+use rusqlite::{Connection, params};
+
+row! {
+    pub(super) struct CallSource {
+        pub(super) message: MessageId,
+        ordinal: String,
+    }
+    statements {
+        const OF_CALL = "SELECT m.id AS message, coalesce(b.source_position,cast(b.position AS TEXT)) AS ordinal
+            FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+            JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk
+            WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2";
+    }
+}
+
+impl CallSource {
+    pub(super) fn block(&self) -> Result<u64> {
+        self.ordinal
+            .parse()
+            .map_err(|_| StoreError::internal("invalid original block ordinal"))
+    }
+}
+
+pub(super) fn call_source(
+    conn: &Connection,
+    session: &SessionId,
+    call: &str,
+) -> Result<Option<CallSource>> {
+    let rows = conn.all(&CallSource::OF_CALL, params![session.to_string(), call])?;
+    if rows.len() > 1 {
+        return Err(StoreError::Ambiguous {
+            reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
+            candidates: rows
+                .into_iter()
+                .map(|row: CallSource| format!("message:{}", row.message))
+                .collect(),
+        });
+    }
+    Ok(rows.into_iter().next())
+}
+
+/// The original result block addressed by a unique stored call.
+pub(crate) fn tool_result_reference(
+    conn: &Connection,
+    session: &SessionId,
+    call: &str,
+) -> Result<Option<Reference>> {
+    let Some(source) = call_source(conn, session, call)? else {
+        return Ok(None);
+    };
+    let Some(result) =
+        tool_pair_fact(conn, &source.message, source.block()?)?.and_then(|pair| pair.result)
+    else {
+        return Err(StoreError::ReferenceUnavailable {
+            reference: Reference::ToolCall(session.clone(), call.into()).to_string(),
+            reason: "the call has no recorded result available".into(),
+        });
+    };
+    Ok(Some(Reference::Block {
+        message: result.message,
+        n: result.ordinal,
+    }))
+}
 
 /// The line beneath a failed call: the first output line that names the
 /// failure (error, failed, failure, fatal, panicked, exception or denied, in
@@ -49,14 +111,14 @@ macro_rules! block_columns {
             $as,
             "pk, ",
             $block,
-            ".idx AS ",
+            ".position AS ",
             $as,
-            "idx, ",
+            "position, ",
             "coalesce(",
             $block,
-            ".ordinal, cast(",
+            ".source_position, cast(",
             $block,
-            ".idx AS TEXT)) AS ",
+            ".position AS TEXT)) AS ",
             $as,
             "ordinal, ",
             $message,
@@ -92,7 +154,7 @@ row! {
     /// A shown block at an original position.
     struct BlockAt {
         pk: BlockPk,
-        idx: usize,
+        position: usize,
         ordinal: String,
         message: MessageId,
         session: SessionId,
@@ -107,7 +169,7 @@ row! {
             block_columns!("b", "m", "s", ""),
             " FROM message m JOIN session s ON s.pk=m.session_pk
             JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
-            WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2"
+            WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.source_position,cast(b.position AS TEXT))=?2"
         );
     }
 }
@@ -117,7 +179,7 @@ row! {
     /// belong together.
     struct CallAndResult {
         pk: BlockPk,
-        idx: usize,
+        position: usize,
         ordinal: String,
         message: MessageId,
         session: SessionId,
@@ -126,7 +188,7 @@ row! {
         layout: Option<Vec<u8>>,
         blocks: usize,
         result_pk: Option<BlockPk>,
-        result_idx: Option<usize>,
+        result_position: Option<usize>,
         result_ordinal: Option<String>,
         result_message: Option<MessageId>,
         result_session: Option<SessionId>,
@@ -149,10 +211,10 @@ row! {
             JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
             JOIN session cs ON cs.pk=cm.session_pk
             LEFT JOIN message rm ON rm.id=t.result_message_id
-            LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
+            LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.position=t.result_position
             LEFT JOIN session rs ON rs.pk=rm.session_pk
             WHERE (t.call_block_pk=?1 OR t.pk IN (SELECT t2.pk FROM block b2 JOIN message m2 ON m2.pk=b2.message_pk
-                JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_idx=b2.idx WHERE b2.pk=?1))
+                JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_position=b2.position WHERE b2.pk=?1))
               AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id"
         );
     }
@@ -174,7 +236,7 @@ impl BlockFact {
         let ordinal = &block.ordinal;
         Ok(Self {
             pk: block.pk,
-            index: block.idx,
+            index: block.position,
             ordinal: ordinal.parse().map_err(|_| {
                 StoreError::stored_data(format!("block ordinal {ordinal:?} is not a number"))
             })?,
@@ -220,7 +282,7 @@ impl Reader<'_> {
         message: &MessageId,
         original_block_ordinal: u64,
     ) -> Result<Option<ToolPair>> {
-        self.message_tool_pair_detail(message, original_block_ordinal, true)
+        self.message_tool_pair_detail(message, original_block_ordinal, true, true)
     }
 
     /// A collapsed view restores the recorded block header only. Remote
@@ -230,7 +292,17 @@ impl Reader<'_> {
         message: &MessageId,
         original_block_ordinal: u64,
     ) -> Result<Option<ToolPair>> {
-        self.message_tool_pair_detail(message, original_block_ordinal, false)
+        self.message_tool_pair_detail(message, original_block_ordinal, false, false)
+    }
+
+    /// A selected result with its earlier call's header. The call's input
+    /// remains unread when the call is outside the selected transcript.
+    pub fn message_tool_pair_result(
+        &self,
+        message: &MessageId,
+        original_block_ordinal: u64,
+    ) -> Result<Option<ToolPair>> {
+        self.message_tool_pair_detail(message, original_block_ordinal, false, true)
     }
 
     /// The result's emitted shape, without restoring output or structured
@@ -305,13 +377,14 @@ impl Reader<'_> {
         &self,
         message: &MessageId,
         ordinal: u64,
-        full: bool,
+        full_call: bool,
+        full_result: bool,
     ) -> Result<Option<ToolPair>> {
         self.check()?;
         let Some(fact) = self.tool_pair_fact(message, ordinal)? else {
             return Ok(None);
         };
-        let call = self.tool_pair_block(&fact.call, full)?;
+        let call = self.tool_pair_block(&fact.call, full_call)?;
         let Block::ToolCall { call_id, .. } = &call.block else {
             return Err(crate::StoreError::stored(
                 0,
@@ -327,7 +400,7 @@ impl Reader<'_> {
         let result = fact
             .result
             .as_ref()
-            .map(|result| self.tool_pair_block(result, full))
+            .map(|result| self.tool_pair_block(result, full_result))
             .transpose()?;
         if let Some(result) = &result {
             let Block::ToolResult { call_id, .. } = &result.block else {
@@ -364,7 +437,7 @@ impl Reader<'_> {
                     ..
                 }),
             ) if *reason != Some(ErrorReason::ExitCode(0)) => {
-                let output = if full {
+                let output = if full_result {
                     output.clone()
                 } else {
                     match crate::ordered_blocks::one(self.conn()?, result_fact.pk.0)? {
@@ -393,87 +466,10 @@ impl Reader<'_> {
     }
 
     fn tool_pair_fact(&self, message: &MessageId, ordinal: u64) -> Result<Option<PairFact>> {
-        let resolved = crate::chain_names::resolved_message(self.conn()?, message)?;
-        let message = &resolved;
-
-        let conn = self.conn()?;
-        let mut blocks = conn
-            .all(
-                &BlockAt::OF_MESSAGE,
-                params![message.to_string(), ordinal.to_string()],
-            )?
-            .into_iter();
-        let Some(input) = blocks.next() else {
-            return Ok(None);
-        };
-        let input = BlockFact::of(input)?;
-        if blocks.next().is_some() {
-            return Err(crate::StoreError::stored(
-                0,
-                "one original block ordinal has conflicting current rows",
-            ));
-        }
-        if !input.visible()? {
-            return Ok(None);
-        }
         self.check()?;
-        let mut pairs = conn.all(&CallAndResult::OF_BLOCK, [input.pk])?.into_iter();
-        let Some(pair) = pairs.next() else {
-            return Ok(None);
-        };
-        let matched_row = pair.matched.unwrap_or(false);
-        let result = match (
-            pair.result_pk,
-            pair.result_idx,
-            pair.result_ordinal,
-            pair.result_message,
-            pair.result_session,
-        ) {
-            (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
-                Some(BlockFact::of(BlockAt {
-                    pk,
-                    idx,
-                    ordinal,
-                    message,
-                    session,
-                    call_id: pair.result_call_id,
-                    version: pair.result_version,
-                    layout: pair.result_layout,
-                    blocks: pair.result_blocks,
-                })?)
-            }
-            _ => None,
-        };
-        let call = BlockFact::of(BlockAt {
-            pk: pair.pk,
-            idx: pair.idx,
-            ordinal: pair.ordinal,
-            message: pair.message,
-            session: pair.session,
-            call_id: pair.call_id,
-            version: pair.version,
-            layout: pair.layout,
-            blocks: pair.blocks,
-        })?;
-        let matched = matched_row
-            && result
-                .as_ref()
-                .map(BlockFact::visible)
-                .transpose()?
-                .unwrap_or(false);
-        if pairs.next().is_some() {
-            return Err(crate::StoreError::stored(
-                0,
-                "one source block has conflicting current tool relations",
-            ));
-        }
-        if !call.visible()? || (input.pk != call.pk && !matched) {
-            return Ok(None);
-        }
-        Ok(Some(PairFact {
-            call,
-            result: result.filter(|_| matched),
-        }))
+        let fact = tool_pair_fact(self.conn()?, message, ordinal)?;
+        self.check()?;
+        Ok(fact)
     }
     fn tool_pair_block(&self, fact: &BlockFact, full: bool) -> Result<SourceBlock> {
         self.check()?;
@@ -509,9 +505,96 @@ impl Reader<'_> {
 }
 
 /// The rows this module declares statements for, for the every-statement test.
+fn tool_pair_fact(
+    conn: &Connection,
+    message: &MessageId,
+    ordinal: u64,
+) -> Result<Option<PairFact>> {
+    let resolved = crate::chain_names::resolved_message(conn, message)?;
+    let message = &resolved;
+
+    let mut blocks = conn
+        .all(
+            &BlockAt::OF_MESSAGE,
+            params![message.to_string(), ordinal.to_string()],
+        )?
+        .into_iter();
+    let Some(input) = blocks.next() else {
+        return Ok(None);
+    };
+    let input = BlockFact::of(input)?;
+    if blocks.next().is_some() {
+        return Err(crate::StoreError::stored(
+            0,
+            "one original block ordinal has conflicting current rows",
+        ));
+    }
+    if !input.visible()? {
+        return Ok(None);
+    }
+    let mut pairs = conn.all(&CallAndResult::OF_BLOCK, [input.pk])?.into_iter();
+    let Some(pair) = pairs.next() else {
+        return Ok(None);
+    };
+    let matched_row = pair.matched.unwrap_or(false);
+    let result = match (
+        pair.result_pk,
+        pair.result_position,
+        pair.result_ordinal,
+        pair.result_message,
+        pair.result_session,
+    ) {
+        (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
+            Some(BlockFact::of(BlockAt {
+                pk,
+                position: idx,
+                ordinal,
+                message,
+                session,
+                call_id: pair.result_call_id,
+                version: pair.result_version,
+                layout: pair.result_layout,
+                blocks: pair.result_blocks,
+            })?)
+        }
+        _ => None,
+    };
+    let call = BlockFact::of(BlockAt {
+        pk: pair.pk,
+        position: pair.position,
+        ordinal: pair.ordinal,
+        message: pair.message,
+        session: pair.session,
+        call_id: pair.call_id,
+        version: pair.version,
+        layout: pair.layout,
+        blocks: pair.blocks,
+    })?;
+    let matched = matched_row
+        && result
+            .as_ref()
+            .map(BlockFact::visible)
+            .transpose()?
+            .unwrap_or(false);
+    if pairs.next().is_some() {
+        return Err(crate::StoreError::stored(
+            0,
+            "one source block has conflicting current tool relations",
+        ));
+    }
+    if !call.visible()? || (input.pk != call.pk && !matched) {
+        return Ok(None);
+    }
+    Ok(Some(PairFact {
+        call,
+        result: result.filter(|_| matched),
+    }))
+}
+
 #[cfg(test)]
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<BlockAt>();
+    check.row::<CallSource>();
     check.row::<CallAndResult>();
 }
 

@@ -9,7 +9,7 @@ Setting Polylogue up and keeping it: installing into harnesses, Chrome, shells a
 | Target | Writes |
 |---|---|
 | `claude-code`, `codex`, `gemini-cli`, `hermes` | the harness's hook entries, its MCP server entry ([agents.md#mcp-server](agents.md#mcp-server)) and the generated skill, which is the text of `help --all` ([terminal.md#help](terminal.md#help)) |
-| `chrome` | the browser extension's native-messaging host manifest, for the extension named by `--extension-id ID` ([extension.md](extension.md)) |
+| `chrome` | the browser extension's native-messaging host manifest for the packaged extension, with `--extension-id ID` available for another build ([extension.md](extension.md)) |
 | `zsh`, `bash`, `fish` | the shell's completion script ([completion.md](completion.md)), and in zsh and fish the Alt-p key, which opens the picker in any shell line and inserts the chosen references at the cursor ([terminal.md#the-picker](terminal.md#the-picker)) |
 | `drive` | the Google Drive sign-in for AI Studio capture ([capture.md#ai-studio-through-drive](capture.md#ai-studio-through-drive)) |
 
@@ -21,7 +21,7 @@ Every target follows the same rules:
 - **`--remove` takes back exactly Polylogue's entries**, with any event or `hooks` object only they filled; when the file is still exactly what the install wrote, it gets the backup's bytes back and the backup is removed. Removing a harness's hooks is how a person turns its briefs off.
 - **Running it again** changes nothing when the entries are current, and replaces Polylogue's own entries when they are not.
 
-**Chrome.** `install chrome --extension-id ID --dry-run` prints the same manifest that an installation writes, for a deployment to include. Installation keeps the original manifest bytes and permissions in its adjacent backup. Removal restores that backup when the current manifest still matches an installation. A manifest edited afterward is left in place with its backup, and the command reports the changed file.
+**Chrome.** `install chrome --dry-run` prints the same manifest that an installation writes. The host program is the first executable `polylogue` on `PATH`. Use `--program` to select another command or an executable path. The manifest keeps the wrapper path so Chrome opens the archive chosen by the wrapper. Installation keeps the original manifest bytes and permissions in its adjacent backup. Removal restores that backup when the current manifest still matches an installation. A manifest edited afterward is left in place with its backup, and the command reports the changed file.
 
 **Instructions.** `polylogue install claude-code --instructions` also appends the same short guidance the MCP server supplies, enclosed by `<!-- polylogue -->` and `<!-- /polylogue -->`, to the harness's global instructions. Claude Code uses `$CLAUDE_CONFIG_DIR/CLAUDE.md` (default `~/.claude/CLAUDE.md`), Codex uses `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`), and Gemini CLI uses `~/.gemini/GEMINI.md`. A `--settings` override changes only the hook settings path. Hermes refuses this flag with its `config.yaml` hint.
 
@@ -71,7 +71,7 @@ A setting is an annotation of kind `setting` ([annotations.md#kinds](annotations
 
 **Not configurable,** because a dominant option exists: provider locations (fixed per origin, honouring a tool's own documented home variable such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; [capture.md#locations](capture.md#locations)); whether the session-start brief is injected (removing the hooks is the off switch); brief sizes and budgets; worker counts and memory targets (derived from the physical cores the process may run on, its cgroup CPU quota, and the memory the system has available at most the cgroup's limit); pacing; deadlines (defaults any caller lifts).
 
-**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `TERM`, `COMPLETE`, the harness variables read for caller identity, `POLYLOGUE_LISTEN` and `POLYLOGUE_AUTH_TOKEN_FILE`, `DBUS_SESSION_BUS_ADDRESS` for desktop notifications, `NOTIFY_SOCKET` and `WATCHDOG_USEC`/`WATCHDOG_PID` for the systemd notify and watchdog protocol, and `VOYAGE_API_KEY`, the optional credential for paid embeddings. All are read once at start-up. Terminal styling is [terminal.md#output](terminal.md#output)'s.
+**Environment.** No environment variable selects the archive, other than the XDG base directories, `HOME` and the tools' own home variables. The binary reads only those, `PAGER`, `NO_COLOR`, `TERM`, `COMPLETE`, the harness variables read for caller identity, `POLYLOGUE_LISTEN`, `POLYLOGUE_AUTH_TOKEN_FILE` and `POLYLOGUE_MCP_SOCKET`, `DBUS_SESSION_BUS_ADDRESS` for desktop notifications, `NOTIFY_SOCKET` and `WATCHDOG_USEC`/`WATCHDOG_PID` for the systemd notify and watchdog protocol, and `VOYAGE_API_KEY`, the optional credential for paid embeddings. All are read once at start-up. Terminal styling is [terminal.md#output](terminal.md#output)'s.
 
 **Broken configuration never falls back.** A `sinex.toml` that does not parse or names an unknown mode leaves the archive in its recorded mode: `status` shows the error with the file's path, the verdict is `degraded`, writes are refused with that error and path, and capture pauses. An archive without a recorded mode cannot be created until its configuration is fixed.
 
@@ -84,6 +84,7 @@ Use a bound in the query to select a finite set, for example `polylogue embed --
 - **Without `--yes`** it spends nothing: it reports what would be embedded (texts and chunks without a vector for the configured model, over the whole archive or the rows `--query` selects), the tokens, the price and the cost against this month's budget.
 - **With `--yes`** it embeds them through the configured provider, reporting progress and what was bought; a retry requests only what is still missing. With model calls off it is refused with the setting that turns them on (`polylogue set embed.calls on`).
 - Once model calls are on, the daemon embeds new text in the background at idle priority within the monthly budget; `embed --yes` is for what came before.
+- With the provider off, semantic-only queries refuse and name `polylogue set embed.provider local`. A configured model without vectors names `polylogue embed`; preview it before authorizing a build with `--yes`.
 - Stored vectors, the provider and the month's spend are in `status` ([operations.md#status](operations.md#status)).
 
 ## Demo
@@ -94,6 +95,8 @@ Use a bound in the query to select a finite set, for example `polylogue embed --
 
 **Several archives on one machine.** An archive lives in one directory. `--archive DIR` selects it on every line, so a client and the daemon it reaches always agree. Each archive has its own daemon, lock, socket (`daemon.sock` under the archive directory) and unit instance. A command never acts on an archive it was not pointed at, and every `status` and error names the archive path.
 
+**Managed MCP during archive cutovers.** The installed daemon and MCP launcher can share `POLYLOGUE_MCP_SOCKET`, an absolute path in the user's private runtime directory. When the daemon binds its archive socket, it publishes that path as a link to the listening socket. The MCP process connects through the link for each request, so the same stdio session follows the next managed daemon after an archive cutover. During the stop it reports `not_running`. An explicit `--archive` or `--config` uses that deployment's own archive socket. Existing MCP processes launched before this setting require a reconnect through the updated launcher.
+
 **Several machines.** Every observation records the machine ID and host name, so paths from two machines never collide, and sessions show their host where an archive holds more than one. Archives on different machines combine either through primary mode, each host sending to one Sinex as its own producer ([primary-mode.md](primary-mode.md)), or standalone, by writing a bundle with `polylogue 'repo:sinex' read --to DIR --format json` on one machine ([reading.md#formats-and-destinations](reading.md#formats-and-destinations)) and reading it with `polylogue import DIR` on the other. An archive directory is never synced live between machines.
 
 Runtime files use `$XDG_RUNTIME_DIR/polylogue/<archive key>/`. When `XDG_RUNTIME_DIR` is unset, they use `$XDG_STATE_HOME/runtime/polylogue/<archive key>/`; `XDG_STATE_HOME` defaults to `$HOME/.local/state`. The daemon and every client use the same resolved paths and archive key. Reader tokens and ports, mailbox flags, hosted-session records, terminal row files and this boot's storage-failure marker share that directory.
@@ -102,7 +105,8 @@ Runtime files use `$XDG_RUNTIME_DIR/polylogue/<archive key>/`. When `XDG_RUNTIME
 
 - **The flake** exports `packages.polylogue`, `nixosModules.polylogue` and `homeModules.polylogue`. The modules' options are typed from the same declaration as the configuration above, through one shared settings library; a deployment only sets options. Any deployment works the same way; none is a dependency of Polylogue's behaviour.
 - **The package** is built with the `sinex` Cargo feature, which a plain Cargo build leaves out: it holds Polylogue's Sinex event kinds. Primary mode is not built in this version; with the feature, a `sinex.toml` asking for it, or an archive whose `meta.json` records it, is refused at start with a `not_built` failure that names the mode, and the archive is left untouched. The binary reports its version and commit (`--version`, `status`).
-- **The Home Manager module installs:** one wrapper used as the CLI, the daemon command and the browser host, passing `--archive` explicitly and setting the XDG directories; `polylogue`, `plg` and `plog` as shell names of the same wrapper, with completion and the Alt-p key for each; the browser extension and its native-messaging manifest; the harness hooks and MCP registration; `sinex.toml` and `signals.toml`; and one user service per archive with `Type=notify`, `WatchdogSec`, `Restart=always` with a growing delay, `RestartPreventExitStatus=74 78`, a notification after every end it did not ask for, and a resource class that yields I/O and CPU to interactive work with no memory cap. The completion scripts, host manifest and harness entries are the output of `install TARGET --dry-run` ([Installing](#installing)), so the module and `install` never differ.
+- **The Home Manager module installs:** one wrapper used as the CLI, the daemon command and the browser host, passing `--archive` explicitly and setting the XDG directories; `polylogue`, `plg` and `plog` as shell names of the same wrapper, with completion and the Alt-p key for each; the harness hooks and MCP registration; `sinex.toml` and `signals.toml`; and one user service per archive with `Type=notify`, `WatchdogSec`, `Restart=always` with a growing delay, `RestartPreventExitStatus=74 78`, a notification after every end it did not ask for, and a resource class that yields I/O and CPU to interactive work with no memory cap. The completion scripts and harness entries use the output of `install TARGET --dry-run` ([Installing](#installing)).
+- Set `services.polylogue.browser.enable = true` to install the browser host for the selected archive and link the unpacked extension at `$XDG_DATA_HOME/polylogue/extension`. `services.polylogue.browser.userDataDirectories` lists the Chrome user-data directories that receive the manifest and defaults to `$XDG_CONFIG_HOME/google-chrome`. Load the linked directory once using **Load unpacked** in `chrome://extensions`.
 - **The daemon restarts only when its binary changes;** activating unrelated changes leaves it running.
 - **Placement of stores on the host** (separate volumes, snapshot schedules, copy-on-write settings) is deployment configuration. Whatever the placement, the archive stays covered by a backup.
 
@@ -113,8 +117,9 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | Change in the release | What happens | Reads meanwhile |
 |---|---|---|
 | no storage change | restart, resume from committed positions | down for the restart |
-| a parser module's parse version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read replies; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
-| a change to the index schema | a new index is built from stored bytes in a private file and installed when its build ends ([below](#replacing-an-index-from-another-schema)) | reads reply `index_building` with the build's progress until the new index is installed |
+| a parser module's parse version | its old readings become due for replay, with live arrivals still taking priority | committed readings stay readable, and read freshness and `status` report the pending replay |
+| a change to the index schema that keeps the old index usable | a private bulk rebuild replaces the index when ready ([index replacement](#replacing-an-index-from-another-schema)) | the old index serves until the replacement installs |
+| a change to the index schema that makes the old index unusable | the daemon installs the empty current schema at open and catches up in it ([index replacement](#replacing-an-index-from-another-schema)) | committed rows and search entries become available during catch-up, with incomplete coverage reported |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
 | the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](operations.md#storage-failure)) | down |
@@ -123,15 +128,50 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 ### Replacing an index from another schema
 
-`index.db` holds only what is parsed and derived from the archive's stored bytes, and it has one current format, so an index this build cannot use is replaced rather than converted or refused. At start, an index whose tables, indexes or triggers differ from the build's, that is at another index format version, that carries no Polylogue format identity, that was built from another archive, or that has taken in record positions its archive does not have, is replaced by a rebuild: its reason is written to `index-rebuild/reason.json` first, and the new index is written beside the old one in `index-rebuild/build.db`. The old index stays `index.db` until the new one is renamed over it. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a rebuild defers some.
+The schema identity of `index.db` is a hash of the version, format
+identity, tables, views and triggers. Read indexes are completed at open
+and a private bulk rebuild can defer their creation. An index that belongs
+to another archive, uses an incompatible schema, or is ahead of its
+archive cannot serve reads.
 
-The rebuild writes its private file with no journal on disk and no syncs, and only the rebuild pipeline opens it; how a stop, a crash and the end of the rebuild leave it is in [architecture.md#durability](architecture.md#durability). Until the new index is installed, reads are served from `index.db` when this build can read it (an index that differs only in its indexes), so the daemon keeps serving what it had; otherwise, and on a first rebuild with no index at all, every read replies `index_building` with the rebuild's reason and progress (input chains read of those stored), and `status` shows that progress beside the daemon's own state. When the rebuild ends, it is renamed over `index.db`, reads move to it, and the index it replaced is gone.
+When an installed index is usable, its SQLite connections overlap during
+startup. The writer uses the prepared connection so SQLite does not have
+to scan the committed write-ahead log again between checking and serving
+the index.
 
-`status` shows the index files as one pair under `index`: `installed` (`none`, `current` with the archive identity and record position, or `unusable` with `why`) and `rebuilding` (`no`, `writing` with its `reason`, or `ready`), with `install_failure` when an install failed in the running daemon. The reasons are `no_index`, `schema_differs`, `format_version` with the version found and wanted, `older_format`, `other_archive`, and `ahead_of_archive` with both positions. The new index records why it replaced the old one, and `status` reports that record under `store.index_rebuild` once it is installed: the reason and the previous and current schema identities. A rebuild that starts again after a stop or a crash keeps its reason: it reads it again from `index-rebuild/reason.json`, which stays until the install. The same holds in primary mode: the index is built from the record, with the bytes read from Sinex's store ([primary-mode.md](primary-mode.md#rebuild-and-parser-upgrades)).
+When there is no usable index, the daemon creates the current empty
+schema in a private file and installs it atomically. The ordinary writer
+fills it from live captures and the archive's stored inputs. Sessions and
+search results become readable once their own rows and search entries
+commit. Queries report incomplete coverage during catch-up, and status
+names pending work in capture, parsing, session figures and search.
+Stopping during catch-up keeps every committed reading. The next start
+continues work that is still due. Moving `index.db` out of the way while
+the daemon is stopped has the same effect.
 
-The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed. The embeddings store from an earlier build only gains the tables added since ([archive.md#evolution](archive.md#evolution)).
+When a usable index is privately rebuilt, readers keep using it until the
+replacement is complete. The rebuild's reason and current stage are
+reported in status. An interrupted private rebuild can be recomputed from
+the record. If the finished replacement survives a stop, the open checks
+its archive identity and position before installing it.
 
-A first build reads every chain that is due a reading ([archive.md](archive.md#reading-versions)) and replies to reads with `index_building` and its progress until it installs, with its read indexes, search and derived values built ([architecture.md](architecture.md#one-path)). A new archive's first pass is such a build: its index is built, not filled file by file. The build's first pass stores the files no earlier pass stored, the newest first, without reading them; the build then reads them with every other stored chain, and once the index is installed the pass reads what those files gained meanwhile. With nothing stored and nothing found (a daemon started without sources on an empty archive), the empty build installs at the end of that pass. The daemon's log records the build: a line as each step starts or ends (finding files, storing files, reading stored files, sorting texts, writing tables, indexing, assembling sessions, indexing sessions, joining sessions across files, finishing indexes, search index, installing; [operations.md](operations.md#status)) naming how long the step took, what it handled, the bytes read and written and peak memory, a line a minute in the journal with the storing rate while files are stored, and one line when the index is installed; a reader waiting for the index logs that once. Moving `index.db` aside by hand and starting the daemon builds a new index the same way. Moving a whole archive aside and starting fresh is a deliberate act, never something code does to get past a change.
+Moving a whole archive aside is a deliberate operation. Original input
+bytes, authored records and paid vectors stay in the archive across an
+index replacement. An incompatible archive or embeddings format is
+refused with exit status 78. Compatible embeddings schemas gain newly
+added tables ([archive evolution](archive.md#evolution)).
+
+### Continuing an indexed cut of the same archive
+
+For a one-time standalone cutover using the current archive and index formats, first make a coherent copy of the source. Build and verify its index with the destination reading contracts. Keep the copy sealed after verification. Choose a recent cut so the final catch-up has little to read. Build both examples with the destination revision before the write pause.
+
+1. Run `cargo run -p polylogue-store --example reuse_archive_index -- continue <checked-cut> <source> <new-candidate>`. The candidate must be a new path outside both archive directories, on storage that can reflink the source's databases and WALs. The command checks reflinking and compares the sealed copy's records, stored bytes and paid vectors against the current native source, then prepares the index and the checked segment prefix while the source writer may still run.
+2. After preparation reports both positions, stop the source writer and enter `finish` in the same process. The command takes the source's exclusive writer lock, refuses a replaced source or a position that went backwards, appends the remaining committed segment bytes, and reflinks the final SQLite databases and WALs. It fails if a required reflink fails. The embeddings database follows its own commits even when the archive position has not moved. Rehearse on the intended storage to time the final capture and catch-up.
+3. Run the built `catch_up_archive_suffix <candidate> <index-position> <archive-position>` example from `polylogue-engine` with the two final positions printed by the capture. Check that the installed index serves the final archive position and can read a changed input before routing traffic to it. Do the full stored-byte verification on the checked copy before the write pause. Keep the original archive for recovery.
+
+Both cuts must belong to the same native archive. Between preparation and capture, only its native writer may change it. A restored, rewritten or independently converted source needs a new proof. This procedure depends on the native writer keeping committed segment ranges and captured record rows intact. Independent sealed copies use `reuse_archive_index <earlier> <later>` to check their complete common prefix before indexing the later one.
+
+A read can finish in a later commit while keeping the same revision number. The prefix check accepts that growth when a later committed extent accounts for the new length. It checks the earlier extents and their bytes and rejects changes to the revision's identity or original commit. Suffix planning uses extent commits alongside revisions and observations, and a bounded read uses the extents present at its requested cut.
 
 ## Backup and restore
 
@@ -141,4 +181,4 @@ A first build reads every chain that is due a reading ([archive.md](archive.md#r
 - **Polylogue provides** the paths and sizes in `status`, and `status --verify` to check a restored copy ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)).
 - **Restore** is putting the files back and starting the daemon. Each store opens as at any start; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
 - **A restore drill** restores the latest backup into a scratch directory and, with `--archive` naming it on each line, runs `polylogue daemon --no-sources --until-idle`, then starts `polylogue daemon --no-sources` and runs `polylogue status --verify` against it. Someone runs it when they want the check, for example after changing the backup route.
-- **Primary mode:** Sinex is the store of record, and its backup covers Polylogue's materials and authored records. Losing the local directory means a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). The embeddings store stays local and is backed up, because recomputing it costs money.
+- **Primary mode:** Back up the local record, held bytes and paid embeddings together as described in [primary mode](primary-mode.md#local-state). Sinex backs up what it has received. Its confirmed stream can restore shipped records, while unshipped writes and paid embeddings need the local backup.

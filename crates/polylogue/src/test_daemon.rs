@@ -35,8 +35,7 @@ pub(crate) fn start_runtime(
     start_with_deployment(deployment, engine, mode)
 }
 
-/// Starts a fixture runtime and waits for its initial index build and the
-/// status snapshot read after it before status reads.
+/// Starts a fixture runtime and waits for a snapshot from the index it serves.
 fn start_with_deployment(
     deployment: Arc<crate::config::Config>,
     engine: Config,
@@ -49,10 +48,9 @@ fn start_with_deployment(
         polylogue_engine::Lifetime::UntilStopped,
         &Default::default(),
     )?;
-    // Reads answer `index_building` until the loop's first pass installs the
-    // index (docs/operations.md, Replacing an index from another schema).
-    // Status then answers from the snapshot read after the install, which
-    // counts as a status change.
+    // A fixture over a privately rebuilding index waits for its final
+    // generation before using the status snapshot. An ordinary installed
+    // index can serve its first snapshot during catch-up.
     let until = std::time::Instant::now() + Duration::from_secs(60);
     let mut seen = runtime.daemon.status.changes();
     while runtime.runs_loop()
@@ -64,7 +62,7 @@ fn start_with_deployment(
                 "the test daemon's first index was not installed within a minute",
             ));
         }
-        seen = runtime.daemon.status.wait_past(seen, until);
+        seen = runtime.daemon.status.wait_past(seen, until, None);
     }
     Ok(runtime)
 }
@@ -98,8 +96,7 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 
 /// Starts with `workers` loop and request workers over a home where `seed`
 /// has also written sources holding `messages` more messages, so the
-/// daemon's first pass reads them all as one first build, as it reads an
-/// existing home.
+/// daemon's initial catch-up reads them as it reads an existing home.
 pub(crate) fn start_with_sources_and_workers(
     text: &str,
     seed: &dyn Fn(&Path),
@@ -111,14 +108,30 @@ pub(crate) fn start_with_sources_and_workers(
         workers,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
         None,
-        (seed, messages),
+        (seed, Some(messages)),
+    )
+}
+
+/// A daemon over the Morrow example's main set and the files `extra`
+/// writes into the same home, once it has caught up.
+pub(crate) fn start_over_morrow(extra: &dyn Fn(&Path)) -> TestDaemon {
+    let seed = |home: &Path| {
+        polylogue_testkit::Morrow::lay_out_in(polylogue_testkit::Set::Main, home);
+        extra(home);
+    };
+    start_with_clock_and_workers(
+        "small session",
+        DEFAULT_WORKERS,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+        None,
+        (&seed, None),
     )
 }
 
 /// Writes sources into the home before the daemon starts, and how many
-/// messages they hold.
-type Seed<'a> = (&'a dyn Fn(&Path), u64);
-const NO_SEED: Seed<'static> = (&|_| {}, 0);
+/// messages they hold; `None`: the start waits for the daemon to catch up.
+type Seed<'a> = (&'a dyn Fn(&Path), Option<u64>);
+const NO_SEED: Seed<'static> = (&|_| {}, Some(0));
 
 pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
     start_with_clock_and_workers(text, DEFAULT_WORKERS, clock, None, NO_SEED)
@@ -171,8 +184,11 @@ fn start_with_clock_and_workers(
         runtime,
     };
     daemon.wait_for(|data| {
-        data["store"]["messages"].as_u64() == Some(1 + seed.1)
-            && data["store"]["search_pending"].as_u64() == Some(0)
+        data["store"]["search_pending"].as_u64() == Some(0)
+            && match seed.1 {
+                Some(messages) => data["store"]["messages"].as_u64() == Some(1 + messages),
+                None => data["caught_up"] == true,
+            }
     });
     daemon.wait_for_signal_checkpoint();
     daemon
@@ -191,18 +207,28 @@ impl TestDaemon {
     /// so the pass that made `ok` hold has also derived from its rows. A
     /// state that never comes is ended by the test runner's timeout.
     pub fn wait_for(&self, ok: impl Fn(&serde_json::Value) -> bool) {
-        let status = || {
-            crate::protocol::into_value(call(&self.daemon, "status", serde_json::json!({})))
-                .unwrap_or_else(|failure| panic!("status failed: {failure:?}"))
+        let wait_for_status = |matches: &dyn Fn(&serde_json::Value) -> bool| {
+            loop {
+                match crate::protocol::into_value(call(
+                    &self.daemon,
+                    "status",
+                    serde_json::json!({}),
+                )) {
+                    Ok(status) if matches(&status) => return,
+                    Ok(_) => (),
+                    Err(failure)
+                        if failure.retryable
+                            && failure.code.as_deref()
+                                == Some(polylogue_model::Code::DeadlineExceeded.as_str()) => {}
+                    Err(failure) => panic!("status failed: {failure:?}"),
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         };
-        while !ok(&status()) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_status(&ok);
         // Checked after `ok`: an idle loop seen now has finished any pass
         // that wrote what `ok` saw.
-        while status()["busy"] != false {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        wait_for_status(&|status| status["caught_up"] == true);
     }
 
     /// Waits until the signals worker's first evaluation has committed its
@@ -512,6 +538,7 @@ impl CallParts {
             budget: self.budget,
             limit: &self.limit,
             lane: crate::daemon::handler::Lane::Ordinary,
+            after_write: None,
             output: &self.events,
             query: &self.query,
         }

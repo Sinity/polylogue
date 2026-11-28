@@ -104,6 +104,42 @@ fn kinds(found: &Verification) -> Vec<ProblemKind> {
 }
 
 #[test]
+fn a_waiting_reader_can_see_which_archive_check_is_running() {
+    use std::{sync::mpsc, time::Duration};
+
+    let stored = two_inputs();
+    stored.writer.flush().unwrap();
+    let pool = ReadPool::open(&stored.archive).unwrap();
+    let blobs = Arc::new(stored.archive.blobs().unwrap());
+    let (ready_sender, ready) = mpsc::sync_channel(1);
+    let (continue_check, waiting) = mpsc::sync_channel(1);
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new()
+            .name("verify-phase-test".into())
+            .spawn_scoped(scope, move || {
+                let mut first = true;
+                verify(&pool, &blobs, None, &mut |_| {
+                    if std::mem::take(&mut first) {
+                        ready_sender.send(()).unwrap();
+                        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+                    }
+                    Ok(())
+                })
+                .unwrap()
+            })
+            .unwrap();
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        let phase = crate::activity::threads(Duration::ZERO)
+            .into_iter()
+            .find(|thread| thread.name == "verify-phase-test")
+            .and_then(|thread| thread.doing.into_iter().last());
+        continue_check.send(()).unwrap();
+        assert_eq!(phase.unwrap().what, "checking archive rows");
+        assert!(thread.join().unwrap().problems.is_empty());
+    });
+}
+
+#[test]
 fn a_consistent_archive_has_no_problems_and_counts_every_class() {
     let stored = two_inputs();
     let found = stored.verify(None);

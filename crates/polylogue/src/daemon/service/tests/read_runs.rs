@@ -56,6 +56,109 @@ fn only_card(page: &ReadPage) -> &Card {
 }
 
 #[test]
+fn waiting_on_run_history_records_once_and_wakes_for_an_independent_run() {
+    use polylogue_model::{
+        Author,
+        authorship::{Authorship, Channel},
+    };
+    use polylogue_store::{read::limit::ReadLimit, selection::SelectionError};
+    use std::time::{Duration, Instant};
+
+    let mut d = test_daemon::start("waiting on query history");
+    d.pause_signals();
+    let daemon = &d.daemon;
+    let limits = std::array::from_fn::<_, 2, _>(|_| {
+        ReadLimit::new(Duration::from_secs(20), Default::default())
+    });
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(0, 0, 0, 0),
+    )
+    .unwrap();
+    let options = polylogue_query::Options::fixture(
+        polylogue_query::Clock::new(jiff::Timestamp::now(), day),
+        vec![],
+    );
+    let program = polylogue_store::query::compile("runs", &options).unwrap();
+    let number_of_runs = || {
+        let reader = daemon.reads.reader().unwrap();
+        let mut count = 0;
+        reader
+            .visit_query_values::<SelectionError>(&program, None, |_| {
+                count += 1;
+                Ok(std::ops::ControlFlow::Continue(()))
+            })
+            .unwrap();
+        count
+    };
+    std::thread::scope(|scope| {
+        let (send, received) = std::sync::mpsc::channel();
+        for limit in &limits {
+            let send = send.clone();
+            let wait = Call::new(
+                "rows",
+                json!({"selection":"runs where author:operator AND outcome:ok","wait":"1m"}),
+            )
+            .within(limit);
+            scope.spawn(move || send.send(wait.answer(daemon)).unwrap());
+        }
+        let ready = Instant::now() + Duration::from_secs(7);
+        while limits
+            .iter()
+            .any(|limit| limit.stage() != Some("listing wait"))
+            && Instant::now() < ready
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            limits
+                .iter()
+                .all(|limit| limit.stage() == Some("listing wait"))
+        );
+        assert_eq!(
+            number_of_runs(),
+            2,
+            "each waiting request has one beginning"
+        );
+
+        let independent = crate::test_answers::listing(
+            Call::new("rows", json!({"selection":"sessions"}))
+                .authorship(Authorship {
+                    author: Author::Operator,
+                    via: Channel::Cli,
+                })
+                .answer(daemon),
+        );
+        let independent = independent.value().unwrap()["resolved"]["run"].clone();
+        let mut waits = Vec::new();
+        for _ in 0..2 {
+            let reply = received.recv_timeout(Duration::from_secs(6));
+            if reply.is_err() {
+                for limit in &limits {
+                    limit.cancellation.cancel();
+                }
+            }
+            let wait =
+                crate::test_answers::listing(reply.expect("the independent run wakes both waits"));
+            let wait = wait.value().unwrap();
+            assert_eq!(wait["rows"][0]["id"], independent);
+            let Reference::Run(id) =
+                Reference::parse(wait["resolved"]["run"].as_str().unwrap()).unwrap()
+            else {
+                panic!("a waiting query's run identity");
+            };
+            let reader = daemon.reads.reader().unwrap();
+            let recorded = reader.query_run_outcome(&id).unwrap().unwrap();
+            assert_eq!(recorded.outcome, RunOutcome::Ok);
+            assert_eq!(recorded.count, Some(1));
+            waits.push(id);
+        }
+        assert_ne!(waits[0], waits[1]);
+        assert_eq!(number_of_runs(), 3, "rechecks have no run records");
+    });
+}
+
+#[test]
 fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     let mut d = test_daemon::start("run reader fixture");
     d.pause_signals();
@@ -71,8 +174,8 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
         page.document.header.target
     );
     let Card::Run {
-        question,
-        read_at,
+        query_id: question,
+        read_position,
         author,
         count,
         exact,
@@ -83,9 +186,9 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     };
     assert_eq!(
         question.as_ref().and_then(Reference::question_id),
-        run.question
+        run.query_id
     );
-    assert_eq!(read_at, &run.read_at);
+    assert_eq!(read_position, &run.read_position);
     assert_eq!(author, &run.authorship.author);
     assert_eq!(*count, outcome.count);
     assert_eq!(*exact, Some(outcome.exact));
@@ -94,7 +197,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     assert_eq!(next.request.operation, "rows");
     assert_eq!(
         next.request.arguments,
-        json!({"selection":format!("query:{}",run.question.unwrap())})
+        json!({"selection":format!("query:{}",run.query_id.unwrap())})
     );
     let rerun = crate::test_answers::listing(Call::from_request(&next.request).answer(&d.daemon));
     assert_eq!(rerun.value().unwrap()["count"], 1);
@@ -105,7 +208,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     {
         let reader = d.daemon.reads.reader().unwrap();
         let read = reader.query_run(&read_id).unwrap().unwrap();
-        assert_eq!(read.question, None);
+        assert_eq!(read.query_id, None);
         assert!(
             matches!(read.binding, RunBinding::OriginalObject {execution} if execution.reference == Reference::Run(run.id.clone()))
         );
@@ -191,7 +294,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
         .query_object()
         .unwrap();
     run.id = RunId::parse("018f0000-0000-7000-8000-000000000023").unwrap();
-    run.question = Some(object.id);
+    run.query_id = Some(object.id);
     let RunBinding::Original { execution } = &mut run.binding else {
         panic!("query execution")
     };
@@ -212,7 +315,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
     assert!(matches!(
         only_card(&unavailable),
         Card::Run {
-            question: Some(_),
+            query_id: Some(_),
             ..
         }
     ));
@@ -346,16 +449,150 @@ fn object_read_runs_have_no_invented_question_or_followup() {
         .query_run(&id)
         .unwrap()
         .unwrap();
-    assert_eq!(run.question, None);
+    assert_eq!(run.query_id, None);
     let page = crate::test_answers::read(call(&run, "transcript", 100_000).answer(&d.daemon));
     assert!(matches!(
         only_card(&page),
         Card::Run {
-            question: None,
+            query_id: None,
             count: Some(1),
             outcome: Some(RunOutcome::Ok),
             ..
         }
     ));
     assert!(page.document.footer.next.is_none());
+}
+
+#[test]
+fn a_listing_continuation_reuses_its_durable_original_run() {
+    let mut daemon = test_daemon::start_over_morrow(&|_| {});
+    daemon.pause_signals();
+    let save = |d: &Daemon, question: &str, request: &str| {
+        crate::test_answers::step(
+            Call::new(
+                "rows",
+                json!({"selection":question,"all":true,"steps":[{"verb":"save","name":"paging"}]}),
+            )
+            .id(request)
+            .answer(d),
+        )
+    };
+    save(
+        &daemon.daemon,
+        "sessions | sort by id",
+        "save-paging-original",
+    );
+    let listing = |selection: &str, cursor: Option<&str>| {
+        Call::new("rows", json!({"selection":selection, "page_size":1}))
+            .authorship(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            })
+            .cursor(cursor)
+            .answer(&daemon.daemon)
+    };
+    let first = crate::test_answers::listing(listing("query:paging", None));
+    let first = first
+        .value()
+        .unwrap_or_else(|| panic!("first page: {first:?}"));
+    let run_ref = first["resolved"]["run"].as_str().expect("run reference");
+    let Reference::Run(id) = Reference::parse(run_ref).unwrap() else {
+        panic!("expected a run reference");
+    };
+    let next = first["next"].as_str().expect("more than one session");
+    save(
+        &daemon.daemon,
+        "messages | sort by id",
+        "save-paging-changed",
+    );
+    let second = crate::test_answers::listing(listing("query:paging", Some(next)));
+    let second = second
+        .value()
+        .unwrap_or_else(|| panic!("second page: {second:?}"));
+    assert_eq!(second["resolved"]["run"], run_ref);
+    assert_eq!(second["unit"], "sessions");
+    assert_eq!(second["resolved"]["query"], first["resolved"]["query"]);
+    assert_eq!(second["count"], first["count"]);
+    assert_ne!(second["rows"], first["rows"]);
+    let count_before_restart = {
+        let read = daemon.daemon.reads.reader().unwrap();
+        let run = read.query_run(&id).unwrap().unwrap();
+        assert_eq!(run.authorship.author, polylogue_model::Author::Operator);
+        assert_eq!(
+            run.authorship.via,
+            polylogue_model::authorship::Channel::Cli
+        );
+        assert_eq!(
+            read.query_run_outcome(&id).unwrap().unwrap().outcome,
+            RunOutcome::Ok
+        );
+        // Both pages use the same immutable run, with a completed first-page outcome.
+        let completion = read.query_run_outcome(&id).unwrap().unwrap();
+        assert_eq!(
+            completion.next.unwrap().request.cursor.as_deref(),
+            Some(next)
+        );
+        completion.count
+    };
+    assert_eq!(count_before_restart, first["count"].as_u64());
+    daemon.restart();
+    let read = daemon.daemon.reads.reader().unwrap();
+    assert_eq!(
+        read.query_run_outcome(&id).unwrap().unwrap().count,
+        count_before_restart
+    );
+}
+
+#[test]
+fn saving_an_executed_query_records_one_run_and_copying_its_result_does_not() {
+    let mut daemon = test_daemon::start("Save this session");
+    daemon.pause_signals();
+    let step = crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":"sessions","steps":[{"verb":"save","name":"original"}]}),
+        )
+        .id("record-the-save")
+        .answer(&daemon.daemon),
+    );
+    let crate::protocol::line::StepAnswer::Saved(receipt) = step else {
+        panic!("saved query receipt");
+    };
+    let result = receipt.saved_rows.result;
+    crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":result,"steps":[{"verb":"save","name":"copy"}]}),
+        )
+        .id("copy-the-saved-rows")
+        .answer(&daemon.daemon),
+    );
+    let runs = crate::test_answers::listing(
+        Call::new("rows", json!({"selection":"runs"})).answer(&daemon.daemon),
+    );
+    let runs = runs
+        .value()
+        .unwrap_or_else(|| panic!("run history: {runs:?}"));
+    assert_eq!(runs["count"], 1, "one evaluation of the original question");
+    let Reference::Run(id) = Reference::parse(runs["rows"][0]["id"].as_str().unwrap()).unwrap()
+    else {
+        panic!("recorded Save evaluation");
+    };
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
+    let request = reader.user_request("record-the-save-1").unwrap().unwrap();
+    let polylogue_model::user::UserWrite::Save(save) = request.write else {
+        panic!("durable Save request");
+    };
+    let kept: serde_json::Value = serde_json::from_str(&save.rows_json).unwrap();
+    assert_eq!(kept["run"], Reference::Run(id.clone()).to_string());
+    let binding = run.binding.original().unwrap();
+    assert_eq!(
+        binding.accepted_request.as_ref().unwrap()["arguments"]["steps"][0]["verb"],
+        "save"
+    );
+    assert_eq!(
+        reader.query_run_outcome(&id).unwrap().unwrap().count,
+        Some(1)
+    );
 }

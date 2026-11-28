@@ -4,7 +4,7 @@ use polylogue_model::batch::{ExportCursor, ExportDelivery, ExportDeliverySource}
 use polylogue_model::{BlobHash, Output, RecordCounts};
 use polylogue_sources::chain_names::{Formed, NoEarlierRows, settle};
 use polylogue_sources::export::{self, ExportParser, ExportState};
-use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
+use polylogue_store::{Batch, ParsePart, export_items::ExportItems};
 
 struct Counted<F, R> {
     open: F,
@@ -46,58 +46,6 @@ impl<F: FnMut() -> R, R: std::io::Read> export::Input for Counted<F, R> {
         self.position = 0;
         Ok(())
     }
-}
-
-/// A tail match is only a negative filter. Reuse requires every kept
-/// prefix byte and unchanged descriptor and path file facts through the read.
-fn prefix_matches(
-    file: &mut std::fs::File,
-    path: &Path,
-    expected: FileFacts,
-    length: u64,
-    mut prior: impl std::io::Read,
-    mut observed: impl FnMut(u64),
-) -> std::io::Result<bool> {
-    use std::io::{Read, Seek};
-    if FileFacts::of(&file.metadata()?) != expected || length > expected.size {
-        return Err(std::io::Error::other(
-            polylogue_store::StoreError::SourceChanged(
-                "source changed before export prefix comparison",
-            ),
-        ));
-    }
-    file.rewind()?;
-    let matched = (|| {
-        let mut current = [0; 65536];
-        let mut previous = [0; 65536];
-        let mut remaining = length;
-        while remaining > 0 {
-            let want = remaining.min(current.len() as u64) as usize;
-            let n = file.read(&mut current[..want])?;
-            if n == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "source ended during export prefix comparison",
-                ));
-            }
-            observed(n as u64);
-            if prior.read_exact(&mut previous[..n]).is_err() || current[..n] != previous[..n] {
-                return Ok(false);
-            }
-            remaining -= n as u64;
-        }
-        Ok(true)
-    })();
-    if FileFacts::of(&file.metadata()?) != expected
-        || FileFacts::of(&std::fs::metadata(path)?) != expected
-    {
-        return Err(std::io::Error::other(
-            polylogue_store::StoreError::SourceChanged(
-                "source changed during export prefix comparison",
-            ),
-        ));
-    }
-    matched
 }
 
 struct ItemWriter<'a>(&'a mut ExportItems);
@@ -214,72 +162,25 @@ impl Engine {
             plan.origin.name,
             polylogue_store::capture_read::ReadRoute::NativeCapture,
         );
-        let mut file = std::fs::File::open(&plan.path)?;
-        let before = FileFacts::of(&file.metadata()?);
-        if Some(before) != plan.facts
-            || before.size != plan.size
-            || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
-        {
-            return Err(polylogue_store::StoreError::SourceChanged(
-                "source changed before export capture",
-            )
-            .into());
+        let mut file = match &plan.frozen_file {
+            Some(snapshot) => snapshot.open()?,
+            None => std::fs::File::open(&plan.path)?,
+        };
+        if let (None, Some(expected)) = (&plan.frozen_file, plan.facts) {
+            read::check_source(&file, &plan.path, expected)?;
         }
-        if matches!(plan.change, Change::Appended { .. }) {
-            // Capture kept descriptors in a short source snapshot, then
-            // release it before provider IO.
-            let prior = {
-                let reader = self.reads.reader()?;
-                match reader.latest_chain(&plan.input.id)? {
-                    Some(progress)
-                        if progress.stored == plan.stored_upto
-                            && self
-                                .inputs
-                                .get(&plan.path)
-                                .and_then(|state| state.chain)
-                                .is_none_or(|chain| chain == progress.chain) =>
-                    {
-                        reader
-                            .stored_chain(&plan.input.id, progress.chain, plan.stored_upto)
-                            .ok()
-                    }
-                    _ => None,
-                }
-            };
-            let matched = match prior {
-                Some(prior) => prefix_matches(
-                    &mut file,
-                    &plan.path,
-                    before,
-                    plan.stored_upto,
-                    prior.reader(Arc::clone(&self.blobs)),
-                    |n| pass.bytes_read += n,
-                )?,
-                None => false,
-            };
-            if !matched {
-                plan.change = Change::Rewritten;
-                plan.stored_upto = 0;
-                plan.parse_pos = 0;
-                plan.parser_state = None;
-                plan.parser_chain = None;
-            }
-        }
-        let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
-        file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
-        file.read_exact(&mut tail)?;
         file.seek(SeekFrom::Start(plan.stored_upto))?;
         let prepared = self
             .archive
             .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
         let bytes = prepared.len();
-        pass.bytes_read += bytes + tail.len() as u64;
-        if FileFacts::of(&file.metadata()?) != before
-            || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
-            || prepared.len() != plan.size - plan.stored_upto
-        {
+        pass.bytes_read += bytes;
+        if let (None, Some(expected)) = (&plan.frozen_file, plan.facts) {
+            read::check_source(&file, &plan.path, expected)?;
+        }
+        if bytes != plan.size - plan.stored_upto {
             return Err(polylogue_store::StoreError::SourceChanged(
-                "source changed during export capture",
+                "source ended during export capture",
             )
             .into());
         }
@@ -339,6 +240,7 @@ impl Engine {
                 state.chain = known.chain;
             }
         }
+        plan.frozen_file = None;
         plan.source = if matches!(
             (plan.origin.open)(&plan.path),
             Some(polylogue_sources::Parse::Export(_))
@@ -357,7 +259,6 @@ impl Engine {
         plan.stored_upto = plan.size;
         plan.storing_started = true;
         plan.parse_pos = 0;
-        plan.tail = Some(tail);
         Ok(())
     }
 
@@ -448,7 +349,7 @@ impl Engine {
 /// Export items parsed but not yet queued for the writer.
 #[derive(Default)]
 struct ExportBatch {
-    steps: Vec<ParseStep>,
+    steps: Vec<ParsePart>,
     blobs: Vec<polylogue_store::NewBlob>,
     files: Vec<polylogue_store::staging::PreparedBytes>,
     /// Bytes of the export the batch's items were read from.
@@ -487,8 +388,8 @@ impl ExportStep {
         self,
         plan: &Plan,
         blobs: &Arc<polylogue_store::blobs::Blobs>,
-    ) -> Result<(ParseStep, Option<ExportCursor>), EngineError> {
-        let mut step = ParseStep::new(
+    ) -> Result<(ParsePart, Option<ExportCursor>), EngineError> {
+        let mut step = ParsePart::new(
             self.output,
             self.counts,
             0..if self.done { plan.size } else { 0 },

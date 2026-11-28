@@ -188,7 +188,7 @@ record!(Condition {
 record!(Method {inputs:Vec<String>,conditions:Vec<Condition>,steps:Vec<String>,expected:String,stop:Vec<String>});
 record!(SavedQuery {text:String,hash:BlobHash,denominator:Option<String>});
 record!(Page {title:String,layout:Layout,template:Option<String>});
-record!(Slot {section:String,pos:serde_json::Number,mode:SlotMode,heading:Option<String>,query:Option<String>,caption:Option<String>,x:Option<serde_json::Number>,y:Option<serde_json::Number>,w:Option<serde_json::Number>,h:Option<serde_json::Number>});
+record!(Slot {section:String,position:serde_json::Number,mode:SlotMode,heading:Option<String>,query:Option<String>,caption:Option<String>,x:Option<serde_json::Number>,y:Option<serde_json::Number>,w:Option<serde_json::Number>,h:Option<serde_json::Number>});
 record!(Role {
     instructions: String,
     harness: Origin
@@ -199,35 +199,39 @@ record!(ReplyTo {
 });
 record!(SentMessage {text:String,subject:Option<Reference>,reply_to:Option<ReplyTo>});
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldType {
-    String,
-    Integer,
-    Number,
-    Boolean,
-    Enum,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FieldType {
+        String => "string",
+        Integer => "integer",
+        Number => "number",
+        Boolean => "boolean",
+        Enum => "enum",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Layout {
-    Linear,
-    Board,
-    Wiki,
-    Table,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Layout {
+        Linear => "linear",
+        Board => "board",
+        Wiki => "wiki",
+        Table => "table",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SlotMode {
-    Follow,
-    Fixed,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SlotMode {
+        Follow => "follow",
+        Fixed => "fixed",
+    }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Solved,
-    Partial,
-    Abandoned,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Outcome {
+        Solved => "solved",
+        Partial => "partial",
+        Abandoned => "abandoned",
+    }
 }
 
 record!(OutcomeWithPrevious {
@@ -786,8 +790,9 @@ pub fn decode(
             ValueShape::Setting => Value::Setting(Box::new(parse(required()?)?)),
             ValueShape::Seen => {
                 let seen: Structured<Seen> = parse(required()?)?;
-                crate::ChangePosition::parse(&seen.fields.position.at)
-                    .ok_or_else(|| "seen position needs GENERATION:INDEX:ARCHIVE".to_string())?;
+                crate::ChangePosition::parse(&seen.fields.position.at).ok_or_else(|| {
+                    "seen position needs INDEX_INSTANCE:INDEX:ARCHIVE".to_string()
+                })?;
                 if let Some(item) = &seen.fields.position.item {
                     Reference::parse(item).map_err(|error| error.to_string())?;
                 }

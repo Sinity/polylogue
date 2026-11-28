@@ -11,19 +11,20 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
   const reports = [];
   const problems = [];
   const stored = [];
-  const routes = {
-    "POST /v1/import_job/claim": () => ({ json: { job } }),
-    "POST /v1/import_job/j1/report": (body) => {
-      const report = json(body);
+  const operations = {
+    "internal import claim": () => ({ json: { job } }),
+    "internal import report": (body) => {
+      const report = { by: body.by, ...body.report };
       reports.push(report);
       return report.by === job.claimed_by && acceptReport(report) ? { json: { job: { ...job, status: report.kind } } } : { status: 409, json: { error: "not_the_claimant" } };
     },
-    "POST /v1/conversations": (body) => {
-      const { ids } = json(body);
-      return { json: { daemon: "running", conversations: ids.map((id) => ({ id, ...(held[id] || { state: "missing" }) })) } };
+    "spooled": ({ ids }) => ({ json: { spooled: ids.map((id) => held[id]?.spooled === true) } }),
+    "internal conversations": (body) => {
+      const { ids } = body;
+      return { json: { daemon: "running", conversations: ids.map((id) => ({ id, ...(held[id] || { messages: null }) })) } };
     },
-    "POST /v1/captures/files": () => ({ json: { files: [] } }),
-    "POST /v1/captures": (body) => { stored.push(json(body)); return { json: { new: true } }; },
+    "internal capture-files": () => ({ json: { conversation: { provider: "chatgpt", id: "c1" }, files: [] } }),
+    "capture": (body) => { stored.push(json(body)); return { json: { new: true } }; },
   };
   const lists = [];
   const pages = {
@@ -47,7 +48,7 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
       return { status: 400 };
     },
   };
-  const chrome = fakeChrome({ routes, pages, tabs: [{ id: 7, url: "https://chatgpt.com/" }] });
+  const chrome = fakeChrome({ operations, pages, tabs: [{ id: 7, url: "https://chatgpt.com/" }] });
   const host = new Host(chrome.runtime);
   const capturer = new Capturer({ chrome, host, outbox: new Outbox(new IDBFactory()), seen: chrome.storage.session });
   const importJob = new ImportJob({ chrome, host, capturer, instance: async () => job.claimed_by, log: (text) => problems.push(text), sleep: async () => {} });
@@ -55,9 +56,9 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
 }
 
 const HELD = {
-  "old-same": { state: "archived", messages: 3, last_captured_at: Date.parse("2026-01-03T00:00:00Z") },
-  changed: { state: "archived", messages: 3, last_captured_at: Date.parse("2026-01-04T00:00:00Z") },
-  spooled: { state: "spooled" },
+  "old-same": { messages: 3, last_captured_at: Date.parse("2026-01-03T00:00:00Z") },
+  changed: { messages: 3, last_captured_at: Date.parse("2026-01-04T00:00:00Z") },
+  spooled: { spooled: true },
 };
 
 describe("an import job held by Polylogue", () => {
@@ -116,7 +117,7 @@ describe("an import job held by Polylogue", () => {
 it("a_provider_edit_after_spooling_is_captured", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
   let text = "first";
-  const { importJob, capturer, stored, reports } = setup({ job, held: { a: { state: "spooled" }, b: { state: "spooled" } },
+  const { importJob, capturer, stored, reports } = setup({ job, held: { a: { spooled: true }, b: { spooled: true } },
     listing: () => ({ status: 200, info: { conversations: [
       { id: "a", updated_at: "2026-01-02T00:00:00Z" },
       { id: "b", updated_at: "2026-01-02T00:00:00Z" },
@@ -132,6 +133,28 @@ it("a_provider_edit_after_spooling_is_captured", async () => {
   await importJob.step();
   expect(stored.map((c) => [c.session.provider_session_id, c.raw_provider_payload.text])).toEqual([["a", "edited"]]);
   expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 2, captured: 1, unchanged: 1, failed: 0 } });
+});
+
+it("imports a native ChatGPT title change that advances the provider's update time", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  const held = { c1: { messages: 1, last_captured_at: Date.parse("2026-01-02T00:00:00Z") } };
+  let title = "First title";
+  const { importJob, capturer, stored, reports } = setup({ job, held,
+    listing: () => ({ status: 200, info: { conversations: [{ id: "c1", title, updated_at: "2026-01-03T00:00:00Z" }], next: null, done: true, newest_first: true } }),
+    conversation: () => ({ status: 200, info: { id: "c1", url: "https://chatgpt.com/c/c1" },
+      body: new Blob([JSON.stringify({ conversation_id: "c1", title, mapping: { m1: { content: { parts: ["same question"] } } } })]) }),
+  });
+  await capturer.capture(7, "chatgpt", { id: "c1" });
+  title = "New title";
+  await importJob.step();
+  held.c1.last_captured_at = Date.parse("2026-01-04T00:00:00Z");
+  await importJob.step();
+  expect(stored.map((capture) => capture.raw_provider_payload.title)).toEqual(["First title", "New title"]);
+  expect(stored[0].raw_provider_payload.mapping).toEqual(stored[1].raw_provider_payload.mapping);
+  expect(reports.filter((report) => report.kind === "finished").map((report) => report.counts)).toEqual([
+    { listed: 1, captured: 1, unchanged: 0, failed: 0 },
+    { listed: 1, captured: 0, unchanged: 1, failed: 0 },
+  ]);
 });
 
 it("resumes a current conversation whose attachment bytes are still downloading", async () => {
@@ -175,7 +198,7 @@ it("a_resumed_import_counts_each_conversation_once", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: "0:100", listed: 100, captured: 4, unchanged: 96, failed: 0 };
   const conversations = Array.from({ length: 25 }, (_, i) => ({ id: String(i), updated_at: "2026-01-02T00:00:00Z" }));
   const held = Object.fromEntries(conversations.map((c) => [c.id, HELD["old-same"]]));
-  held["15"] = { state: "missing" };
+  held["15"] = { messages: null };
   const listing = () => ({ status: 200, info: { conversations, done: true, next: null } });
   // Reports go out before the list is read, after ten conversations and
   // before conversation 15 is fetched, where the provider refuses the sign-in.
@@ -193,9 +216,9 @@ it("a_resumed_import_counts_each_conversation_once", async () => {
 
 it("does not run an unconfirmed authored job receipt", async () => {
   const receipt = { id: "job-pending", repeat: false, pending: true };
-  const chrome = fakeChrome({ routes: { "POST /v1/import_job/claim": () => ({ json: receipt }) } });
+  const chrome = fakeChrome({ operations: { "internal import claim": () => ({ json: receipt }) } });
   const host = new Host(chrome.runtime);
-  expect(await host.claimImportJob("ext-1")).toEqual(receipt);
+  expect(await host.call("internal import claim", { by: "ext-1" })).toEqual(receipt);
   const importJob = new ImportJob({ chrome, host, capturer: {}, instance: async () => "ext-1" });
   await importJob.step();
   expect(chrome.tabs.list).toHaveLength(0);

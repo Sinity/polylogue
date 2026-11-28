@@ -8,10 +8,10 @@ sessions and their lineage, and lets people and agents search, read, measure
 and annotate that history. Agents are primary users: they get the same powers
 as the operator, through MCP first and the CLI second.
 
-Polylogue runs alone (standalone, on SQLite) or on Sinex (primary mode), where
-its bytes live in Sinex's store and its record is shipped to Sinex. Primary
-mode is the integration the operator runs; standalone is a complete product
-for everyone else and for development.
+Standalone is the runnable mode. In the primary-mode design, Polylogue keeps
+the same local record and index, stores bytes through Sinex, and ships the
+record to Sinex after local commit. See `docs/primary-mode.md` for that
+design and `docs/installing.md` for what the current build accepts.
 
 This file explains how the product is designed and how work is done in this
 repository. Claude Code, Codex and any other agent read it; it holds the
@@ -91,7 +91,7 @@ copy.
 | `crates/render` | text, markdown and HTML over typed replies |
 | `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature); primary mode's shipper and reader of Sinex's log are written here |
+| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature) |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
@@ -136,10 +136,10 @@ its cause, never one to widen until it passes. A slow test has its slowness
 fixed rather than its wait extended.
 
 **Performance is a product goal.** The targets and the overlapped
-pipeline are in `docs/architecture.md`. Measure with paired `cargo xtask bench`
-runs (before and after, same host) and report hardware-independent figures
-(bytes written per input byte, syncs per group, stage utilisation) alongside
-the absolute rates. No test asserts elapsed time. Designs target the data and
+pipeline are in `docs/architecture.md`. Measure with `cargo xtask bench pair`
+(before and after, in turn, over one fixed sample under a memory limit) and
+report hardware-independent figures (CPU-seconds, bytes written per input
+byte, peak memory) before the absolute times. No test asserts elapsed time. Designs target the data and
 the guarantees, not one machine; host tuning belongs in deployment
 configuration.
 
@@ -197,12 +197,14 @@ later and no compatibility path between steps. Small related fixes share one
 pull request, since each pull request costs a full CI run. Master requires
 the `check` status on the pull request's head; branches need not be up to
 date with master, so rebase only to resolve a conflict, taking master's names
-and structure and reapplying your change. Land with `dev/land <n>`: it waits
-for `check` on the head; when master has since changed a package the pull
-request changes, it merges master into the branch and waits again; then it
-squash-merges the tested head. `dev/land --dry-run <n>` says whether a green
-result is still current. Master can still move in the second or two between
-its last comparison and the merge. GitHub auto-merge is not used, since
+and structure and reapplying your change. The owner's part is to finish the
+pull request: not a draft, hosted review findings answered with a fix or a
+refutation and their threads resolved. The landing queue (`dev/land --queue`)
+then tests it in a batch with other ready pull requests on master's tip and
+merges the batch when that test is green; with the queue running an owner
+does not land by hand. A pull request the queue sends back fails only
+combined with master; a new head puts it back. The label `hold`, with the
+reason in a comment, parks a finished one. GitHub auto-merge is not used, since
 armed on a clean, green head it sometimes never fires. Development speed
 comes before a perfectly green master: when two
 separately green changes combine into a failing master, whoever's change
@@ -217,7 +219,9 @@ related. The body ends with a line `Task: <id>` naming the task it lands.
 made from the principles here and the pages in `docs/`, and recorded on the
 Bead and in the PR.
 The operator decides product scope and intent, privacy, money (paid APIs,
-purchased vectors) and anything published outward. Deploying, activating,
+purchased vectors) and publication to a new audience. A request to change
+this repository includes pushing the branch, opening the pull request and
+landing it through the protected queue described above. Deploying, activating,
 restarting, rebuilding an archive and moving to a new release are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
 deleted. No stored format or archive is deployed in a sense that needs

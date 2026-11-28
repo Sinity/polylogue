@@ -103,27 +103,16 @@ pub struct StepCount {
     pub unit: CountUnit,
 }
 
-/// What a step counts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CountUnit {
-    Bytes,
-    Files,
-    Records,
-    Indexes,
-    Sessions,
-}
-
-impl CountUnit {
-    /// The unit as a plural word: `records`.
-    pub fn word(self) -> &'static str {
-        match self {
-            Self::Bytes => "bytes",
-            Self::Files => "files",
-            Self::Records => "records",
-            Self::Indexes => "indexes",
-            Self::Sessions => "sessions",
-        }
+polylogue_model::stored_names! {
+    word, from_name;
+    /// The unit as a plural word, used in status text and JSON.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CountUnit {
+        Bytes => "bytes",
+        Files => "files",
+        Records => "records",
+        Indexes => "indexes",
+        Sessions => "sessions",
     }
 }
 

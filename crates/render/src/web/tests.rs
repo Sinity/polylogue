@@ -1,12 +1,12 @@
 use super::*;
-use command_surface::{Deadline, JsonSchema, OperationDeclarations, OperationSpec, ToolFamily};
+use command_surface::{FailureKind, JsonSchema, OperationDeclarations, OperationSpec, ToolFamily};
 use polylogue_model::{ChangePosition, Timestamp, read::*};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct Arguments {
-    target: String,
+    selection: String,
     view: Option<View>,
 }
 fn read_table() -> Arc<OperationDeclarations> {
@@ -37,10 +37,11 @@ fn page() -> ReadPage {
     ReadPage {
         format: Format::Html,
         snapshot: ReadPageSnapshot {
+            incomplete: Vec::new(),
             query: format!("query:{}", "a".repeat(64)),
             ran_at: Timestamp::from_unix_ms(0).unwrap(),
-            read_at: ChangePosition {
-                generation: "synthetic".into(),
+            read_position: ChangePosition {
+                index_instance: "synthetic".into(),
                 index: 4,
                 archive: 7,
             },
@@ -49,7 +50,6 @@ fn page() -> ReadPage {
                 sinex: IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(true), None),
             },
         },
-        records: vec![],
         document: ReadDocument {
             header: ReadHeader {
                 target: "session:test:session".into(),
@@ -60,6 +60,8 @@ fn page() -> ReadPage {
                 },
                 figures: vec![],
                 zone: None,
+                snapshot: None,
+                options: None,
             },
             items: vec![ReadItem {
                 source: Source::record("block:test:session:message#0"),
@@ -76,10 +78,10 @@ fn typed_page_shares_the_frame_and_shows_freshness() {
     let table = read_table();
     let request = RunnableRequest::new(
         "read",
-        json!({"target":"session:test:session","view":"transcript","cursor":"old"}),
+        json!({"selection":"session:test:session","view":"transcript","cursor":"old"}),
         "synthetic",
     );
-    let output = read(&page(), &table, &request).unwrap();
+    let output = read(&page(), &table, &request, |_| Ok("/rows".into())).unwrap();
     assert!(output.contains("/assets/shell.js"));
     assert!(output.contains("/assets/tokens.css"));
     assert!(output.contains("&lt;script&gt;"));
@@ -94,13 +96,19 @@ fn typed_page_shares_the_frame_and_shows_freshness() {
 fn unavailable_sinex_note_carries_its_own_state() {
     let request = RunnableRequest::new(
         "read",
-        json!({"target":"session:test:session","view":"transcript"}),
+        json!({"selection":"session:test:session","view":"transcript"}),
         "synthetic",
     );
     let mut unavailable = page();
     unavailable.snapshot.freshness.sinex =
         IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(false), None);
-    let output = read(&unavailable, &read_table(), &request).unwrap();
+    let output = read(
+        &unavailable,
+        &read_table(),
+        &request,
+        |_| Ok("/rows".into()),
+    )
+    .unwrap();
     assert!(output.contains("Sinex is unavailable"));
     assert!(!output.contains("data-state=\"behind\""));
     assert_eq!(output.matches("data-state=\"unavailable\"").count(), 2);
@@ -111,7 +119,7 @@ fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
         cursor: Some("sealed +λ&?".into()),
         ..RunnableRequest::new(
             "read",
-            json!({"target":"session:test:session","alternate":["en","de"],"flag":false}),
+            json!({"selection":"session:test:session","alternate":["en","de"],"flag":false}),
             "synthetic",
         )
     };
@@ -129,7 +137,7 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
             cursor: Some("sealed".into()),
             ..RunnableRequest::new(
                 "read",
-                json!({"target":"session:test:session"}),
+                json!({"selection":"session:test:session"}),
                 "synthetic",
             )
         },
@@ -137,7 +145,7 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
     let output = navigation(&page, &read_table()).unwrap().into_string();
     assert_eq!(
         output,
-        "<nav class=\"paging\" aria-label=\"Content pages\"><a href=\"/api/v1/read?operation=read&amp;arguments=%7B%22target%22%3A%22session%3Atest%3Asession%22%7D&amp;request_id=synthetic&amp;cursor=sealed\" rel=\"next\">Next</a></nav>"
+        "<nav class=\"paging\" aria-label=\"Content pages\"><a href=\"/api/v1/read?operation=read&amp;arguments=%7B%22selection%22%3A%22session%3Atest%3Asession%22%7D&amp;request_id=synthetic&amp;cursor=sealed\" rel=\"next\">Next</a></nav>"
     );
 }
 
@@ -244,41 +252,14 @@ fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 #[test]
-fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
-    let request = RunnableRequest {
-        deadline: Deadline::Milliseconds(1234),
-        cursor: Some("request-old-cursor".into()),
-        ..RunnableRequest::new(
-            "read",
-            json!({"target":"session:test:session","view":"transcript","show":["tools:line","harness:line","thinking:full","inherited","branches"],"cursor":"sealed-old"}),
-            "synthetic",
-        )
-    };
-    let fields = url_parameters(&view_url(&read_table(), &request, View::Dialogue).unwrap());
-    let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
-    assert_eq!(args["view"], "dialogue");
-    assert_eq!(args["show"], json!(["inherited", "branches"]));
-    assert!(args.get("cursor").is_none());
-    assert_eq!(fields["request_id"], "synthetic");
-    assert!(!fields.contains_key("cursor"));
-    assert_eq!(fields["operation"], "read");
-    let deadline: Value = serde_json::from_str(&fields["deadline"]).unwrap();
-    assert_eq!(deadline, json!(1234));
-    let fields = url_parameters(&view_url(&read_table(), &request, View::Overview).unwrap());
-    let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
-    assert_eq!(args["show"], json!([]));
-    assert_eq!(args["target"], "session:test:session");
-}
-
-#[test]
 fn copied_current_invocation_preserves_controls_as_valid_json_escapes() {
     let table = read_table();
     let request = RunnableRequest::new(
         "read",
-        json!({"target":"messages where text:'\u{9b}\u{202e}'","view":"transcript"}),
+        json!({"selection":"messages where text:'\u{9b}\u{202e}'","view":"transcript"}),
         "synthetic",
     );
-    let output = read(&page(), &table, &request).unwrap();
+    let output = read(&page(), &table, &request, |_| Ok("/rows".into())).unwrap();
     assert!(!output.contains('\u{9b}'));
     assert!(!output.contains('\u{202e}'));
     assert!(output.contains("\\u009b"));

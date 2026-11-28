@@ -124,12 +124,10 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
                 undo.extend(lines);
             }
             StepOutcome::Failed { error } => {
-                let _ = writeln!(
-                    out,
-                    "{} failed: {}",
-                    step.verb,
-                    polylogue_render::terminal::escape(&error.message)
-                );
+                out.push_str(&failure(
+                    &command_surface::Answer::error(error.clone()),
+                    style == TextStyle::Ansi,
+                ));
             }
             StepOutcome::NotRun => {
                 let _ = writeln!(out, "{} not run", step.verb);
@@ -137,11 +135,10 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
             StepOutcome::WouldDo { would, refusal } => {
                 let _ = writeln!(out, "{}", polylogue_render::terminal::escape(would));
                 if let Some(refusal) = refusal {
-                    let _ = writeln!(
-                        out,
-                        "  refused: {}",
-                        polylogue_render::terminal::escape(&refusal.message)
-                    );
+                    out.push_str(&failure(
+                        &command_surface::Answer::error(refusal.clone()),
+                        style == TextStyle::Ansi,
+                    ));
                 }
             }
         }
@@ -214,7 +211,7 @@ pub fn saved(report: &protocol::line::SaveReport, _style: TextStyle) -> String {
     let _ = write!(
         text,
         "kept    {} ({} rows, {})",
-        report.kept.result, report.kept.rows, report.kept.at
+        report.saved_rows.result, report.saved_rows.rows, report.saved_rows.at
     );
     if let Some(saved) = &report.saved {
         let _ = write!(text, ", now result:{}", saved.name);
@@ -255,11 +252,11 @@ fn delivered(out: &mut String, act: &str, delivered: &protocol::acts::Delivered)
     if let Some(role) = &delivered.started {
         let _ = write!(out, ", a new instance of the role {role}");
     }
-    for part in [&delivered.reason, &delivered.detail, &delivered.note]
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(out, "; {part}");
+    if let Some(reason) = &delivered.reason {
+        let _ = write!(out, "; {reason}");
+    }
+    if let Some(note) = &delivered.note {
+        let _ = write!(out, "; {note}");
     }
     out.push('\n');
 }
@@ -284,7 +281,16 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         match reached {
             Reached::Session(sent) => {
                 for one in &sent.deliveries {
-                    delivered(&mut out, "sent to", one);
+                    use protocol::acts::ActOutcome::*;
+                    let action = match one.outcome {
+                        Delivered => "sent to",
+                        Started => "started a run for",
+                        Prepared | Queued => "held message for",
+                        NotSent => "could not send to",
+                        Unknown => "could not confirm delivery to",
+                        Cancelled => "cancelled message to",
+                    };
+                    delivered(&mut out, action, one);
                 }
                 if let Some(message) = &sent.message {
                     let _ = writeln!(out, "message annotation:{message}");
@@ -295,7 +301,15 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         }
     }
     for skipped in &report.skipped {
-        let _ = writeln!(out, "skipped {}: {}", skipped.session, skipped.line);
+        let reason = match skipped.reason {
+            protocol::acts::SkipReason::SessionMissing => "session missing",
+            protocol::acts::SkipReason::SessionNotRunning { state } => state.as_str(),
+        };
+        let _ = writeln!(
+            out,
+            "skipped {} ({reason}): {}",
+            skipped.session, skipped.line
+        );
     }
     polylogue_render::terminal::escape(&out)
 }
@@ -314,6 +328,17 @@ pub fn act(acted: &protocol::acts::Acted, _style: TextStyle) -> String {
                 name_of(&answered.outcome),
                 name_of(&answered.channel)
             );
+            if let Some(cancellation) = &answered.cancellation {
+                let _ = write!(
+                    out,
+                    "; no matching permission option (offered: {})",
+                    if cancellation.options.is_empty() {
+                        "none".into()
+                    } else {
+                        cancellation.options.join(", ")
+                    }
+                );
+            }
             if let Some(note) = &answered.note {
                 let _ = write!(out, "; {note}");
             }
@@ -470,10 +495,32 @@ fn plan(found: &crate::resume::Plan) -> String {
     out
 }
 
-/// `import`: the files report as JSON; a provider import as its job's line.
+/// `import`: stored paths or the provider job.
 pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
     match answer {
-        protocol::import::Answer::Files(report) => json(report, style),
+        protocol::import::Answer::Files(report) => {
+            if report.python_import.is_some()
+                || (report.imported.is_empty() && report.already_stored.is_empty())
+            {
+                return json(report, style);
+            }
+            let mut out = String::new();
+            for (paths, label) in [
+                (
+                    &report.imported,
+                    match report.readable {
+                        polylogue_engine::Readable::Now => "stored",
+                        polylogue_engine::Readable::AfterBuild { .. } => "stored, not yet readable",
+                    },
+                ),
+                (&report.already_stored, "already stored"),
+            ] {
+                for path in paths {
+                    let _ = writeln!(out, "{label}: {}", path.display());
+                }
+            }
+            polylogue_render::terminal::escape(&out)
+        }
         protocol::import::Answer::Provider(job) => import_job_answer(job, style),
     }
 }
@@ -512,6 +559,43 @@ fn import_jobs_text(jobs: &[crate::browser::import_job::JobSummary]) -> String {
         }
     }
     out
+}
+
+/// A failure with every correction, next line and note carried by its reply.
+pub(crate) fn failure(answer: &command_surface::Answer<Value>, color: bool) -> String {
+    let mut text = String::new();
+    if let Some(failure) = answer.failure() {
+        let code = failure.code.as_deref().unwrap_or(failure.kind.name());
+        text.push_str(&diagnostic(
+            code,
+            &failure.message,
+            crate::protocol::suggestion_text(failure).as_deref(),
+            color,
+        ));
+        if let Some(hint) = &failure.hint {
+            text.push_str(&diagnostic("hint", hint, None, color));
+        }
+        for candidate in failure.candidates() {
+            let _ = writeln!(text, "  {}", polylogue_render::terminal::escape(candidate));
+        }
+    }
+    for next in &answer.envelope.next {
+        let line = crate::commands::declarations()
+            .cli_command(&next.request)
+            .unwrap_or_else(|_| {
+                format!(
+                    "polylogue --request {}",
+                    polylogue_render::shell_quote(
+                        &serde_json::to_string(&next.request).expect("request serializes")
+                    )
+                )
+            });
+        text.push_str(&diagnostic(&next.label, &line, None, color));
+    }
+    for note in crate::protocol::notes(answer) {
+        text.push_str(&diagnostic("note", note, None, color));
+    }
+    text
 }
 
 /// One escaped diagnostic for local and remote CLI failures. JSON uses its own encoder.

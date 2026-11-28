@@ -6,7 +6,10 @@
 //! plain style has the same layout without color, with ASCII bars.
 use crate::protocol::status::{Answer, Mode, Notices, Running};
 use command_surface::TextStyle;
-use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, IndexFreshness};
+use polylogue_model::chain::ChainStatusName;
+use polylogue_model::freshness::{
+    CompletenessDimension, CompletenessReason, CountedReason, IndexFreshness,
+};
 use polylogue_render::short_duration;
 use polylogue_render::terminal::escape as clean;
 use polylogue_store::archive::build_progress::CountUnit;
@@ -53,7 +56,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
         out.push('\n');
     }
-    let sections: [(&str, Vec<String>); 14] = [
+    let sections = [
         ("ARCHIVE", archive(status, view)),
         (
             "READING",
@@ -77,10 +80,49 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("NOTICES", notices(status, view)),
         ("RULES", rules(status, view)),
         ("PENDING", pending(status, view)),
+        (
+            "CONTEXT",
+            status
+                .session_starts_without_context
+                .as_ref()
+                .map(|missing| {
+                    missing
+                        .causes
+                        .iter()
+                        .map(|(cause, total)| {
+                            format!(
+                                "{total} session starts without a brief: {}; since {}",
+                                cause.replace('_', " "),
+                                missing.since.map_or("unknown".into(), |at| at.to_string())
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
         ("SOURCES", sources(status, view)),
         ("UNUSED", unused(status)),
         ("THREADS", threads(status, view)),
         ("RECENT", recent(status, view)),
+        (
+            "SLOW SQL",
+            status
+                .slow_statements
+                .iter()
+                .map(|statement| {
+                    format!(
+                        "{} · {} times · {:.1}s latest · {:.1}s longest · {} · {} · {}",
+                        view.time(statement.at.unix_ms()),
+                        statement.count,
+                        statement.seconds,
+                        statement.longest_seconds,
+                        statement.connection,
+                        statement.operation.as_deref().unwrap_or(&statement.thread),
+                        clean(&statement.sql)
+                    )
+                })
+                .collect(),
+        ),
         (
             "NOTES",
             notes.iter().map(|note| view.warning(note)).collect(),
@@ -96,9 +138,8 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                 out.push('\n');
                 continue;
             }
-            let label = if n == 0 { label } else { "" };
-            let padded = format!("{label:<LABEL$}");
-            let value = if label == "RECENT" && view.whole_log {
+            let padded = format!("{:<LABEL$}", if n == 0 { label } else { "" });
+            let value = if (label == "RECENT" || label == "SLOW SQL") && view.whole_log {
                 line.clone()
             } else {
                 view.cut_to(line, view.width.saturating_sub(LABEL))
@@ -114,10 +155,10 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
 /// The reasons a reply is degraded and its notes, less the one the
 /// `INDEX` section says in full while an index is built.
 fn notes<'a>(status: &Answer, problems: &'a [String]) -> Vec<&'a String> {
-    let index_building = CompletenessReason::IndexBuilding.text();
+    let index_building = CountedReason::new(CompletenessReason::IndexBuilding).text();
     problems
         .iter()
-        .filter(|note| !(status.index_build.is_some() && note.as_str() == index_building))
+        .filter(|note| !(status.index_build.is_some() && **note == index_building))
         .collect()
 }
 
@@ -224,9 +265,20 @@ fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
 fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(store) = &status.store {
+        // Logical sessions lead; the physical sessions (subagents, forks,
+        // continuations and resumes on their own, as `physical:true` lists
+        // them) are named beside them when they add some.
+        let sessions = if store.sessions_physical > store.sessions {
+            format!(
+                "{} sessions ({} physical)",
+                count(store.sessions),
+                count(store.sessions_physical)
+            )
+        } else {
+            format!("{} sessions", count(store.sessions))
+        };
         lines.push(format!(
-            "{} sessions   {} messages   {} tool calls   {} documents",
-            count(store.sessions),
+            "{sessions}   {} messages   {} tool calls   {} documents",
             count(store.messages),
             count(store.tool_calls),
             count(store.documents)
@@ -269,15 +321,28 @@ fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-/// The parse states as the view words them, in the order it lists them.
-const PARSE_STATES: [(&str, &str); 6] = [
-    ("parsing", "parsing"),
-    ("waiting", "waiting to grow"),
-    ("partial", "partly read"),
-    ("refused", "refused"),
-    ("failed", "failed"),
-    ("no_parser_yet", "without a parser"),
+/// The chain states other than `done`, in the order the view lists them.
+const PARSE_STATES: [ChainStatusName; 6] = [
+    ChainStatusName::Parsing,
+    ChainStatusName::Waiting,
+    ChainStatusName::Refused,
+    ChainStatusName::Failed,
+    ChainStatusName::NoParser,
+    ChainStatusName::Repeated,
 ];
+
+/// How the view words a count of chains in `state`.
+fn parse_state_words(state: ChainStatusName) -> &'static str {
+    match state {
+        ChainStatusName::Parsing => "parsing",
+        ChainStatusName::Waiting => "waiting to grow",
+        ChainStatusName::Refused => "refused",
+        ChainStatusName::Failed => "failed",
+        ChainStatusName::NoParser => "without a parser",
+        ChainStatusName::Repeated => "repeated",
+        ChainStatusName::Done => "read",
+    }
+}
 
 fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     let Some(store) = &status.store else {
@@ -296,11 +361,11 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
         let mut others: Vec<String> = PARSE_STATES
             .iter()
-            .filter_map(|(state, words)| {
+            .filter_map(|state| {
                 store
                     .parse_states
-                    .get(*state)
-                    .map(|n| format!("{} {words}", count(*n)))
+                    .get(state.as_str())
+                    .map(|n| format!("{} {}", count(*n), parse_state_words(*state)))
             })
             .collect();
         others.extend(
@@ -308,7 +373,7 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
                 .parse_states
                 .iter()
                 .filter(|(state, _)| {
-                    *state != "done" && !PARSE_STATES.iter().any(|(known, _)| known == state)
+                    *state != "done" && !PARSE_STATES.iter().any(|known| known.as_str() == *state)
                 })
                 .map(|(state, n)| format!("{} {}", count(*n), clean(state))),
         );
@@ -324,10 +389,10 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ("search", &local.search),
         ("Sinex stream", &local.confirmed_stream),
     ] {
-        let reasons = |reasons: &[polylogue_model::freshness::CompletenessReason]| {
+        let reasons = |reasons: &[CountedReason]| {
             reasons
                 .iter()
-                .map(|reason| reason.text())
+                .map(CountedReason::text)
                 .collect::<Vec<_>>()
                 .join(", ")
         };
@@ -350,6 +415,15 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
     }
     lines.push(words.join(" · "));
+    // A failed or refused parse is a standing problem, never lag.
+    if !local.failed_parses.is_empty() {
+        let failed: Vec<String> = local
+            .failed_parses
+            .iter()
+            .map(CountedReason::text)
+            .collect();
+        lines.push(failed.join(" · "));
+    }
     lines
 }
 
@@ -625,6 +699,11 @@ fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
     }
     let mut lines = vec![parts.join(" · "), work.join(" · ")];
+    lines.extend(
+        pass.phases
+            .iter()
+            .map(|(phase, seconds)| format!("{} s {}", decimal(*seconds), phase)),
+    );
     if let Some(first) = pass.errors.first() {
         let more = match pass.errors.len() {
             1 => String::new(),
@@ -783,6 +862,18 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
     if !parts.is_empty() {
         lines.push(format!("{} awaiting a write", parts.join(" · ")));
     }
+    for (failures, scope) in [
+        (pending.delivery_write_failures, "delivery writes"),
+        (pending.mailbox_failures, "mailbox operations"),
+        (pending.host_reattachment_failures, "host reattachments"),
+    ] {
+        if failures > 0 {
+            lines.push(view.error(&format!(
+                "{} failed {scope} since daemon start",
+                count(failures)
+            )));
+        }
+    }
     if let Some(error) = &pending.last_error {
         lines.push(view.error(error));
     }
@@ -795,7 +886,6 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
 /// unrecognized.
 fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
     use polylogue_model::capture::{Accessibility, Classification};
-    use std::os::unix::ffi::OsStrExt as _;
     let Some(store) = &status.store else {
         return Vec::new();
     };
@@ -809,15 +899,14 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
             walked
         }));
         for root in &coverage.roots {
-            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&root.path_bytes));
+            let path = std::path::Path::new(&root.path);
             let mut names: Vec<&str> = Vec::new();
-            let mut collected = 0;
-            let mut unrecognized = 0;
+            let collected = root.collected;
+            let unrecognized = root.unrecognized;
             let mut ignored = std::collections::BTreeMap::<&str, u64>::new();
             for entry in &root.entries {
                 match entry.class {
                     Classification::Collected => {
-                        collected += entry.files;
                         if let Some(name) = collected_by(path, &entry.pattern)
                             && !names.contains(&name)
                         {
@@ -829,10 +918,10 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                             .entry(entry.reason.as_deref().unwrap_or("ignored"))
                             .or_default() += entry.files;
                     }
-                    Classification::Unrecognized => unrecognized += entry.files,
+                    Classification::Unrecognized => {}
                 }
             }
-            let shown = clean(&path.display().to_string());
+            let shown = clean(&root.path);
             let mut parts = vec![if names.is_empty() {
                 shown
             } else {
@@ -844,22 +933,24 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                 Accessibility::Unavailable => view.warning_text("unavailable"),
                 Accessibility::Incomplete => view.warning_text(&format!(
                     "incomplete, {} {} unreadable",
-                    count(root.unavailable_paths.len() as u64),
-                    if root.unavailable_paths.len() == 1 {
+                    count(root.unreadable as u64),
+                    if root.unreadable == 1 {
                         "path"
                     } else {
                         "paths"
                     }
                 )),
             });
+            if let Some(error) = &root.error {
+                parts.push(view.error(error));
+            }
             if collected > 0 {
                 parts.push(format!("{} collected", count(collected)));
             }
             let mut reasons: Vec<(&str, u64)> = ignored.into_iter().collect();
             reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            if !reasons.is_empty() {
-                let total: u64 = reasons.iter().map(|(_, files)| files).sum();
-                parts.push(format!("{} ignored", count(total)));
+            if root.ignored > 0 {
+                parts.push(format!("{} ignored", count(root.ignored)));
             }
             if unrecognized > 0 {
                 parts.push(view.warning_text(&format!("{} unrecognized", count(unrecognized))));
@@ -911,7 +1002,14 @@ fn unused(status: &Answer) -> Vec<String> {
         return Vec::new();
     };
     let Some((field, n)) = store.unused.first() else {
-        return Vec::new();
+        return if store.unused_fields == 0 {
+            Vec::new()
+        } else {
+            vec![format!(
+                "{} unread source fields · `polylogue status --details --json` lists the most frequent",
+                count(store.unused_fields)
+            )]
+        };
     };
     let mut line = format!("{} ×{} not yet read", clean(field), count(*n));
     // `unused` is cut; `unused_fields` counts them all.
@@ -991,7 +1089,7 @@ fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
     let shown: Vec<_> = status
         .recent_log
         .iter()
-        .filter(|record| !building || record.priority != Priority::Info)
+        .filter(|record| view.whole_log || !building || record.priority != Priority::Info)
         .collect();
     let skipped = if view.whole_log {
         0

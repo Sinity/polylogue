@@ -15,7 +15,10 @@ pub(super) struct Mcp {
 
 impl Mcp {
     pub(super) fn start(env: &crate::Fixture) -> Self {
-        let mut command = env.command();
+        Self::start_command(env.command())
+    }
+
+    fn start_command(mut command: Command) -> Self {
         command
             .arg("mcp")
             .stdin(Stdio::piped())
@@ -153,6 +156,85 @@ fn answer(
     text: &str,
 ) -> Result<Value, command_surface::Failure> {
     value(surface_answer(env, archive, mcp, surface, text))
+}
+
+#[test]
+fn running_managed_mcp_reads_each_daemon_after_an_archive_cutover() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = |name| {
+        let root = directory.path().join(name);
+        crate::Fixture::new(
+            &root.join("archive"),
+            &root.join("home"),
+            &root.join("config"),
+        )
+    };
+    let first = fixture("first");
+    let second = fixture("second");
+    let copy = fixture("copy");
+    let runtime = directory.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let endpoint = runtime.join("polylogue-mcp.sock");
+    let managed = |fixture: &crate::Fixture| {
+        let mut command = fixture.native_command();
+        command.env("POLYLOGUE_MCP_SOCKET", &endpoint);
+        command
+    };
+    let explicit = |fixture: &crate::Fixture| {
+        let mut command = managed(fixture);
+        command.arg("--archive").arg(copy.archive());
+        command
+    };
+    let status = |mcp: &mut Mcp| {
+        let reply = mcp.request(
+            "tools/call",
+            json!({"name":"polylogue_read", "arguments":{
+                "operation":"status", "arguments":{}, "request_id":uuid::Uuid::now_v7().to_string()
+            }}),
+        );
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        value(answer)
+    };
+
+    let first_daemon = start_daemon_with(&first, managed(&first));
+    // The explicitly selected copy cannot replace the installed endpoint.
+    let _copy_daemon = start_daemon_with(&copy, explicit(&copy));
+    let mut live_mcp = Mcp::start_command(managed(&first));
+    let mut copy_mcp = Mcp::start_command(explicit(&first));
+    assert_eq!(
+        std::fs::read_link(&endpoint).unwrap(),
+        first.archive().join("daemon.sock")
+    );
+    assert_eq!(
+        status(&mut live_mcp).unwrap()["archive"],
+        first.archive().to_str().unwrap()
+    );
+    assert_eq!(
+        status(&mut copy_mcp).unwrap()["archive"],
+        copy.archive().to_str().unwrap()
+    );
+
+    drop(first_daemon);
+    assert_eq!(
+        status(&mut live_mcp).unwrap_err().code.as_deref(),
+        Some("not_running")
+    );
+    let _second_daemon = start_daemon_with(&second, managed(&second));
+    assert_eq!(
+        std::fs::read_link(&endpoint).unwrap(),
+        second.archive().join("daemon.sock")
+    );
+    assert_eq!(
+        status(&mut live_mcp).unwrap()["archive"],
+        second.archive().to_str().unwrap()
+    );
+    assert_eq!(
+        status(&mut copy_mcp).unwrap()["archive"],
+        copy.archive().to_str().unwrap()
+    );
 }
 
 #[test]
@@ -371,7 +453,7 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
     let mut mcp = Mcp::start(&env);
-    let text = "similar:\"walrus migration\"";
+    let text = "walrus similar:\"walrus migration\"";
     let mut answers = Vec::new();
     for surface in ["cli", "socket", "mcp"] {
         let answer = surface_answer(&env, &archive, &mut mcp, surface, text);
@@ -391,7 +473,7 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
         assert_eq!(listing(value.clone())["count"], 1, "{surface}: {value}");
         assert!(
             notes.iter().any(|note| note
-                == "incomplete: semantic search is not enabled; rows are ordered by time and unranked"),
+                == "semantic search is off; enable it with `polylogue set embed.provider local`; rows are ranked by text relevance alone"),
             "{surface}: {notes:?}"
         );
         answers.push(notes.clone());
@@ -399,5 +481,192 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
     assert!(
         answers.windows(2).all(|pair| pair[0] == pair[1]),
         "{answers:?}"
+    );
+}
+
+#[test]
+fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
+    let morrow = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let env = crate::Fixture::new(
+        &morrow.root,
+        &morrow.home,
+        &morrow.dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    let answer = |selection: &str, read: bool| {
+        let mut arguments = vec!["--json", selection];
+        if read {
+            arguments.push("read");
+        }
+        let output = cli(&env, &arguments);
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_slice(&output.stdout).unwrap();
+        let failed_step = answer
+            .value()
+            .and_then(|value| value["reply"]["steps"].as_array())
+            .and_then(|steps| steps.first())
+            .filter(|step| step["outcome"]["status"] == "failed")
+            .map(|step| {
+                serde_json::from_value::<command_surface::Failure>(step["outcome"]["error"].clone())
+                    .unwrap()
+            });
+        let expected_exit = failed_step
+            .as_ref()
+            .map_or(answer.exit_code(), |error| error.kind.exit_code());
+        assert_eq!(
+            output.status.code(),
+            Some(i32::from(expected_exit)),
+            "{output:?}"
+        );
+        answer
+    };
+    for read in [false, true] {
+        let response = answer("similar:\"ambiguous dates\"", read);
+        if !read {
+            assert_eq!(response.exit_code(), 3, "{response:?}");
+        }
+        let error = if read {
+            read_failure(response)
+        } else {
+            let command_surface::Outcome::Error(error) = response.outcome else {
+                panic!("{response:?}")
+            };
+            error
+        };
+        assert_eq!(error.kind.name(), "refused");
+        assert_eq!(error.kind.exit_code(), 3);
+        assert_eq!(error.code.as_deref(), Some("embeddings_off"));
+        assert_eq!(
+            error.message,
+            "semantic search is off; enable it with `polylogue set embed.provider local`"
+        );
+        assert_eq!(error.reason().unwrap().name, "embeddings_off");
+    }
+    let plain = answer("sessions where chrono", false);
+    assert_eq!(listing(plain.value().unwrap().clone())["count"], 4);
+    let hybrid = answer("sessions where chrono similar:\"ambiguous dates\"", false);
+    assert_eq!(hybrid.exit_code(), 5, "{hybrid:?}");
+    assert_eq!(
+        listing(hybrid.value().unwrap().clone())["rows"],
+        listing(plain.value().unwrap().clone())["rows"]
+    );
+    let expected = "semantic search is off; enable it with `polylogue set embed.provider local`; rows are ranked by text relevance alone";
+    assert!(
+        matches!(&hybrid.outcome, command_surface::Outcome::Degraded { missing, .. } if missing.iter().any(|note| note == expected)),
+        "{hybrid:?}"
+    );
+    let hybrid = answer("sessions where chrono similar:\"ambiguous dates\"", true);
+    assert_eq!(hybrid.exit_code(), 5, "{hybrid:?}");
+    assert!(
+        matches!(&hybrid.outcome, command_surface::Outcome::Degraded { missing, .. } if missing.iter().any(|note| note == expected)),
+        "{hybrid:?}"
+    );
+    let limited = answer(
+        "sessions where chrono similar:\"ambiguous dates\" | limit 1 | count",
+        false,
+    );
+    assert_eq!(limited.exit_code(), 5, "{limited:?}");
+    assert_eq!(
+        listing(limited.value().unwrap().clone())["rows"][0]["count"],
+        1
+    );
+    let empty = answer("zzzznothing", true);
+    assert!(
+        matches!(empty.outcome, command_surface::Outcome::Empty(_)),
+        "{empty:?}"
+    );
+    assert_eq!(empty.exit_code(), 1);
+    assert_eq!(empty.envelope.notes, ["no rows matched"]);
+    let text = cli(&env, &["zzzznothing", "read"]);
+    assert_eq!(text.status.code(), Some(1), "{text:?}");
+    assert_eq!(
+        String::from_utf8(text.stderr).unwrap().trim(),
+        "polylogue: note: no rows matched"
+    );
+    let near = answer("near:\"x\"", false);
+    assert_eq!(near.exit_code(), 2, "{near:?}");
+    let command_surface::Outcome::Error(error) = near.outcome else {
+        panic!("{near:?}")
+    };
+    assert_eq!(error.kind.name(), "unknown_field");
+    assert_eq!(error.code.as_deref(), Some("unknown_field"));
+    assert_eq!(
+        error.hint.as_deref(),
+        Some("use similar: for semantic ranking")
+    );
+    assert_eq!(
+        serde_json::to_value(error.suggestion()).unwrap()["query"],
+        "similar:\"x\""
+    );
+    let text_field = answer("messages where text:chrono", false);
+    assert_eq!(text_field.exit_code(), 2, "{text_field:?}");
+    let command_surface::Outcome::Error(error) = text_field.outcome else {
+        panic!("{text_field:?}")
+    };
+    assert_eq!(error.kind.name(), "unknown_field");
+    assert_eq!(error.code.as_deref(), Some("unknown_field"));
+    assert_eq!(
+        error.hint.as_deref(),
+        Some("use quoted words for full-text search, or text ~ \"fragment\" for a substring")
+    );
+    let measure = answer("sessions | measure nosuch", false);
+    assert_eq!(measure.exit_code(), 2, "{measure:?}");
+    let command_surface::Outcome::Error(error) = measure.outcome else {
+        panic!("{measure:?}")
+    };
+    assert_eq!(error.kind.name(), "bad_value");
+    assert_eq!(error.code.as_deref(), Some("bad_value"));
+    assert_eq!(
+        error.message,
+        "unknown measurement `nosuch`; choose one of compare, daily, drift, facets, failing, outcomes, outlook, process, quota, responses, rhythm, sessions, shell-stages, survival, survival-turns, time, unanswered, usage"
+    );
+    let origin = answer("origin:nosuch", false);
+    assert_eq!(origin.exit_code(), 2, "{origin:?}");
+    let command_surface::Outcome::Error(error) = origin.outcome else {
+        panic!("{origin:?}")
+    };
+    assert_eq!(error.kind.name(), "bad_value");
+    assert_eq!(error.code.as_deref(), Some("bad_value"));
+    let origins = "codex, aider, grok, grok-cli, hermes, llm, pi, ai-studio, chatgpt, claude-ai, hook-spool, openai-chat, openrouter, claude-code, codex-cloud, gemini-app, gemini-cli, antigravity, export-file, otel-genai, tool-context, browser-capture, claude-design, tool-database, codex-database, claude-code-side, codex-compressed, codex-local-file, polylogue-bundle, claude-code-history, antigravity-exports, antigravity-database, polylogue-repo-lookup";
+    assert_eq!(error.candidates(), origins.split(", ").collect::<Vec<_>>());
+    assert_eq!(
+        error.message.lines().next().unwrap(),
+        format!("`origin` on `sessions` is one of: {origins}")
+    );
+    let set = |key: &str, value: &str| {
+        let output = cli(&env, &["set", key, value]);
+        assert!(output.status.success(), "{output:?}");
+    };
+    set("embed.provider", "local");
+    let check_missing = |sentence: &str| {
+        for read in [false, true] {
+            let response = answer("similar:\"ambiguous dates\"", read);
+            assert_eq!(response.exit_code(), 5, "{response:?}");
+            let command_surface::Outcome::Degraded { missing, .. } = response.outcome else {
+                panic!("{response:?}")
+            };
+            assert_eq!(
+                missing
+                    .iter()
+                    .filter(|note| note.as_str() == sentence)
+                    .count(),
+                1,
+                "{missing:?}"
+            );
+        }
+    };
+    check_missing(
+        "no vectors are stored for model `qwen3-embedding:0.6b`; preview their cost with `polylogue embed`; rows are ordered by time and unranked",
+    );
+    set("embed.endpoint", "https://example.invalid/v1");
+    check_missing(
+        "semantic search configuration is invalid: embed.endpoint https://example.invalid/v1 is not on this machine; the local provider only sends text to a loopback address; rows are ordered by time and unranked",
+    );
+    set("embed.endpoint", "http://127.0.0.1:11434/v1");
+    let path = morrow.root.join("embeddings.db");
+    std::fs::rename(&path, morrow.root.join("unreadable-embeddings.db")).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    check_missing(
+        "the embeddings store cannot be read: disk I/O error; rows are ordered by time and unranked",
     );
 }

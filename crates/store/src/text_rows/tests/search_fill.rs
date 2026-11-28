@@ -43,7 +43,7 @@ fn ranked(conn: &Connection, index: SnippetIndex, expression: &str) -> Vec<(i64,
 /// A block holding `text`, as composition writes it.
 fn block(conn: &Connection, pk: i64, kind: &str, text: i64) {
     conn.execute(
-        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length)
+        "INSERT INTO block(pk,message_pk,session_pk,position,kind,text_id,content_group,content_start,content_length)
          VALUES (?1,1,1,?1,?2,?3,0,0,0)",
         params![pk, kind, text],
     )

@@ -4,6 +4,10 @@ The browser extension captures web chats (ChatGPT, claude.ai, Grok, Gemini, AI S
 
 The extension is designed whole rather than adjusted.
 
+## Installation and updates
+
+The packaged manifest's public key gives Chrome the same extension ID at every path. The package publishes that ID at `share/polylogue/extension-id`. Its manifest's `version_name` names the source revision, which the extension writes into capture provenance. The native host reports its own revision in a status reply. When both revisions are known and differ, the extension reloads at most once for the pair, then installs the page scripts in the supported tabs already open. Keep the old installation available until its popup shows zero pending captures when moving from an installation with a different ID.
+
 ## Live capture
 
 Live capture is the core of the extension and works in about real time.
@@ -20,6 +24,7 @@ The extension captures the provider's data, not its rendered page; a DOM route e
 
 - **Transport:** a Manifest V3 extension and the native-messaging host `polylogue internal browser-host`, with no token or pairing. Each capture is appended to a per-conversation capture log in the spool; the host replies only after the append is synced, naming the hash and whether it was new. The extension's outbox holds pending capture bytes; browser-local fingerprints and pacing state are disposable scheduling metadata.
 - **When:** a capture fires when a conversation stops changing; an unchanged conversation is not captured again; open tabs are swept periodically, and a sweep fetches a tab's conversation only when its page shows something other than it showed at the conversation's last capture. A capture the operator asks for always fetches. Capture, status and tab sync are automatic, never actions the operator takes.
+- **ChatGPT changes:** the page signals a change when its URL or the ordered message IDs and complete rendered message text change. Opening a page menu outside the messages leaves that signal alone. The extension fetches the conversation JSON after a change and compares its content with the last capture. For changes that do not affect the rendered messages, such as a title edit, provider import fetches a new reading when the conversation list reports a later update time.
 - **Fidelity:** attachment and generated-file bytes (uploads, generated images, code-interpreter and sandbox files, file previews, provider assets) are fetched before their links expire, in chunks, with no size cap. Temporary chats are captured and marked as not saved by the provider: the capture's `session_kind` is `temporary`, and the parsed session's mode is `temporary`. Projects, custom GPTs and Claude projects are captured with their conversations.
 - **Politeness:** a conversation is fetched again only when it changed: for an import, its update time in the provider's list is newer than the archive's capture; for an open tab, its page shows a change; a 429 or 5xx stops all fetching from that provider for `Retry-After` or a jittered backoff.
 - One request queue per provider is shared by automatic and explicit capture, file retrieval, provider import and chat actions. Retry-After accepts seconds or an HTTP date; retryable responses end the current provider operation before another fetch. Cooldown and background budget counters survive service-worker and browser restarts in browser-local storage; neither holds captures for the archive.

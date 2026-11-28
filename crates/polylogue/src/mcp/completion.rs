@@ -16,11 +16,12 @@ pub(super) fn arguments(
     Ok(crate::protocol::complete::Arguments {
         text: request.argument.value,
         position,
+        ..Default::default()
     })
 }
 
 pub(super) async fn answer(
-    archive: &Archive,
+    target: &Target,
     arguments: crate::protocol::complete::Arguments,
     deadline_ms: Option<i64>,
     cancelled: &CancellationToken,
@@ -39,7 +40,7 @@ pub(super) async fn answer(
         uuid::Uuid::now_v7().to_string(),
     );
     request.deadline = deadline;
-    let structured = match run(archive, request, deadline_ms, cancelled, None).await {
+    let structured = match run(target, request, deadline_ms, cancelled, None).await {
         Ok((_, answer, _)) => answer,
         Err(message) => return Err(McpError::internal_error(message, None)),
     };

@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn completeness_reasons_keep_their_wire_names_and_order() {
+    let wire = concat!(
+        r#"["missing_declaration","missing_checkpoint","parse_version_changed","parser_behind","#,
+        r#""capture_pending","refused","parse_failed","derivation_behind","search_pending","index_building","#,
+        r#""stream_not_applied","stream_behind"]"#,
+    );
+    assert_eq!(
+        serde_json::to_string(CompletenessReason::ALL).unwrap(),
+        wire
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<CompletenessReason>>(wire).unwrap(),
+        CompletenessReason::ALL
+    );
+}
+
+#[test]
 fn primary_observation_age_decodes_from_tagged_json() {
     for age in ["0", "2", "0.436835857", "4.2e-1", "null"] {
         let json =

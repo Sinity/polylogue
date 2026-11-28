@@ -10,7 +10,7 @@ Kind: Exact. Unit: session; parent steps. Denominator: one physical session.
 
 Unknown: Missing parents, conflicting parents and cycles have no root or depth; missing parents set root_pending.
 
-Reads: session.id, session.stub, link.parent_id, link.child_id, link.kind.
+Reads: session.id, session.has_transcript, session_link.parent_id, session_link.child_id, session_link.kind.
 
 Tests: arrival_order_permutation_oracle, depth_cycle_reported.
 
@@ -34,7 +34,7 @@ Kind: Parameterized. Unit: milliseconds; prompts; tool calls. Denominator: one p
 
 Unknown: Absent clocks and durations are null; missing, equal and reversed tool times are counted separately.
 
-Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
+Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
 
 Parameter: cluster_gap = 300000 milliseconds.
 
@@ -50,9 +50,9 @@ Kind: Exact. Unit: milliseconds. Denominator: session_span.wall_ms.
 
 Unknown: Missing or reversed transitions are unattributed; a session without a clock has no time rows.
 
-Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
+Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
 
-Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals.
+Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals, a_failed_compound_shell_call_keeps_its_whole_duration.
 
 Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
 

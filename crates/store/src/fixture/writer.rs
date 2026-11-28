@@ -3,7 +3,7 @@
 //! parser's output and reads back the rows. Its synthetic record bytes use
 //! the production source store; no provider file or parser is involved.
 
-use crate::writer::{Batch, InputKey, Observation, ParseStep};
+use crate::writer::{Batch, InputKey, Observation, ParsePart};
 use crate::{Archive, ReadPool, Writer};
 use polylogue_model::{
     Block, ErrorReason, Json, Message, MessageId, MessageRow, Output, PromptKind, RecordCounts,
@@ -151,7 +151,8 @@ impl WriterArchive {
         let writer = Writer::start(&archive).expect("start the writer");
         // The new archive's empty build is installed, as a daemon's first
         // pass over nothing does; the fixture's writes then go to `index.db`.
-        writer.build(Vec::new()).expect("install the empty build");
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender())
+            .expect("install the empty build");
         Self {
             _dir: dir,
             archive,
@@ -347,7 +348,7 @@ impl WriterArchive {
         assert_eq!(
             index
                 .execute(
-                    "UPDATE document_block SET body=x'00' WHERE idx=?1",
+                    "UPDATE document_block SET body=x'00' WHERE position=?1",
                     [i64::try_from(ordinal).unwrap()],
                 )
                 .unwrap(),
@@ -415,7 +416,7 @@ pub fn step(
         capture_read: None,
         release: Default::default(),
         parse: vec![{
-            let mut step = ParseStep::new(output, counts, start..length, true);
+            let mut step = ParsePart::new(output, counts, start..length, true);
             step.parse_version = "synthetic=1".into();
             step
         }],

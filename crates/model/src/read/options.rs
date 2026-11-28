@@ -136,6 +136,15 @@ pub struct ReadOptions {
     /// Start at this message, time within the session or absolute time; `seen` where this reader stopped
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// End before this message, elapsed or absolute time, or compaction[:N].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Show the first N messages of the selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<u64>,
+    /// Show the last N messages of the selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<u64>,
     /// N messages either side of the selected item
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub around: Option<u64>,
@@ -302,6 +311,11 @@ impl ReadOptions {
             _ => OUTPUT_LINES,
         }
     }
+    /// An explicit start rather than the reader's saved mark.
+    pub fn from_position(&self) -> Option<&str> {
+        self.from.as_deref().filter(|start| *start != "seen")
+    }
+
     /// The parent's copied prefix.
     pub fn inherited(&self) -> bool {
         self.shown(ShowKind::Inherited, false)
@@ -401,6 +415,43 @@ impl ReadOptions {
             ReadAt::Position(position) => Some(AnnotationAt::Position(position.archive)),
             ReadAt::Time(at) => Some(AnnotationAt::Time(*at)),
             ReadAt::TimeExpression(_) => None,
+        }
+    }
+
+    /// Start a new view with the options it can display.
+    pub fn set_view(&mut self, view: View) -> Result<(), ReadError> {
+        self.view = view;
+        loop {
+            match self.validate() {
+                Ok(()) => return Ok(()),
+                Err(ReadError::UnsupportedOption {
+                    option,
+                    accepted_by,
+                    ..
+                }) => {
+                    if option == "diff" {
+                        self.diff = None;
+                        continue;
+                    }
+                    let kind = if option == "context_meter" {
+                        ShowKind::Context.name()
+                    } else {
+                        option.as_str()
+                    };
+                    let words = self.show.len() + self.hide.len();
+                    self.show
+                        .retain(|word| word.split(':').next() != Some(kind));
+                    self.hide.retain(|word| word != kind);
+                    if self.show.len() + self.hide.len() == words {
+                        return Err(ReadError::UnsupportedOption {
+                            view,
+                            option,
+                            accepted_by,
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 

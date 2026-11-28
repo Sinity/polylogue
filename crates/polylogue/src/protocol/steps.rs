@@ -2,7 +2,10 @@
 //! of its verb on every surface: `--name` on the command line (with `-` for
 //! `_`), the key beside `verb` in an MCP or HTTP step. Its doc comment is
 //! its help; the schema key `argument_form = "positional"` marks the one
-//! word a verb takes after its name.
+//! word a verb takes after its name. The first sentence of a step type's
+//! doc comment is the verb's line in the MCP tool descriptions. An option
+//! that is designed and not built has no field here; it is on the list in
+//! `crate::unbuilt`.
 use crate::brief::StartSource;
 use command_surface::JsonSchema;
 use polylogue_model::read::{ReadBudget, ReadDelivery, ReadOptions};
@@ -14,8 +17,9 @@ pub const fn usual_read_selection(follow: bool) -> &'static str {
     if follow { "running" } else { "recent" }
 }
 
-/// `read`: show the rows' content. How to read them is [`ReadOptions`], the
-/// type the reading receives; the rest says how the page is delivered.
+/// `read`: show the rows' content in a view, a page at a time. How to read
+/// them is [`ReadOptions`], the type the reading receives; the rest says how
+/// the page is delivered.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadStep {
@@ -25,33 +29,9 @@ pub struct ReadStep {
     pub displayed: bool,
     #[serde(flatten)]
     pub options: ReadOptions,
-    /// End before this message, time or `compaction[:N]`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub until: Option<String>,
-    /// The first N messages of each row
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first: Option<u64>,
-    /// The last N messages of each row
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last: Option<u64>,
-    /// Show the alternate beside its original
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub beside: bool,
-    /// Compare a kept result's rows with their identities removed
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub blind: bool,
-    /// The seed of a blind reading's labels
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
     /// Keep printing what the rows' sessions do; the last step of its line
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub follow: bool,
-    /// With follow: stop when every selected session settles
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub until_idle: bool,
-    /// How the compare view lines rows up: prompt, lineage, time or file
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub align: Option<String>,
     /// The document encoding
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
@@ -80,7 +60,7 @@ fn is_page(delivery: &ReadDelivery) -> bool {
 #[schemars(extend("properties" = {}))]
 pub struct PickStep {}
 
-/// `brief`: packaged context for this directory, a session, search words or other rows.
+/// `brief`: package context: with no selection for the directory `cwd`, of a session to take it over, of search words what is already known.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BriefStep {
@@ -115,9 +95,6 @@ pub struct NoteStep {
     /// The key of a kind keyed by name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
-    /// One part per message, as lines of a file, or `-` for standard input
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parts: Option<String>,
     /// References the note rests on
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<String>,
@@ -148,42 +125,6 @@ pub struct NoteStep {
     /// When it stops holding
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<String>,
-    /// A query whose result checks the note
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub check: Option<String>,
-    /// What the check query is expected to return
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expect: Option<String>,
-    /// The page it is written on
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-    /// The page section it is placed in
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
-    /// A heading's level
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub level: Option<u64>,
-    /// The template a new page starts from
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<String>,
-    /// A template parameter, KEY=VALUE
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub param: Vec<String>,
-    /// A page's layout: linear, board or table
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
-    /// A page's subject or topic
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub about: Option<String>,
-    /// A member's role on a page
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    /// How a page enters briefs: off, contents or full
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brief: Option<String>,
-    /// Also rename the web chat in its provider
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub rename: bool,
 }
 
 /// `tag NAME`: label each row.
@@ -217,25 +158,19 @@ pub struct WithdrawStep {
     pub reason: Option<String>,
 }
 
-/// `judge VERDICT`: accept, reject or defer each annotation, or say which of several rows is better.
+/// `judge VERDICT`: accept or reject an annotation an agent wrote.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JudgeStep {
     /// accept, reject or defer; on several rows the preferred row, an order (`B>A>C`), tie, incomparable, abstain or insufficient-evidence
     #[schemars(extend("argument_form" = "positional"))]
     pub verdict: String,
-    /// The dimension of a comparison
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<String>,
-    /// The seed of the blind reading whose labels the verdict names
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
     /// Why
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// `save [NAME]`: name the question and keep this line's rows.
+/// `save [NAME]`: name the question as query:NAME and keep this line's rows as result:ID; watch tells you when rows start matching.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveStep {
@@ -255,30 +190,9 @@ pub struct SaveStep {
     /// The denominator query of a measure or aggregate figure
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denominator: Option<String>,
-    /// The page section the rows go in
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
-    /// The slot the rows go after
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<String>,
-    /// Place these rows as they are now
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub fixed: bool,
-    /// Place the question, run again when the page is read
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub live: bool,
-    /// Place the kept result
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub kept: bool,
-    /// The template a new page starts from
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template: Option<String>,
-    /// How the rows show on the page: card, excerpt, text, full, table, list, count, value, chart or compare
-    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
 }
 
-/// `send TEXT`: send text to each session.
+/// `send TEXT`: send text to each session: a running one gets it at its next tool call or prompt, one ended session is resumed with it, and a web chat turn waits for the operator's approval.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendStep {
@@ -291,15 +205,9 @@ pub struct SendStep {
     /// Files sent with the message
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attach: Vec<String>,
-    /// A page sent with the message
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-    /// The page section sent with the message
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
 }
 
-/// `answer VALUE`: respond to what a session is waiting for.
+/// `answer VALUE`: allow or deny what a session is waiting for.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerStep {
@@ -320,16 +228,10 @@ pub struct AnswerStep {
 #[schemars(extend("properties" = {}))]
 pub struct InterruptStep {}
 
-/// `resume`: reopen a session where it ran, or continue its work in another harness.
+/// `resume`: reopen a session where it ran, or with `in` continue its work in a new session of another harness.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResumeStep {
-    /// Fork the session instead of continuing it
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub fork: bool,
-    /// Reopen a running session in a second client where its harness allows
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub anyway: bool,
     /// Continue the work in a new session of this harness
     #[serde(rename = "in", default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,

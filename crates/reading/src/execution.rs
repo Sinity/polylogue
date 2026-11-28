@@ -25,7 +25,17 @@ pub fn record<T>(
     execute: impl FnOnce() -> Result<Completed<T>, Error>,
 ) -> Result<T, Error> {
     writer.archive().begin_query_run(run.clone(), parent)?;
-    let result = execute();
+    finish(writer, &run, binding_hash, completed_at, execute()).map(|completed| completed.value)
+}
+
+/// Acknowledge an execution outcome after its beginning has committed.
+pub fn finish<T>(
+    writer: &WriterSender,
+    run: &QueryRun,
+    binding_hash: BlobHash,
+    completed_at: impl FnOnce() -> Timestamp,
+    result: Result<Completed<T>, Error>,
+) -> Result<Completed<T>, Error> {
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
         binding_hash,
@@ -56,11 +66,6 @@ pub fn record<T>(
                 .recv()
                 .map_err(|_| polylogue_store::StoreError::WriterGone)?
         });
-    match result {
-        Ok(completed) => {
-            committed?;
-            Ok(completed.value)
-        }
-        Err(error) => Err(error),
-    }
+    committed?;
+    result
 }

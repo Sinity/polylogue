@@ -1,4 +1,4 @@
-use super::{BranchState, ItemPlace, View};
+use super::{BranchState, ItemPlace, ReadOptions, View};
 use crate::{Author, Block, MessageId, Session, SessionId, TimeAccuracy, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +140,14 @@ pub struct ReadHeader {
     /// Text views print times in it with their offset and say so once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// What a streamed reading states once, in its `begin` event: the
+    /// snapshot it was read at and the options as accepted, which a bundle's
+    /// manifest records. A page carries its compact snapshot beside its
+    /// document instead, inside the page's byte budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Box<crate::bundle::ReadSnapshot>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Box<ReadOptions>>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -176,7 +184,7 @@ pub enum HeaderKind {
 pub struct SavedQueryHeader {
     pub name: String,
     pub selected_revision: String,
-    pub question: crate::Reference,
+    pub query_id: crate::Reference,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -336,6 +344,7 @@ stored_names! {
         LinkIssue => "link_issue",
         Stale => "stale",
         Alternate => "alternate",
+        Selected => "selected",
     }
 }
 
@@ -426,8 +435,8 @@ pub enum Card {
     },
     Trace(Box<super::TraceCard>),
     Run {
-        question: Option<crate::Reference>,
-        read_at: crate::ChangePosition,
+        query_id: Option<crate::Reference>,
+        read_position: crate::ChangePosition,
         author: Author,
         count: Option<u64>,
         exact: Option<bool>,
@@ -465,7 +474,7 @@ pub enum Card {
         to: String,
         relation: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        how: Option<String>,
+        reason: Option<String>,
         branch_point: Option<String>,
         spawning_call: Option<String>,
         copies_prefix: bool,
@@ -538,6 +547,10 @@ pub struct ReadFooter {
     /// reading's shown index entries), only when known without scanning the
     /// selection.
     pub count: ValueState<u64>,
+    /// The source records a stream carried beside its items, by kind, so a
+    /// receiver checks it got them all. Pages carry none.
+    #[serde(default, skip_serializing_if = "crate::bundle::Counts::is_empty")]
+    pub counts: crate::bundle::Counts,
 }
 
 /// Aggregated omission counts stay bounded by the finite target kinds/views.

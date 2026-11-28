@@ -21,14 +21,14 @@ fn modelled(session: &str, n: u32, tool: &str, model: &str) -> Vec<Message> {
 /// computed from all the session's rows.
 fn stored_and_recounted(archive: &WriterArchive) -> (Vec<Json>, Vec<Json>) {
     let stored = archive.rows(
-        "SELECT s.id, v.field, v.value, v.n FROM session_value v JOIN session s ON s.pk = v.session_pk
-         WHERE v.n > 0
+        "SELECT s.id, v.field, v.value, v.count FROM session_value v JOIN session s ON s.pk = v.session_pk
+         WHERE v.count > 0
          UNION ALL SELECT s.id, 'first prompt', f.message_pk, NULL FROM session_first_prompt f
          JOIN session s ON s.pk = f.session_pk
          ORDER BY 1, 2, 3",
     );
     let recounted = archive.rows(
-        "SELECT s.id, 'model' AS field, m.model AS value, count(*) AS n FROM message m JOIN session s ON s.pk = m.session_pk
+        "SELECT s.id, 'model' AS field, m.model AS value, count(*) AS count FROM message m JOIN session s ON s.pk = m.session_pk
          WHERE m.model IS NOT NULL AND m.model <> '' GROUP BY s.id, m.model
          UNION ALL SELECT s.id, 'tool', t.tool, count(*) FROM tool_call t JOIN session s ON s.pk = t.session_pk
          GROUP BY s.id, t.tool
@@ -65,26 +65,26 @@ fn stored_values_equal_a_recount_at_each_checkpoint() {
     archive.write_snapshot("s", rewritten);
     check(&archive, "a rewrite");
     let counts = archive.rows(
-        "SELECT v.field, v.value, v.n FROM session_value v JOIN session s ON s.pk = v.session_pk
-         WHERE s.id LIKE '%:s' AND v.n > 0 ORDER BY 1, 2",
+        "SELECT v.field, v.value, v.count FROM session_value v JOIN session s ON s.pk = v.session_pk
+         WHERE s.id LIKE '%:s' AND v.count > 0 ORDER BY 1, 2",
     );
     assert_eq!(
         counts,
         [
-            json!({"field": "model", "value": "model-a", "n": 2}),
-            json!({"field": "model", "value": "model-c", "n": 1}),
-            json!({"field": "tool", "value": "Grep", "n": 1}),
-            json!({"field": "tool", "value": "Read", "n": 2}),
+            json!({"field": "model", "value": "model-a", "count": 2}),
+            json!({"field": "model", "value": "model-c", "count": 1}),
+            json!({"field": "tool", "value": "Grep", "count": 1}),
+            json!({"field": "tool", "value": "Read", "count": 2}),
         ]
     );
     let gone = archive.rows(
-        "SELECT v.value, v.n FROM session_value v WHERE v.value IN ('Bash', 'model-b') ORDER BY 1",
+        "SELECT v.value, v.count FROM session_value v WHERE v.value IN ('Bash', 'model-b') ORDER BY 1",
     );
     assert_eq!(
         gone,
         [
-            json!({"value": "Bash", "n": 0}),
-            json!({"value": "model-b", "n": 0})
+            json!({"value": "Bash", "count": 0}),
+            json!({"value": "model-b", "count": 0})
         ],
         "a value the session no longer has keeps its row at 0"
     );

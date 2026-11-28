@@ -59,69 +59,88 @@ impl PreparedSelection<'_> {
             }
         }
         query_options.references = references;
-        let object = self.query_object()?;
-        let definitions = self
-            .definitions()
-            .iter()
-            .map(|definition| {
-                let saved = object
-                    .definitions
-                    .iter()
-                    .find(|saved| saved.question == definition.question_id)
-                    .ok_or_else(|| {
-                        SelectionError::invalid(
-                            polylogue_model::Code::Internal,
-                            "bound definition has no saved body",
-                        )
-                    })?;
-                Ok(FrozenDefinition {
-                    name: definition.name.clone(),
-                    root: definition.root.clone(),
-                    revision: definition.revision.clone(),
-                    question: definition.question_id,
-                    ast: saved.query.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, SelectionError>>()?;
-        let context = &self.context;
-        let mut versions = context.versions.clone();
-        if let Some(identity) = &query_options.ranking_identity {
-            versions.insert(
-                "ranking_identity".into(),
-                blake3::hash(identity.as_bytes()).to_hex().to_string(),
-            );
-        }
-        let mut source_outputs = object.source_outputs.clone();
-        for output in object
-            .definitions
-            .iter()
-            .flat_map(|definition| &definition.source_outputs)
-        {
-            if !source_outputs.contains(output) {
-                source_outputs.push(output.clone());
-            }
-        }
-        let replay = ReplayBinding {
-            bound_ast: object.query,
-            source_outputs,
-            definitions,
-            context: CursorContext {
-                question: context.question,
-                clock: context.clock.wire(),
-                resolved_times: self.program.resolved_times.clone(),
-                random_seed: context.random_seed,
-                read_positions: context.read_positions.clone(),
-                versions,
-            },
-            scope_fingerprint: context.versions.get("scope").cloned(),
-            original_text: self.plan.text().to_owned(),
-        };
-        self.scope.check()?;
-        Ok(ExecutionBinding {
-            replay,
+        let binding = bind_execution(
+            &self.plan,
+            &self.program,
+            &self.context,
             query_options,
             presentation,
             accepted_request,
-        })
+        )?;
+        self.scope.check()?;
+        Ok(binding)
     }
+}
+
+/// Record the inputs of an already prepared program without compiling it again.
+pub fn bind_execution(
+    plan: &Plan,
+    program: &Program,
+    context: &CursorContext,
+    query_options: QueryExecutionOptions,
+    presentation: ExecutionPresentation,
+    accepted_request: Option<Value>,
+) -> Result<ExecutionBinding, SelectionError> {
+    let object = plan.query_object()?;
+    let definitions = plan
+        .definitions()
+        .iter()
+        .map(|definition| {
+            let saved = object
+                .definitions
+                .iter()
+                .find(|saved| saved.query_id == definition.question_id)
+                .ok_or_else(|| {
+                    SelectionError::invalid(
+                        polylogue_model::Code::Internal,
+                        "bound definition has no saved body",
+                    )
+                })?;
+            Ok(FrozenDefinition {
+                name: definition.name.clone(),
+                root: definition.root.clone(),
+                revision: definition.revision.clone(),
+                query_id: definition.question_id,
+                ast: saved.query.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, SelectionError>>()?;
+    let mut versions = context.versions.clone();
+    if let Some(identity) = &query_options.ranking_identity {
+        versions.insert(
+            "ranking_identity".into(),
+            blake3::hash(identity.as_bytes()).to_hex().to_string(),
+        );
+    }
+    let mut source_outputs = object.source_outputs.clone();
+    for output in object
+        .definitions
+        .iter()
+        .flat_map(|definition| &definition.source_outputs)
+    {
+        if !source_outputs.contains(output) {
+            source_outputs.push(output.clone());
+        }
+    }
+    let replay = ReplayBinding {
+        bound_ast: object.query,
+        source_outputs,
+        definitions,
+        context: CursorContext {
+            question: context.question,
+            clock: context.clock.wire(),
+            resolved_times: program.resolved_times.clone(),
+            random_seed: context.random_seed,
+            read_positions: context.read_positions.clone(),
+            versions,
+        },
+        access_fingerprint: context.versions.get("access").cloned(),
+        original_text: plan.text().to_owned(),
+    };
+    Ok(ExecutionBinding {
+        replay,
+        query_options,
+        presentation,
+        accepted_request,
+    })
 }

@@ -122,8 +122,8 @@ pub struct LinksShown {
     pub slot: u32,
 }
 
-/// Everything a continuation needs, sealed by the daemon with the index
-/// generation's key so a caller cannot forge a position.
+/// Everything a continuation needs, sealed by the daemon with the
+/// index instance's key so a caller cannot forge a position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageCursor {
@@ -157,6 +157,40 @@ pub struct SessionRead {
     pub logical: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<SessionSeen>,
+    /// The end of a head or tail selection when its first page was read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_end: Option<(SessionId, EntryKey)>,
+    /// The accepted end of an explicit range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<SessionBoundary>,
+    /// The accepted beginning named by a message or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_position: Option<SessionBoundary>,
+}
+
+impl SessionRead {
+    pub fn beginning(session: SessionId, logical: bool) -> Self {
+        Self {
+            session,
+            from_seen: false,
+            after: None,
+            logical,
+            parts: Vec::new(),
+            window_end: None,
+            until: None,
+            from_position: None,
+        }
+    }
+}
+
+/// A boundary in the transcript of one physical owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBoundary {
+    pub owner: SessionId,
+    pub entry: EntryKey,
+    /// When the named time is beyond the last entry, retain that entry.
+    pub after: bool,
 }
 
 /// Accepted physical marks of a composed reading, including absent marks.
@@ -270,13 +304,13 @@ pub struct ItemPlace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadFraming {
-    Query { question: QuestionId },
+    Query { query_id: QuestionId },
     Object { run: crate::RunId },
 }
 impl ReadFraming {
     pub fn source(&self) -> super::Source {
         super::Source::record(match self {
-            Self::Query { question } => format!("query:{question}"),
+            Self::Query { query_id } => format!("query:{query_id}"),
             Self::Object { run } => format!("run:{run}"),
         })
     }
@@ -297,30 +331,30 @@ pub enum ReadDirection {
 
 const SEAL_CONTEXT: &[u8] = b"polylogue.page-cursor\0";
 
-/// What a cursor is sealed with: the index generation's key and the
-/// generation itself. The generation is written inside the sealed payload;
-/// read without the key it only tells a cursor of an earlier generation
+/// What a cursor is sealed with: the index instance's key and the
+/// index instance itself. The index instance is written inside the sealed payload;
+/// read without the key it only tells a cursor of an earlier index instance
 /// (stale) from one that was never a cursor (invalid), as query cursors do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CursorSeal {
     pub key: [u8; 32],
-    pub generation: String,
+    pub index_instance: String,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sealed<C> {
-    generation: String,
+    index_instance: String,
     cursor: C,
 }
 
 impl CursorSeal {
-    /// `PAYLOAD.MAC`: the hex of the generation and the cursor as JSON, and
+    /// `PAYLOAD.MAC`: the hex of the index instance and the cursor as JSON, and
     /// its keyed digest. `domain` names the kind of cursor, so a cursor of
     /// one kind never opens as another.
     pub fn seal(&self, domain: &[u8], cursor: &impl Serialize) -> String {
         let payload = serde_json::to_vec(&Sealed {
-            generation: self.generation.clone(),
+            index_instance: self.index_instance.clone(),
             cursor,
         })
         .expect("a cursor always encodes");
@@ -331,7 +365,7 @@ impl CursorSeal {
     }
 
     /// Authenticate before decoding; a changed byte anywhere is refused. A
-    /// cursor that does not authenticate and names another generation is
+    /// cursor that does not authenticate and names another index instance is
     /// stale.
     pub fn open<C: serde::de::DeserializeOwned>(
         &self,
@@ -342,17 +376,17 @@ impl CursorSeal {
         let payload = unhex(payload).ok_or(CursorError::Invalid)?;
         let mac = blake3::Hash::from_hex(mac).map_err(|_| CursorError::Invalid)?;
         if self.digest(domain, &payload) != mac {
-            let generation = serde_json::from_slice::<Sealed<serde::de::IgnoredAny>>(&payload)
-                .map(|sealed| sealed.generation);
-            return Err(match generation {
-                Ok(generation) if generation != self.generation => CursorError::Stale,
+            let index_instance = serde_json::from_slice::<Sealed<serde::de::IgnoredAny>>(&payload)
+                .map(|sealed| sealed.index_instance);
+            return Err(match index_instance {
+                Ok(index_instance) if index_instance != self.index_instance => CursorError::Stale,
                 _ => CursorError::Invalid,
             });
         }
         let sealed =
             serde_json::from_slice::<Sealed<C>>(&payload).map_err(|_| CursorError::Invalid)?;
-        // The key can outlive a generation; the generation it names decides.
-        if sealed.generation != self.generation {
+        // The key can outlive an index instance; the index instance it names decides.
+        if sealed.index_instance != self.index_instance {
             return Err(CursorError::Stale);
         }
         Ok(sealed.cursor)

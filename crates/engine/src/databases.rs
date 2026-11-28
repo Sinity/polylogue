@@ -1,6 +1,7 @@
 //! Tool-database reads run independently of file discovery and parsing.
 //! Only the writer's bounded byte queue applies backpressure to a reader.
 use crate::*;
+use polylogue_store::activity;
 use polylogue_store::tool_databases::{DatabaseError, DatabaseReader};
 use polylogue_store::{Batch, staging::PreparedBatch};
 use std::sync::mpsc::{TryRecvError, sync_channel};
@@ -69,6 +70,10 @@ impl Databases {
                 if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
+                let _doing = activity::doing_on(
+                    "reading a tool database",
+                    source.path.display().to_string(),
+                );
                 if let Err(error) =
                     reader.recall(&source.path, &archive, &source.input, &source.observation)
                 {
@@ -99,12 +104,16 @@ impl Databases {
                         continue;
                     }
                 };
+                let observation = Observation {
+                    seen_at_ms: source.source_read.clock.now_ms(),
+                    ..source.observation.clone()
+                };
                 let outcome = polylogue_model::caught(|| {
                     reader.read(
                         &source.path,
                         &archive,
                         &source.input,
-                        &source.observation,
+                        &observation,
                         due,
                         |bytes, observation| queue.append(bytes, observation),
                     )
@@ -145,6 +154,10 @@ impl Databases {
                 pending.push((source, queue));
             }
             for (source, mut queue) in pending {
+                let _doing = activity::doing_on(
+                    "committing a tool database",
+                    source.path.display().to_string(),
+                );
                 match queue.finish() {
                     Ok(()) => {}
                     Err(error) => {
@@ -315,6 +328,7 @@ impl<'a> InputWriter<'a> {
         // no provider payload or open body descriptor accumulates in memory.
         self.staged.push(PreparedBatch { batch, files });
         self.bytes += size;
+        activity::progressed();
         Ok(())
     }
     fn enqueue_staged(
@@ -421,6 +435,9 @@ impl Engine {
             new_database |= self.databases.insert(f.path.clone(), f.origin).is_none();
         }
         let completed = self.captures.completed(false);
+        if completed.finished || completed.changed {
+            activity::progressed();
+        }
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
         pass.errors.extend(completed.errors);
@@ -453,7 +470,9 @@ impl Engine {
                 .map(|(path, origin)| (path.clone(), *origin))
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
-            for (path, origin) in sources {
+            // Each path is one consistent snapshot. File modification time
+            // cannot order database activity (especially in WAL mode).
+            for (path, origin) in collect::interleave_origins(sources, |(_, origin)| origin.name) {
                 let source_read = self.source_read_context(
                     &path,
                     origin.name,

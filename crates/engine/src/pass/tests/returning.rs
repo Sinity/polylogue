@@ -32,7 +32,7 @@ fn an_unreadable_returning_file_plans_a_new_chain() {
         // Permissions do not apply to this user (root); nothing to show.
         return;
     }
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     // The file was gone, so the new chain is planned as a first reading.
     assert_eq!(plan.change, Change::First);
@@ -47,7 +47,7 @@ fn a_returning_file_does_not_continue_from_an_index_behind_the_engine() {
     let grown = stored.clone() + &claude_user("u2", "back", "grown body");
     let (_home, mut engine, _lock, path) = gone_and_back(&grown);
     engine.inputs.get_mut(&path).unwrap().stored = stored.len() as u64 + 1;
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     // The file was gone, so the new chain is planned as a first reading.
     assert_eq!(plan.change, Change::First);
 }
@@ -62,7 +62,7 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     let st = engine.inputs.get_mut(&path).unwrap();
     st.chain = Some(99);
     st.parsed_upto = 1;
-    let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
+    let plan = engine.plan(&path, facts(&path), &mut 0).unwrap().unwrap();
     assert_eq!(
         plan.change,
         Change::Appended {
@@ -104,4 +104,79 @@ fn a_shorter_equal_file_is_observed_back_and_starts_no_chain() {
         )),
         1
     );
+}
+
+/// A session file whose first line is written in several pieces before its
+/// newline is stored and read as it grows, wherever the pieces are cut:
+/// until a record is complete there is nothing parsed to replace, so each
+/// pass reads on from the start of the file.
+#[test]
+fn a_first_line_written_in_three_pieces_is_stored() {
+    let first = claude_user("u1", "pieces", "first line");
+    let second = claude_user("u2", "pieces", "second line");
+    let whole = format!("{first}{second}");
+    let one = first.len();
+    for cuts in [
+        vec![10, 20],
+        vec![10, one + 10],
+        vec![10, 20, one + 10],
+        vec![one + 5, one + 15],
+    ] {
+        let home = ClaudeHome::new();
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+        let mut at = 0;
+        for end in cuts.iter().copied().chain([whole.len()]) {
+            home.append("pieces.jsonl", &whole[at..end]);
+            at = end;
+            let pass = engine.run_pass().unwrap();
+            assert!(
+                pass.errors.is_empty(),
+                "cuts {cuts:?} at {end}: {:?}",
+                pass.errors
+            );
+        }
+        assert_eq!(
+            home.texts("pieces"),
+            ["first line", "second line"],
+            "cuts {cuts:?}"
+        );
+        assert_eq!(
+            home.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+            1,
+            "cuts {cuts:?}"
+        );
+    }
+}
+
+/// A stored file emptied in place (truncated before it is written again)
+/// is its chain seen back holding nothing: no chain starts, and the session
+/// keeps its messages.
+#[test]
+fn an_emptied_file_is_observed_back_and_starts_no_chain() {
+    let first = claude_user("u1", "emptied", "stored body");
+    let home = ClaudeHome::new();
+    home.append("emptied.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let path = home.file("emptied.jsonl");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    engine.writer().flush_rows().unwrap();
+    assert_eq!(
+        home.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+        1
+    );
+    assert_eq!(
+        home.count(
+            "SELECT count(*) AS n FROM a.observation WHERE class = 'back' AND revision IS NULL
+               AND chain = 1 AND length = 0"
+        ),
+        1
+    );
+    assert_eq!(home.texts("emptied"), ["stored body"]);
 }

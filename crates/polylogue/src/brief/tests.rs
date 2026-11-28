@@ -402,8 +402,8 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
         let shown = refs.len();
         let cut: usize = left_out
             .iter()
-            .filter(|l| !l.what.contains("shortened"))
-            .map(|l| l.what.split(' ').next().unwrap().parse::<usize>().unwrap())
+            .filter(|l| !l.item.contains("shortened"))
+            .map(|l| l.item.split(' ').next().unwrap().parse::<usize>().unwrap())
             .sum();
         assert_eq!(shown + cut, 80, "budget {budget}");
         if cut > 0 {
@@ -517,16 +517,16 @@ fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
 /// A brief's archive reads depend on what it reports, not on how much work
 /// happened under its directory (docs/agent-context.md, latency): at `/`,
 /// under a prefix holding every session and in a directory nobody worked
-/// in, the brief says the same over 100,000 messages as over 10,000, and
-/// reads the same pages, at most 100, through a reader whose page cache
-/// starts empty. In a subdirectory the brief reports each session there
-/// that fits, and each one it expands reads that session's summary and
-/// annotations, so its reads follow the sessions there rather than the
-/// archive; its content is checked at both sizes.
+/// in, the brief reads the same pages over 1,000 and 10,000 sessions, at
+/// most 100, through a reader whose page cache starts empty. Each session
+/// needs only a prompt and an answer. In a subdirectory the brief reports
+/// each session there that fits, and each expansion reads that session's
+/// summary and annotations. Its reads follow the sessions there rather
+/// than the archive, and its content is checked at both sizes.
 #[test]
 fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
-    let smaller = brief_page_reads(1_000, 10);
-    let larger = brief_page_reads(10_000, 10);
+    let smaller = brief_page_reads(1_000, 2);
+    let larger = brief_page_reads(10_000, 2);
     for ((cwd, small), (_, large)) in smaller.into_iter().zip(larger) {
         if cwd == "/work/dense/d5" {
             continue;
@@ -696,7 +696,7 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
         .left_out
         .iter()
         .filter(|l| l.reason == "deadline")
-        .map(|l| l.what.as_str())
+        .map(|l| l.item.as_str())
         .collect();
     assert_eq!(
         late,
@@ -1509,4 +1509,127 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     assert!(text.contains("accepted by operator"));
     assert!(refs.contains(&"annotation:unjudged-agent@unjudged-agent-v1".into()));
     assert!(text.len() <= 4000);
+}
+
+#[test]
+fn a_morrow_brief_names_an_unloaded_scope_and_an_unrecorded_directory() {
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let context = fixture_context(Timestamp::from_unix_ms(T0).unwrap());
+    let ask = Ask::SessionStart {
+        cwd: "/an/unrecorded/dir".into(),
+        session: None,
+        source: StartSource::Startup,
+    };
+    for (scope, expected) in [
+        (
+            SharedScopeIndex::default(),
+            "- live sessions, open Beads, recent sessions: not available (scope index has not loaded); check `polylogue status`",
+        ),
+        (
+            scope_of(&reader),
+            "No session is recorded for this directory: /an/unrecorded/dir.",
+        ),
+    ] {
+        let prepared = prepare(
+            BriefContext {
+                reader: &reader,
+                pending_deliveries: &[],
+                delivery_id: "d1",
+                context: &context,
+                ranking_identity: None,
+                near: None,
+            },
+            &scope,
+            &[],
+            &ask,
+            command_surface::TokenBudget::Unlimited,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.text.lines().find(|line| line.contains(expected)),
+            Some(expected)
+        );
+        assert!(!prepared.text.contains("--deadline none"));
+        assert!(!prepared.empty);
+    }
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let reply = crate::test_answers::step(crate::test_daemon::call(
+        &runtime.daemon,
+        "rows",
+        serde_json::json!({"steps":[{"verb":"brief", "cwd":"/an/unrecorded/dir"}]}),
+    ));
+    let crate::protocol::line::StepAnswer::Brief(reply) = reply else {
+        panic!("expected a brief");
+    };
+    assert_eq!(
+        reply
+            .prepared
+            .text
+            .lines()
+            .find(|line| line.starts_with("No session is recorded")),
+        Some("No session is recorded for this directory: /an/unrecorded/dir.")
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let session = polylogue_testkit::session(1);
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    // A malformed stored JSON value makes this section's real SQLite read fail.
+    let index = polylogue_store::archive::open_write(&archive.root.join("index.db"), 1).unwrap();
+    index
+        .execute(
+            "UPDATE session SET live_facts='{' WHERE id=?1",
+            [session.to_string()],
+        )
+        .unwrap();
+    drop(index);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let prompts = reader.prompts(&session.to_string()).unwrap();
+    let reply = crate::test_answers::step(crate::test_daemon::call(
+        &runtime.daemon,
+        "rows",
+        serde_json::json!({"selection":format!("session:{session}"), "steps":[{"verb":"brief"}]}),
+    ));
+    let crate::protocol::line::StepAnswer::Brief(reply) = reply else {
+        panic!("expected a brief");
+    };
+    let prepared = reply.prepared;
+    assert!(!prepared.empty);
+    assert_eq!(
+        prepared
+            .left_out
+            .iter()
+            .find(|item| item.item == "open items")
+            .map(|item| item.reason.as_str()),
+        Some("not available (malformed JSON)")
+    );
+    assert_eq!(
+        prepared
+            .text
+            .lines()
+            .find(|line| line.starts_with("- open items:")),
+        Some("- open items: not available (malformed JSON)")
+    );
+    let visible = visible_context(&prepared.text);
+    for prompt in prompts {
+        assert!(visible.contains(&prompt.text), "{visible}");
+    }
+    assert!(prepared.text.contains("Its last answer:"));
+    runtime.shutdown().unwrap();
 }

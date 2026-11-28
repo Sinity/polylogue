@@ -4,7 +4,8 @@
 //! protocol and holds a connection to. The acts themselves are in
 //! `daemon::service::acts`.
 
-use crate::live_events::CodexConnection;
+use crate::hosting::SendFailure;
+use crate::live_events::{CodexConnection, CodexRefusal};
 use polylogue_model::JsonExt as _;
 use polylogue_model::LockExt as _;
 use polylogue_model::SessionId;
@@ -13,6 +14,7 @@ use polylogue_model::live::channel::Probe;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 #[cfg(test)]
@@ -24,7 +26,8 @@ mod tests;
 pub(crate) struct ResumeRun {
     pub session: SessionId,
     pub delivery: String,
-    pub text: String,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
 }
 
 /// The harness's headless resume command line for a session, when the
@@ -219,16 +222,29 @@ pub(crate) enum Hosted {
 impl Hosted {
     /// `true` when written now; `false` when it waits for the running
     /// ACP prompt, its outcome then reported when it is written.
-    fn send(&mut self, text: &str, delivery: Option<&str>) -> std::io::Result<bool> {
+    fn send(&mut self, text: &str, delivery: Option<&str>) -> Result<bool, SendFailure> {
         match self {
-            Self::Codex(h) => h.send(text).map(|()| true),
+            Self::Codex(h) => h.send(text).map(|()| true).map_err(|error| {
+                if error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<CodexRefusal>())
+                {
+                    SendFailure::NotSent(error.to_string())
+                } else {
+                    SendFailure::Unknown(error.to_string())
+                }
+            }),
             Self::Stdio(h) => h.send(text, delivery),
         }
     }
 
-    fn answer(&mut self, approve: bool, text: Option<&str>) -> std::io::Result<()> {
+    fn answer(
+        &mut self,
+        approve: bool,
+        text: Option<&str>,
+    ) -> std::io::Result<Option<crate::protocol::acts::AnswerCancellation>> {
         match self {
-            Self::Codex(h) => h.answer(approve, text),
+            Self::Codex(h) => h.answer(approve, text).map(|()| None),
             Self::Stdio(h) => h.answer(approve, text),
         }
     }
@@ -267,12 +283,23 @@ pub(crate) enum Report {
     /// A message that waited for a running prompt was written, or dropped.
     Sent {
         delivery: String,
-        sent: Result<(), String>,
+        sent: Result<(), SendFailure>,
     },
     /// How many messages of a hosted session wait behind its running turn.
     Queued { session: SessionId, queued: usize },
     /// A resumed run to start; no run of its session is in progress.
-    Resume(ResumeRun),
+    Resume(ResumeRun, std::sync::mpsc::Sender<Result<(), String>>),
+    /// The archive writer's result for a queued delivery record.
+    DeliveryWrite {
+        id: String,
+        written: std::sync::mpsc::Receiver<
+            polylogue_store::Result<
+                polylogue_store::archive::writer::Committed<
+                    polylogue_store::user_writes::WriteResult,
+                >,
+            >,
+        >,
+    },
     /// The daemon stops.
     Stop,
 }
@@ -300,6 +327,9 @@ pub(crate) struct Acts {
     /// The hook spool, whose `registry/` hosts write status lines to.
     pub(crate) spool: PathBuf,
     reports: Mutex<std::sync::mpsc::Sender<Report>>,
+    pub(crate) delivery_write_failures: AtomicU64,
+    pub(crate) mailbox_failures: AtomicU64,
+    pub(crate) host_reattachment_failures: AtomicU64,
 }
 
 impl Acts {
@@ -322,6 +352,9 @@ impl Acts {
             permission_hook: OnceLock::new(),
             codex: Mutex::new((codex_program, codex_socket)),
             reports: Mutex::new(reports),
+            delivery_write_failures: AtomicU64::new(0),
+            mailbox_failures: AtomicU64::new(0),
+            host_reattachment_failures: AtomicU64::new(0),
         }
     }
 
@@ -475,15 +508,63 @@ impl Acts {
             .insert(session.to_string(), Arc::new(Mutex::new(hosted)));
     }
 
+    pub(crate) fn watch_delivery(
+        &self,
+        id: &str,
+        written: std::sync::mpsc::Receiver<
+            polylogue_store::Result<
+                polylogue_store::archive::writer::Committed<
+                    polylogue_store::user_writes::WriteResult,
+                >,
+            >,
+        >,
+    ) {
+        if !self.report(Report::DeliveryWrite {
+            id: id.into(),
+            written,
+        }) {
+            self.delivery_write_failed(id, "the acts worker stopped");
+        }
+    }
+
+    pub(crate) fn delivery_write_failed(&self, id: &str, error: impl std::fmt::Display) {
+        self.delivery_write_failures.fetch_add(1, Ordering::Relaxed);
+        polylogue_store::log!(warning, "delivery {id} could not be recorded: {error}");
+    }
+
+    pub(crate) fn mailbox_failed(&self, action: &str, error: impl std::fmt::Display) {
+        self.mailbox_failures.fetch_add(1, Ordering::Relaxed);
+        polylogue_store::log!(warning, "session mailbox {action} failed: {error}");
+    }
+
     /// Connects again to every recorded hosted session, after a daemon
     /// start; records whose host or thread is gone are removed. Returns
-    /// the sessions reattached.
-    pub(crate) fn reattach(&self) -> Vec<SessionId> {
+    /// the submitted deliveries the surviving hosts could identify.
+    pub(crate) fn reattach(&self) -> Vec<(SessionId, String)> {
         use polylogue_model::live::channel::HostProtocol;
         let (codex_program, codex_socket) = self.codex();
-        let mut attached = Vec::new();
-        for (key, record) in crate::hosting::records(&self.hosts) {
+        let mut submitted = Vec::new();
+        for item in crate::hosting::records(&self.hosts) {
+            let (key, record) = match item {
+                Ok(item) => item,
+                Err(error) => {
+                    self.host_reattachment_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    polylogue_store::log!(
+                        warning,
+                        "could not read a hosted session record: {error}"
+                    );
+                    continue;
+                }
+            };
             let Ok(session) = SessionId::parse(&record.session) else {
+                self.host_reattachment_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                polylogue_store::log!(
+                    warning,
+                    "host record {key} names an invalid session: {}",
+                    record.session
+                );
                 crate::hosting::remove(&self.hosts, &key);
                 continue;
             };
@@ -493,21 +574,31 @@ impl Acts {
                     &codex_socket,
                     record.protocol_session.as_deref().unwrap_or_default(),
                 )
-                .map(Hosted::Codex),
-                _ => crate::hosting::HostedStdio::reattach(&record).map(Hosted::Stdio),
+                .map(|hosted| (Hosted::Codex(hosted), Vec::new())),
+                _ => crate::hosting::HostedStdio::reattach(&record)
+                    .map(|(hosted, deliveries)| (Hosted::Stdio(hosted), deliveries)),
             };
             match hosted {
-                Ok(hosted) => {
+                Ok((hosted, deliveries)) => {
                     self.hold(&session, hosted);
-                    attached.push(session);
+                    submitted.extend(deliveries.into_iter().map(|id| (session.clone(), id)));
                 }
                 // Only a host or thread that is gone loses its record; a
                 // Codex app-server not up yet keeps it for the next start.
-                Err(error) if gone(&error) => crate::hosting::remove(&self.hosts, &key),
-                Err(_) => {}
+                Err(error) => {
+                    self.host_reattachment_failures
+                        .fetch_add(1, Ordering::Relaxed);
+                    polylogue_store::log!(
+                        warning,
+                        "could not reattach hosted session {session}: {error}"
+                    );
+                    if gone(&error) {
+                        crate::hosting::remove(&self.hosts, &key);
+                    }
+                }
             }
         }
-        attached
+        submitted
     }
 
     /// The sessions Polylogue holds a connection to.
@@ -522,7 +613,7 @@ impl Acts {
     /// Lets go of a session that ended: its connection and its record.
     pub(crate) fn release_host(&self, session: &SessionId) {
         self.hosted.locked().remove(&session.to_string());
-        for (key, record) in crate::hosting::records(&self.hosts) {
+        for (key, record) in crate::hosting::records(&self.hosts).into_iter().flatten() {
             if record.session == session.to_string() {
                 crate::hosting::remove(&self.hosts, &key);
             }
@@ -551,8 +642,19 @@ impl Acts {
         session: &SessionId,
         text: &str,
         delivery: Option<&str>,
-    ) -> Result<bool, String> {
-        self.with_hosted(session, |h| h.send(text, delivery))
+    ) -> Result<bool, SendFailure> {
+        let handle = self
+            .handle(session)
+            .ok_or_else(|| SendFailure::NotSent("the session is not hosted".into()))?;
+        handle.locked().send(text, delivery)
+    }
+
+    pub(crate) fn host_queued(&self, session: &SessionId, delivery: &str) -> bool {
+        self.handle(session)
+            .is_some_and(|handle| match &*handle.locked() {
+                Hosted::Stdio(host) => host.queued(delivery),
+                Hosted::Codex(_) => false,
+            })
     }
 
     pub(crate) fn host_answer(
@@ -560,7 +662,7 @@ impl Acts {
         session: &SessionId,
         approve: bool,
         text: Option<&str>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<crate::protocol::acts::AnswerCancellation>, String> {
         self.with_hosted(session, |h| h.answer(approve, text))
     }
 
@@ -569,30 +671,33 @@ impl Acts {
     }
 
     /// Starts a resumed run, or queues it behind the session's run in
-    /// progress; `true` when it started. `false` when it waits, or when no
-    /// acts worker runs and the message went back to the mailbox.
-    pub(crate) fn resume(&self, run: ResumeRun) -> bool {
+    /// progress. A new run reports when the harness process starts.
+    pub(crate) fn resume(
+        &self,
+        run: ResumeRun,
+    ) -> Result<Option<std::sync::mpsc::Receiver<Result<(), String>>>, String> {
         {
             let mut resuming = self.resuming.locked();
             let key = run.session.to_string();
             if let Some(queue) = resuming.get_mut(&key) {
                 queue.push_back(run);
-                return false;
+                return Ok(None);
             }
             resuming.insert(key, VecDeque::new());
         }
         let delivery = run.delivery.clone();
         let session = run.session.clone();
-        if !self.report(Report::Resume(run)) {
+        let (started, wait) = std::sync::mpsc::channel();
+        if !self.report(Report::Resume(run, started)) {
             // Nothing runs: the messages go back to the mailbox, where they
             // are handled like any other.
             self.release(&delivery);
             while let Some(queued) = self.resume_finished(&session) {
                 self.release(&queued.delivery);
             }
-            return false;
+            return Err("the daemon's resume worker is unavailable".into());
         }
-        true
+        Ok(Some(wait))
     }
 
     /// The run that follows a finished one, if any is queued.

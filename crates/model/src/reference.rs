@@ -310,6 +310,7 @@ impl Reference {
                     Self::Message(_)
                         | Self::Document(_)
                         | Self::Block { .. }
+                        | Self::ToolCall(..)
                         | Self::Annotation(RevisionReference {
                             revision: Some(_),
                             ..
@@ -324,7 +325,7 @@ impl Reference {
                         }
                 ) {
                     return Err(invalid(
-                        "span container must be a message, document, block, exact annotation or exact alternate part",
+                        "span container must be a message, document, block, tool call, exact annotation or exact alternate part",
                     ));
                 }
                 Self::Span {

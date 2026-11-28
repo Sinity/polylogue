@@ -81,9 +81,33 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let census = reader
+        .chain_census(&[
+            ReadingContract::Expected {
+                origin: "codex-rollout".into(),
+                version: "v".into(),
+            },
+            ReadingContract::Kept {
+                origin: "export-file".into(),
+            },
+        ])
+        .unwrap();
+    let total = |origin: &str| {
+        census
+            .chains
+            .iter()
+            .filter(|((format, _), _)| format == origin)
+            .map(|(_, count)| *count)
+            .sum::<u64>()
+    };
+    assert_eq!(total("codex-rollout"), 5);
+    assert_eq!(total("export-file"), 1);
+    assert_eq!(total("fallback"), 1);
+    assert_eq!(total("native"), 1);
+    assert_eq!(census.chains.values().sum::<u64>(), 8);
     assert_eq!(
-        pool.reader()
-            .unwrap()
+        reader
             .chains_behind_index(
                 &versions(&["codex-rollout", "native", "fallback", "export-file"]),
                 crate::RevisionChains::All,
@@ -285,7 +309,7 @@ fn failed_and_refused_chains_wait_for_new_bytes_or_a_new_parser_version() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
-    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES(71,1,'failed','v',0,10,'malformed','original failure'),(72,1,'failed','v',10,0,'refused','original refusal');").unwrap();
+    index.execute_batch("INSERT INTO input_ref(pk,id,origin) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES(71,1,'failed','v',0,10,'malformed','original failure'),(72,1,'failed','v',10,0,'refused','original refusal');").unwrap();
     let reads = fixture.reads().unwrap();
     let behind = |version: &str| {
         reads
@@ -501,4 +525,132 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
         );
         assert_eq!(source("fallback").format, "claude-export");
     }
+}
+
+#[test]
+fn a_cut_excludes_later_bytes_and_observations_on_every_input_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive.execute_batch(
+        "INSERT INTO input VALUES ('a','native'),('b','native'),('c','native'),('unrelated','native');
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES
+           ('a',1,'first',1,10,1),('a',2,'appended',1,20,2),
+           ('b',1,'first',1,30,1),('b',2,'rewritten',2,40,3),
+           ('c',1,'first',1,50,4),('unrelated',1,'first',1,1,1);
+         INSERT INTO observation(id,input,machine,path_bytes,class,details_json,
+                                 polylogue_version,seen_at,commit_seq) VALUES
+           ('0-original','b','m',CAST('/home/op/original' AS BLOB),'first',NULL,'test',1,1),
+           ('1-import','b','m',CAST('/home/op/later' AS BLOB),'imported',
+             '{\"import_format\":\"codex-rollout\"}','test',3,3);"
+    ).unwrap();
+    let versions = versions(&["native", "codex-rollout"]);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (input, length, path) in [("a", 10, None), ("b", 30, Some("/home/op/original"))] {
+        assert_eq!(
+            reader
+                .chains_behind_index_at(
+                    &versions,
+                    RevisionChains::All,
+                    Some(&[input.into()]),
+                    Some(Position(1))
+                )
+                .unwrap(),
+            [expected(
+                input,
+                1,
+                length,
+                true,
+                ("native", path),
+                false,
+                None
+            )],
+        );
+    }
+    assert_eq!(
+        reader
+            .count_chains_behind_index_at(&versions, "c", Some(Position(1)))
+            .unwrap(),
+        (2, 40),
+    );
+    let after = reader
+        .changed_input_ids(Position(1), Position(3), None, 1)
+        .unwrap();
+    assert_eq!(after, ["a"]);
+    let rest = reader
+        .changed_input_ids(Position(1), Position(3), Some(&after[0]), 10)
+        .unwrap();
+    assert_eq!(rest, ["b"]);
+    assert_eq!(
+        reader
+            .chains_behind_index_at(
+                &versions,
+                RevisionChains::Newest,
+                Some(&rest),
+                Some(Position(3))
+            )
+            .unwrap(),
+        [expected(
+            "b",
+            2,
+            40,
+            true,
+            ("codex-rollout", Some("/home/op/later")),
+            false,
+            None
+        )],
+    );
+    assert_eq!(
+        reader
+            .changed_input_ids(Position(3), Position(4), None, 5)
+            .unwrap(),
+        ["c"]
+    );
+}
+
+#[test]
+fn first_replay_round_represents_each_origin_and_skips_committed_readings() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive
+        .execute_batch(
+            "INSERT INTO input VALUES
+                ('aaa-old','claude-code'),('bbb-proxy','claude-code'),
+                ('ccc-new','claude-code'),('ddd-done','claude-code'),
+                ('eee-unknown','codex'),('fff-observed','codex');
+             INSERT INTO revision(input,number,produced,chain,length,seen_at,mtime_ns,commit_seq)
+             VALUES
+                ('aaa-old',1,'first',1,10,10,100000000,1),
+                ('bbb-proxy',1,'first',1,10,NULL,20000000,2),
+                ('ccc-new',1,'first',1,10,30,1000000,3),
+                ('ddd-done',1,'first',1,10,100,NULL,4),
+                ('eee-unknown',1,'first',1,10,NULL,NULL,5),
+                ('fff-observed',1,'first',1,10,NULL,NULL,6);
+             INSERT INTO observation(id,input,machine,class,revision,path_bytes,polylogue_version,seen_at)
+             VALUES ('obs','fff-observed','m','first',1,X'61','test',5);",
+        )
+        .unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO input_ref(id) VALUES ('ddd-done');
+             INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+             SELECT pk,1,'parsed','v',10,0 FROM input_ref WHERE id='ddd-done';",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let recent = reader
+        .recent_unread_chains(&versions(&["claude-code", "codex"]), "z", 2)
+        .unwrap();
+    assert_eq!(
+        recent
+            .iter()
+            .map(|chain| chain.input.as_str())
+            .collect::<Vec<_>>(),
+        ["ccc-new", "fff-observed", "bbb-proxy", "eee-unknown"]
+    );
+    assert!(recent.iter().all(|chain| chain.current));
 }

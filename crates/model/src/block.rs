@@ -202,12 +202,13 @@ pub enum ErrorReason {
     ExitCode(i64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum UnknownReason {
-    StatusFieldUnreadable,
-    /// Started in the background; completion has not been seen yet.
-    RunningInBackground,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum UnknownReason {
+        StatusFieldUnreadable => "status_field_unreadable",
+        /// Started in the background; completion has not been seen yet.
+        RunningInBackground => "running_in_background",
+    }
 }
 
 impl UnknownReason {
@@ -231,6 +232,9 @@ pub struct Attachment {
     /// The bytes, when they were inline or found on disk and stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<BlobHash>,
+    /// The reason a byte claim recorded by the source could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<AttachmentFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// The source's own ID for the file (ChatGPT `file-…`), by which an
@@ -240,17 +244,33 @@ pub struct Attachment {
     pub direction: AttachmentDirection,
 }
 
-/// Whether the attachment went to the model or came from it.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum AttachmentDirection {
-    /// The source records the media without establishing model delivery or authorship.
-    Unknown,
-    #[default]
-    Input,
-    Output,
+crate::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AttachmentFailure {
+        InvalidBase64 => "invalid_base64",
+        InvalidBlobHash => "invalid_blob_hash",
+    }
+}
+
+impl AttachmentFailure {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::InvalidBase64 => "invalid inline base64",
+            Self::InvalidBlobHash => "invalid stored blob hash",
+        }
+    }
+}
+
+crate::stored_names! {
+    /// Whether the attachment went to the model or came from it.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub enum AttachmentDirection {
+        /// The source records the media without establishing model delivery or authorship.
+        Unknown => "unknown",
+        #[default]
+        Input => "input",
+        Output => "output",
+    }
 }
 
 #[cfg(test)]

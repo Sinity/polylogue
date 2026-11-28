@@ -49,3 +49,7 @@ workspace = true
 [[example]]
 name = "first_build"
 test = true
+
+[[example]]
+name = "catch_up_archive_suffix"
+test = true

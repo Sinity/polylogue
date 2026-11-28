@@ -11,10 +11,11 @@
 use super::{Daemon, Failure, authored_preparation, error, writer};
 use crate::commands::ToolAccess;
 use crate::daemon::handler::{Call, Operation, Policy};
+use crate::hosting::SendFailure;
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::acts::{
     ActOutcome, Answered, Claim, Claimed, ClaimedDelivery, Continued, Decided, Delivered,
-    Interrupted, Permission, Sent, Start, StartReply, Started,
+    Interrupted, NotSentReason, Permission, Sent, Start, StartReply, Started,
 };
 use command_surface::{Answer, TextStyle};
 use polylogue_model::live::channel::{Act, Channel, channel};
@@ -53,7 +54,7 @@ impl Operation for StandingPermission {
         Ok(Policy::write(ToolAccess::Write))
     }
     fn run(a: Permission, call: &Call<'_>) -> Result<Answer<Decided>, Failure> {
-        permission(call.daemon, call.invocation, &a.session, &a.tool, &a.input)
+        permission(call.daemon, &a.session, &a.tool, &a.input)
     }
 }
 
@@ -74,18 +75,15 @@ impl Operation for StartSession {
         {
             return Ok(web_chat::start(call, provider, a)?.map(StartReply::WebChat));
         }
-        let pending = [
-            (a.submit, "--submit"),
-            (a.model.is_some(), "--model"),
-            (a.effort.is_some(), "--effort"),
-            (a.project.is_some(), "--project"),
-            (!a.attach.is_empty(), "--attach"),
+        let unbuilt = [
+            (a.submit, "--submit in a harness session"),
+            (a.model.is_some(), "--model in a harness session"),
+            (a.effort.is_some(), "--effort in a harness session"),
+            (a.project.is_some(), "--project in a harness session"),
+            (!a.attach.is_empty(), "--attach in a harness session"),
         ];
-        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("start {option} on a harness session is not built yet"),
-            ));
+        if let Some((_, use_)) = unbuilt.into_iter().find(|(used, _)| *used) {
+            return Err(crate::unbuilt::refusal("start", use_).into());
         }
         if a.harness.is_none() && a.role.is_none() {
             return Err(Reason::StartNeedsHarnessOrRole {}.into());
@@ -124,7 +122,7 @@ pub(super) fn author(
     ) {
         Ok(writes
             .archive()
-            .accept_delivery(request, None)?
+            .accept_delivery(request)?
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)??
             .outcome
@@ -145,22 +143,29 @@ fn outcome_event(
     d: &Daemon,
     invocation: &Invocation,
     delivery: &str,
-    what: DeliveryOutcome,
+    outcome: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
-    let request = invocation.request(
+    let request = outcome_request(invocation, delivery, outcome, detail);
+    let written = writer(d)?.archive().accept_delivery(request)?;
+    d.acts.watch_delivery(delivery, written);
+    Ok(())
+}
+
+fn outcome_request(
+    invocation: &Invocation,
+    delivery: &str,
+    outcome: DeliveryOutcome,
+    detail: String,
+) -> polylogue_model::user::UserRequest {
+    invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
-            what,
+            outcome,
             detail: Some(detail),
         },
-    );
-    writer(d)?
-        .archive()
-        .accept_delivery(request, None)
-        .map(|_| ())
-        .map_err(Failure::from)
+    )
 }
 
 /// Who an address names when it is sent.
@@ -325,10 +330,9 @@ pub(crate) fn refuse_running_resume(d: &Daemon, session: &SessionId) -> Result<(
     }
 }
 
-/// Sends a message or notice over a hosted connection: `delivered` when
-/// written, recorded later when it waits for the running prompt, and
-/// `not_sent` when the connection fails. The delivery stays handed out, so
-/// no hook takes it as well.
+/// Submits a new hosted message and records the result before confirming
+/// a direct submission. On loss of the connection after writing began,
+/// the prepared record still prevents a retry from submitting it again.
 fn protocol_send(
     d: &Daemon,
     invocation: &Invocation,
@@ -336,48 +340,157 @@ fn protocol_send(
     delivery: &str,
     pack: &str,
 ) -> Result<Delivered, Failure> {
-    let row = |outcome, reason: Option<String>, note: Option<&str>| Delivered {
+    let (outcome, reason, note, event) = match d.acts.host_send(session, pack, Some(delivery)) {
+        Ok(true) => (
+            ActOutcome::Delivered,
+            None,
+            None,
+            Some((
+                DeliveryOutcome::Delivered,
+                "sent over the hosted connection".into(),
+            )),
+        ),
+        Ok(false) => (
+            ActOutcome::Prepared,
+            None,
+            Some("waits for the running prompt; recorded when it is sent".into()),
+            None,
+        ),
+        Err(SendFailure::NotSent(message)) => {
+            let reason = NotSentReason::Failed { message };
+            let detail = reason.to_string();
+            (
+                ActOutcome::NotSent,
+                Some(reason),
+                None,
+                Some((DeliveryOutcome::NotSent, detail)),
+            )
+        }
+        Err(SendFailure::Unknown(message)) => (
+            ActOutcome::Unknown,
+            None,
+            Some(format!("submission could not be confirmed: {message}")),
+            None,
+        ),
+    };
+    if let Some((outcome, detail)) = event {
+        writer(d)?
+            .archive()
+            .accept_delivery(outcome_request(invocation, delivery, outcome, detail))?
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)??;
+    }
+    Ok(Delivered {
         session: session.clone(),
         delivery: Some(delivery.to_owned()),
         channel: Some(Channel::Protocol),
         outcome,
         reason,
-        detail: None,
-        note: note.map(str::to_owned),
+        note,
         started: None,
-    };
-    Ok(match d.acts.host_send(session, pack, Some(delivery)) {
-        Ok(true) => {
-            outcome_event(
-                d,
-                invocation,
-                delivery,
-                DeliveryOutcome::Delivered,
-                "sent over the hosted connection".into(),
-            )?;
-            row(ActOutcome::Delivered, None, None)
+    })
+}
+
+/// Records active ACP prompts the relay received before the daemon stopped.
+pub(super) fn recover_host_submissions(d: &Daemon) {
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "hosted",
+    ));
+    for (session, delivery) in d.acts.reattach() {
+        if let Err(error) = recover_host_submission(d, &invocation, &session, &delivery) {
+            d.acts.delivery_write_failed(&delivery, &error.message);
         }
-        Ok(false) => row(
+    }
+}
+
+fn recover_host_submission(
+    d: &Daemon,
+    invocation: &Invocation,
+    session: &SessionId,
+    delivery: &str,
+) -> Result<(), Failure> {
+    let archive = writer(d)?.archive();
+    let Some(receipt) = archive.committed_for(delivery)? else {
+        return Ok(());
+    };
+    let UserWrite::Deliver(prepared) = receipt.request.write else {
+        return Ok(());
+    };
+    if prepared.sender == DeliverySender::Act
+        && prepared.event == DeliveryEvent::Message
+        && prepared.recipient_id.as_deref() == Some(session.to_string().as_str())
+        && archive.delivery_events(delivery)?.is_empty()
+    {
+        author(
+            d,
+            invocation,
+            polylogue_store::user_writes::new_request_id(),
+            UserWrite::DeliveryEvent {
+                delivery: delivery.to_owned(),
+                outcome: DeliveryOutcome::Delivered,
+                detail: Some("accepted by the hosted relay before reattachment".into()),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Repeats only the receipt. The record already chose the recipient and
+/// channel, even if the current connection or live state has changed.
+fn previous_send(
+    d: &Daemon,
+    delivery: &str,
+    session: &SessionId,
+) -> Result<Option<Delivered>, Failure> {
+    let writer = writer(d)?;
+    let Some(request) = writer.archive().committed_for(delivery)? else {
+        return Ok(None);
+    };
+    let UserWrite::Deliver(prepared) = request.request.write else {
+        return Err(polylogue_store::StoreError::Conflict(delivery.into()).into());
+    };
+    if prepared.event != DeliveryEvent::Message
+        || prepared.recipient_id.as_deref() != Some(session.to_string().as_str())
+    {
+        return Err(polylogue_store::StoreError::Conflict(delivery.into()).into());
+    }
+    let channel = (prepared.sender == DeliverySender::Act).then_some(Channel::Protocol);
+    let queued = channel.is_some() && d.acts.host_queued(session, delivery);
+    let event = writer
+        .archive()
+        .delivery_events(delivery)?
+        .into_iter()
+        .next_back();
+    let (outcome, reason, note) = match event.map(|event| (event.outcome, event.detail)) {
+        Some((DeliveryOutcome::Delivered | DeliveryOutcome::Failed | DeliveryOutcome::Used, _)) => {
+            (ActOutcome::Delivered, None, None)
+        }
+        Some((DeliveryOutcome::NotSent, detail)) => (ActOutcome::NotSent, None, detail),
+        None if queued => (
             ActOutcome::Prepared,
             None,
-            Some("waits for the running prompt; recorded when it is sent"),
+            Some("waits for the running prompt; recorded when it is sent".into()),
         ),
-        Err(reason) => {
-            outcome_event(
-                d,
-                invocation,
-                delivery,
-                DeliveryOutcome::NotSent,
-                format!("failed({reason})"),
-            )?;
-            row(ActOutcome::NotSent, Some(reason), None)
-        }
-    })
+        None => (
+            ActOutcome::Unknown,
+            None,
+            Some("the previous submission has no confirmed outcome".into()),
+        ),
+    };
+    Ok(Some(Delivered {
+        session: session.clone(),
+        delivery: Some(delivery.into()),
+        channel,
+        outcome,
+        reason,
+        note,
+        started: None,
+    }))
 }
 
 /// Records what happened to a message that waited for a hosted session's
 /// running prompt.
-fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
+fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), SendFailure>) {
     let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
         "hosted",
     ));
@@ -386,9 +499,20 @@ fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
             DeliveryOutcome::Delivered,
             "sent over the hosted connection after the running prompt".to_owned(),
         ),
-        Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
+        Err(SendFailure::NotSent(reason)) => {
+            (DeliveryOutcome::NotSent, format!("failed({reason})"))
+        }
+        Err(SendFailure::Unknown(reason)) => {
+            polylogue_store::log!(
+                warning,
+                "submission of delivery {delivery} could not be confirmed: {reason}"
+            );
+            return;
+        }
     };
-    let _ = outcome_event(d, &invocation, delivery, what, detail);
+    if let Err(error) = outcome_event(d, &invocation, delivery, what, detail) {
+        d.acts.delivery_write_failed(delivery, &error.message);
+    }
 }
 
 /// The message pack: the text, what it is about, how to answer, and the
@@ -464,12 +588,17 @@ pub(crate) fn send(
         UserWrite::Assert {
             annotations: vec![annotation],
         },
-    )?
-    .id;
+    )?;
     let author_name = invocation.authorship.author.to_string();
     let mut sent = Vec::new();
     for (n, session) in sessions.iter().enumerate() {
         let delivery = format!("{request_id}-{n}");
+        if message.repeat
+            && let Some(previous) = previous_send(d, &delivery, session)?
+        {
+            sent.push(previous);
+            continue;
+        }
         let (view_state, facts, cwd) = match session_state(d, session, now)? {
             Some(state) => state,
             None => {
@@ -478,48 +607,58 @@ pub(crate) fn send(
                     delivery: None,
                     channel: None,
                     outcome: ActOutcome::NotSent,
-                    reason: Some("session_missing".into()),
-                    detail: None,
+                    reason: Some(NotSentReason::SessionMissing),
                     note: None,
                     started: None,
                 });
                 continue;
             }
         };
-        let pack = message_text(&delivery, &message, &author_name, text, about.as_deref());
-        // Held from before its row exists, so nothing closes or claims it
-        // until its channel is decided.
-        {
+        let chosen = channel(
+            Act::Send { live },
+            view_state,
+            &probe(&d.acts, session, &facts),
+        );
+        let pack = message_text(&delivery, &message.id, &author_name, text, about.as_deref());
+        let hosted = matches!(chosen, Ok(Channel::Protocol));
+        // The archive keeps hosted messages out of the mailbox. For the
+        // others, hold the claim until the channel takes the delivery.
+        if !hosted {
             let _claims = d.acts.claim_lock();
             d.acts.take(vec![(delivery.clone(), ())]);
         }
-        author(
+        let prepared = author(
             d,
             invocation,
             delivery.clone(),
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.to_string()),
-                sender: DeliverySender::Send,
+                sender: if hosted {
+                    DeliverySender::Act
+                } else {
+                    DeliverySender::Send
+                },
                 event: DeliveryEvent::Message,
                 cwd,
                 text: pack.clone(),
-                refs: vec![format!("annotation:{message}")],
+                refs: vec![format!("annotation:{}", message.id)],
                 left_out: Vec::new(),
+                prepared_position: None,
             }),
         )?;
-        let chosen = channel(
-            Act::Send { live },
-            view_state,
-            &probe(&d.acts, session, &facts),
-        );
+        if prepared.repeat {
+            let previous = previous_send(d, &delivery, session)?
+                .ok_or_else(|| Failure::internal("the repeated send has no delivery record"))?;
+            sent.push(previous);
+            continue;
+        }
         let row = |channel, outcome, note: Option<&str>| Delivered {
             session: session.clone(),
             delivery: Some(delivery.clone()),
             channel,
             outcome,
             reason: None,
-            detail: None,
             note: note.map(str::to_owned),
             started: None,
         };
@@ -535,21 +674,63 @@ pub(crate) fn send(
                 )
             }
             Ok(Channel::Resume) => {
-                // Held for the resumed run: no hook takes it.
-                let started = d.acts.resume(ResumeRun {
-                    session: session.clone(),
-                    delivery: delivery.clone(),
-                    text: pack,
-                });
-                row(
-                    Some(Channel::Resume),
-                    if started {
-                        ActOutcome::Started
-                    } else {
-                        ActOutcome::Queued
+                let argv = crate::live_acts::headless_resume(session, &pack);
+                let cwd = d
+                    .reads
+                    .reader()
+                    .and_then(|reader| reader.resume_directory(session));
+                let reason = match (argv, cwd) {
+                    (None, _) => NotSentReason::Unsupported {
+                        message: format!("{} has no headless resume", session.origin()),
                     },
-                    None,
-                )
+                    (_, Err(error)) => NotSentReason::Failed {
+                        message: error.to_string(),
+                    },
+                    (_, Ok(None)) => NotSentReason::DirectoryUnknown,
+                    (Some(_), Ok(Some(dir))) if !std::path::Path::new(&dir).is_dir() => {
+                        NotSentReason::DirectoryMissing { path: dir.into() }
+                    }
+                    (Some(argv), Ok(Some(cwd))) => {
+                        let run = ResumeRun {
+                            session: session.clone(),
+                            delivery: delivery.clone(),
+                            argv,
+                            cwd: cwd.into(),
+                        };
+                        match d.acts.resume(run) {
+                            Ok(None) => {
+                                sent.push(row(Some(Channel::Resume), ActOutcome::Queued, None));
+                                continue;
+                            }
+                            Ok(Some(started)) => match started.recv() {
+                                Ok(Ok(())) => {
+                                    sent.push(row(
+                                        Some(Channel::Resume),
+                                        ActOutcome::Started,
+                                        None,
+                                    ));
+                                    continue;
+                                }
+                                Ok(Err(message)) => NotSentReason::Failed { message },
+                                Err(error) => NotSentReason::Failed {
+                                    message: format!("the resume worker stopped: {error}"),
+                                },
+                            },
+                            Err(message) => NotSentReason::Failed { message },
+                        }
+                    }
+                };
+                outcome_event(
+                    d,
+                    invocation,
+                    &delivery,
+                    DeliveryOutcome::NotSent,
+                    reason.to_string(),
+                )?;
+                Delivered {
+                    reason: Some(reason),
+                    ..row(Some(Channel::Resume), ActOutcome::NotSent, None)
+                }
             }
             Ok(Channel::Protocol) => protocol_send(d, invocation, session, &delivery, &pack)?,
             Err(refusal) => {
@@ -561,8 +742,13 @@ pub(crate) fn send(
                     refusal.reason.to_owned(),
                 )?;
                 Delivered {
-                    reason: Some(refusal.reason.to_owned()),
-                    detail: Some(refusal.detail.to_string()),
+                    reason: Some(if live && !view_state.running() {
+                        NotSentReason::SessionNotLive { state: view_state }
+                    } else {
+                        NotSentReason::Unsupported {
+                            message: refusal.detail,
+                        }
+                    }),
                     ..row(None, ActOutcome::NotSent, None)
                 }
             }
@@ -570,7 +756,7 @@ pub(crate) fn send(
         sent.push(row);
     }
     Ok(Answer::ok(Sent {
-        message: Some(message),
+        message: Some(message.id),
         deliveries: sent,
         undo: "none: a sent message cannot be taken back".into(),
     }))
@@ -623,28 +809,41 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
     let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
         "mailbox",
     ));
-    let Ok(reader) = d.reads.reader() else {
-        return;
+    let reader = match d.reads.reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            d.acts.mailbox_failed("open the index", error);
+            return;
+        }
     };
     // A hosted session that ended needs no connection or record.
     for session in d.acts.hosted_sessions() {
-        let ended = reader
-            .live_state(&session.to_string(), now)
-            .ok()
-            .flatten()
-            .is_some_and(|s| s.view.state == polylogue_model::live::LiveState::Ended);
+        let ended = match reader.live_state(&session.to_string(), now) {
+            Ok(state) => {
+                state.is_some_and(|s| s.view.state == polylogue_model::live::LiveState::Ended)
+            }
+            Err(error) => {
+                d.acts
+                    .mailbox_failed(&format!("read live state for {session}"), error);
+                continue;
+            }
+        };
         if ended {
             d.acts.release_host(&session);
         }
     }
     let sessions: Vec<String> = if everyone {
-        reader
-            .sessions_with_pending_hook_deliveries()
-            .unwrap_or_default()
+        match reader.sessions_with_pending_hook_deliveries() {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                d.acts.mailbox_failed("read pending sessions", error);
+                return;
+            }
+        }
     } else {
         crate::mailbox::flagged(d.acts.mail())
             .unwrap_or_else(|error| {
-                polylogue_store::log!(warning, "session mailbox read failed: {error}");
+                d.acts.mailbox_failed("read flags", error);
                 Vec::new()
             })
             .iter()
@@ -653,17 +852,31 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
     };
     let mut stopped = Vec::new();
     for session in sessions {
-        let Ok(id) = SessionId::parse(&session) else {
-            continue;
+        let id = match SessionId::parse(&session) {
+            Ok(id) => id,
+            Err(error) => {
+                d.acts
+                    .mailbox_failed(&format!("read session {session}"), error);
+                continue;
+            }
         };
-        let state = reader
-            .live_state(&session, now)
-            .ok()
-            .flatten()
-            .map(|s| s.view.state);
-        let pending: Vec<(String, ())> = reader
-            .pending_hook_deliveries(&session)
-            .unwrap_or_default()
+        let state = match reader.live_state(&session, now) {
+            Ok(state) => state.map(|s| s.view.state),
+            Err(error) => {
+                d.acts
+                    .mailbox_failed(&format!("read live state for {session}"), error);
+                continue;
+            }
+        };
+        let pending = match reader.pending_hook_deliveries(&session) {
+            Ok(pending) => pending,
+            Err(error) => {
+                d.acts
+                    .mailbox_failed(&format!("read deliveries for {session}"), error);
+                continue;
+            }
+        };
+        let pending: Vec<(String, ())> = pending
             .into_iter()
             .filter(|(item, _)| !d.acts.handed_out(item))
             .map(|(item, _)| (item, ()))
@@ -673,7 +886,8 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
                 if !pending.is_empty()
                     && let Err(error) = crate::mailbox::raise(d.acts.mail(), &id)
                 {
-                    polylogue_store::log!(warning, "session mailbox update failed: {error}");
+                    d.acts
+                        .mailbox_failed(&format!("raise the flag for {id}"), error);
                 }
             }
             _ => stopped.push((id, state, pending)),
@@ -687,16 +901,19 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
         };
         let reason = format!("session_{}", state.map_or("missing", |s| s.as_str()));
         for (id, ()) in taken {
-            let _ = outcome_event(
+            if let Err(error) = outcome_event(
                 d,
                 &invocation,
                 &id,
                 DeliveryOutcome::NotSent,
                 reason.clone(),
-            );
+            ) {
+                d.acts.delivery_write_failed(&id, &error.message);
+            }
         }
         if let Err(error) = crate::mailbox::lower(d.acts.mail(), &session) {
-            polylogue_store::log!(warning, "session mailbox update failed: {error}");
+            d.acts
+                .mailbox_failed(&format!("lower the flag for {session}"), error);
         }
     }
 }
@@ -719,17 +936,13 @@ pub(crate) fn answer(
     standing: bool,
 ) -> Result<Answer<Answered>, Failure> {
     let now = now(d);
-    let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
+    let Some((state, facts, cwd)) = session_state(d, session, now)? else {
         return Ok(error(
             polylogue_model::Code::NotFound,
             format!("no session {session}"),
         ));
     };
-    let chosen = match channel(
-        Act::Answer,
-        state.view.state,
-        &probe(&d.acts, session, &state.facts),
-    ) {
+    let chosen = match channel(Act::Answer, state, &probe(&d.acts, session, &facts)) {
         Ok(chosen) => chosen,
         Err(refusal) => {
             return Ok(error(
@@ -753,7 +966,7 @@ pub(crate) fn answer(
             Value::Null,
         )
     } else {
-        let Some(pending) = state.facts.pending_request.clone() else {
+        let Some(pending) = facts.pending_request else {
             return Ok(error(
                 polylogue_model::Code::Refused,
                 "the session has no pending permission request to answer",
@@ -801,10 +1014,11 @@ pub(crate) fn answer(
             recipient_id: Some(session.to_string()),
             sender: DeliverySender::Act,
             event: DeliveryEvent::Control,
-            cwd: state.cwd.clone(),
+            cwd,
             text: body.to_string(),
             refs: vec![reference.clone()],
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     if let Some((first, _)) = earlier {
@@ -826,24 +1040,40 @@ pub(crate) fn answer(
     match chosen {
         Channel::Protocol => {
             let result = d.acts.host_answer(session, approve, text.as_deref());
-            let (what, detail) = match &result {
-                Ok(()) => (
+            let (outcome, what, detail, cancellation, note) = match result {
+                Ok(None) => (
+                    ActOutcome::Delivered,
                     DeliveryOutcome::Delivered,
                     "answered over the hosted connection".to_owned(),
+                    None,
+                    None,
                 ),
-                Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
+                Ok(Some(cancellation)) => (
+                    ActOutcome::Cancelled,
+                    DeliveryOutcome::NotSent,
+                    format!(
+                        "permission request cancelled: no matching option (offered: {:?})",
+                        cancellation.options
+                    ),
+                    Some(cancellation),
+                    None,
+                ),
+                Err(reason) => (
+                    ActOutcome::NotSent,
+                    DeliveryOutcome::NotSent,
+                    format!("failed({reason})"),
+                    None,
+                    Some(reason),
+                ),
             };
             outcome_event(d, invocation, request_id, what, detail)?;
             Ok(Answer::ok(Answered {
                 delivery: request_id.to_owned(),
                 request: reference,
                 channel: Channel::Protocol,
-                outcome: if result.is_ok() {
-                    ActOutcome::Delivered
-                } else {
-                    ActOutcome::NotSent
-                },
-                note: None,
+                outcome,
+                cancellation,
+                note,
                 undo: "none: an answer cannot be taken back".into(),
             }))
         }
@@ -852,6 +1082,7 @@ pub(crate) fn answer(
             request: reference,
             channel: Channel::Hook,
             outcome: ActOutcome::Prepared,
+            cancellation: None,
             note: Some("applies when the session next asks for the same tool and input".into()),
             undo: "none: an answer cannot be taken back".into(),
         })),
@@ -859,11 +1090,9 @@ pub(crate) fn answer(
 }
 
 /// The synchronous permission hook asks for a decision: a standing answer
-/// for the same tool and input, recorded delivered when it applies. With
-/// none it returns nothing at once, and the harness shows its own prompt.
+/// for the same tool and input. The hook records delivery after writing it.
 fn permission(
     d: &Daemon,
-    invocation: &Invocation,
     session: &SessionId,
     tool: &str,
     input: &Value,
@@ -902,13 +1131,6 @@ fn permission(
     if taken.is_empty() {
         return Ok(none());
     }
-    outcome_event(
-        d,
-        invocation,
-        &row.id,
-        DeliveryOutcome::Delivered,
-        format!("applied to the {tool} permission request"),
-    )?;
     Ok(Answer::ok(Decided {
         decision: body["decision"].as_str().map(str::to_owned),
         text: body["text"].as_str().map(str::to_owned),
@@ -944,6 +1166,7 @@ pub(crate) fn interrupt(
             text: json!({"interrupt": true}).to_string(),
             refs: Vec::new(),
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     let (what, detail, answer) = match channel(
@@ -1012,22 +1235,31 @@ pub(crate) fn run_reports(
                 let _ = queue_lines.append(&daemon.acts.spool, &boot, &[line]);
             }
             Report::Sent { delivery, sent } => record_sent(&daemon, &delivery, sent),
-            Report::Resume(run) => resume_session(&daemon, run),
+            Report::Resume(run, started) => resume_session(&daemon, run, started),
+            Report::DeliveryWrite { id, written } => match written.recv() {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => daemon.acts.delivery_write_failed(&id, error),
+                Err(error) => daemon.acts.delivery_write_failed(&id, error),
+            },
             Report::Stop => return,
         }
     }
 }
 
 /// Runs a session's resumed run, then each run queued behind it.
-fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
+fn resume_session(
+    daemon: &std::sync::Arc<Daemon>,
+    run: ResumeRun,
+    started: std::sync::mpsc::Sender<Result<(), String>>,
+) {
     let session = run.session.clone();
-    let delivery = run.delivery.clone();
     let daemon_for_runs = std::sync::Arc::clone(daemon);
     let spawned = polylogue_model::spawn_named("polylogue-resume", move || {
         let daemon = daemon_for_runs;
         let mut next = Some(run);
+        let mut started = Some(started);
         while let Some(run) = next.take() {
-            resume_once(&daemon, &run);
+            resume_once(&daemon, &run, started.take());
             next = daemon.acts.resume_finished(&run.session);
             while let Some(candidate) = next.take() {
                 // A queued message waits for its session to stop running:
@@ -1057,86 +1289,73 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
             }
         }
     });
-    if spawned.is_err() {
-        // Nothing runs: the messages go back to the mailbox, where they are
-        // handled like any other.
-        daemon.acts.release(&delivery);
+    if let Err(error) = spawned {
+        let invocation = daemon.invocation(
+            &polylogue_reading::operation::Context::worker_authorship("resume"),
+        );
         while let Some(queued) = daemon.acts.resume_finished(&session) {
-            daemon.acts.release(&queued.delivery);
+            if let Err(write_error) = outcome_event(
+                daemon,
+                &invocation,
+                &queued.delivery,
+                DeliveryOutcome::NotSent,
+                format!("failed({error})"),
+            ) {
+                daemon
+                    .acts
+                    .delivery_write_failed(&queued.delivery, &write_error.message);
+            }
         }
     }
 }
 
-/// One headless resume: `delivered` when the harness starts with the message
-/// as its prompt, `failed` with the first line of its error output when it
-/// exits unsuccessfully. It runs in the session's resume directory, and is
-/// `not_sent` (`directory_unknown`, `directory_missing(DIR)`) without one:
-/// the daemon's own directory is never borrowed.
-fn resume_once(d: &Daemon, run: &ResumeRun) {
+/// A headless resume takes the first message when the harness starts.
+fn resume_once(
+    d: &Daemon,
+    run: &ResumeRun,
+    started: Option<std::sync::mpsc::Sender<Result<(), String>>>,
+) {
     let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
         "resume",
     ));
     let record = |what, detail: String| {
-        let _ = outcome_event(d, &invocation, &run.delivery, what, detail);
-    };
-    let Some(argv) = crate::live_acts::headless_resume(&run.session, &run.text) else {
-        record(DeliveryOutcome::NotSent, "unsupported".into());
-        return;
-    };
-    let directory = match d
-        .reads
-        .reader()
-        .map_err(|e| e.to_string())
-        .and_then(|reader| {
-            reader
-                .resume_directory(&run.session)
-                .map_err(|e| e.to_string())
-        }) {
-        Ok(Some(dir)) if std::path::Path::new(&dir).is_dir() => dir,
-        Ok(Some(dir)) => {
-            record(
-                DeliveryOutcome::NotSent,
-                format!("directory_missing({dir})"),
-            );
-            return;
-        }
-        Ok(None) => {
-            record(DeliveryOutcome::NotSent, "directory_unknown".into());
-            return;
-        }
-        Err(e) => {
-            record(DeliveryOutcome::NotSent, format!("failed({e})"));
-            return;
+        if let Err(error) = outcome_event(d, &invocation, &run.delivery, what, detail) {
+            d.acts.delivery_write_failed(&run.delivery, &error.message);
         }
     };
-    let mut command = std::process::Command::new(&argv[0]);
-    command
-        .args(&argv[1..])
-        .current_dir(directory)
+    let child = std::process::Command::new(&run.argv[0])
+        .args(&run.argv[1..])
+        .current_dir(&run.cwd)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let child = match command.spawn() {
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match child {
         Ok(child) => child,
-        Err(e) => {
-            record(DeliveryOutcome::NotSent, format!("failed({e})"));
+        Err(error) => {
+            let problem = format!("{} in {}: {error}", run.argv[0], run.cwd.display());
+            if let Some(started) = started {
+                let _ = started.send(Err(problem));
+            } else {
+                record(DeliveryOutcome::NotSent, format!("failed({problem})"));
+            }
             return;
         }
     };
     record(
         DeliveryOutcome::Delivered,
-        format!("resumed headlessly ({} pid {})", argv[0], child.id()),
+        format!("resumed headlessly ({} pid {})", run.argv[0], child.id()),
     );
-    match child.wait_with_output() {
-        Ok(output) if output.status.success() => {}
-        Ok(output) => {
-            let first = String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_owned();
-            record(DeliveryOutcome::Failed, format!("failed({first})"));
-        }
+    if let Some(started) = started {
+        let _ = started.send(Ok(()));
+    }
+    let stderr = crate::hosting::stderr_tail(child.stderr.take().expect("piped stderr"));
+    match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(status) => record(
+            DeliveryOutcome::Failed,
+            format!("failed({})", crate::hosting::exit_reason(status, stderr)),
+        ),
         Err(e) => record(DeliveryOutcome::Failed, format!("failed({e})")),
     }
 }
@@ -1201,7 +1420,7 @@ fn start_session(
             session
         }),
     }
-    .map_err(|e| Failure::refused(format!("{}: {e}", protocol.as_str())))?;
+    .map_err(|e| Failure::io(format!("{}: {e}", protocol.as_str())))?;
     author(
         d,
         invocation,
@@ -1215,6 +1434,7 @@ fn start_session(
             text: first,
             refs: new.refs,
             left_out: Vec::new(),
+            prepared_position: None,
         }),
     )?;
     outcome_event(
@@ -1366,7 +1586,6 @@ fn message_new_instance(
             channel: Some(Channel::Protocol),
             outcome: ActOutcome::Delivered,
             reason: None,
-            detail: None,
             note: None,
             started: Some(role.name.clone()),
         }],
@@ -1482,27 +1701,51 @@ pub(crate) fn resume_in(
             ),
         ));
     };
-    let session = match start_session(
-        d,
-        invocation,
-        NewSession {
-            request_id: c.request_id,
-            harness: c.harness,
-            cwd: &cwd,
-            text: briefing.text,
-            refs: briefing.refs,
-        },
-    )? {
-        Ok(session) => session,
-        Err(refused) => return Ok(refused.answer()),
-    };
-    let stop_source = if c.stop_source {
-        Some(interrupt(
+    let previous = writer(d)?.archive().committed_for(c.request_id)?;
+    let session = if let Some(previous) = previous {
+        let request = previous.request;
+        let UserWrite::Deliver(first_turn) = request.write else {
+            return Err(Reason::ContinuationRequestUsed {}.into());
+        };
+        let source = format!("session:{}", c.source);
+        if request.authorship != invocation.authorship
+            || first_turn.event != DeliveryEvent::FirstTurn
+            || first_turn.sender != DeliverySender::Act
+            || first_turn.refs.first() != Some(&source)
+            || first_turn.cwd.as_deref() != cwd.to_str()
+        {
+            return Err(Reason::ContinuationRequestUsed {}.into());
+        }
+        let session = first_turn
+            .recipient_id
+            .as_deref()
+            .ok_or_else(|| Failure::internal("the first turn has no recipient"))?;
+        let session = SessionId::parse(session).map_err(Failure::internal)?;
+        if session.origin().as_str() != c.harness {
+            return Err(Reason::ContinuationRequestUsed {}.into());
+        }
+        session
+    } else {
+        match start_session(
             d,
             invocation,
-            &format!("{}-stop", c.request_id),
-            c.source,
-        )?)
+            NewSession {
+                request_id: c.request_id,
+                harness: c.harness,
+                cwd: &cwd,
+                text: briefing.text,
+                refs: briefing.refs,
+            },
+        )? {
+            Ok(session) => session,
+            Err(refused) => return Ok(refused.answer()),
+        }
+    };
+    let stop_source = if c.stop_source {
+        Some(
+            interrupt(d, invocation, &format!("{}-stop", c.request_id), c.source)
+                .unwrap_or_else(Failure::answer),
+        )
     } else {
         None
     };

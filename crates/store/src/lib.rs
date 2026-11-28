@@ -55,7 +55,9 @@ pub mod capture_read;
 pub mod follow;
 pub mod measure;
 mod ordered_blocks;
+pub mod parse;
 mod parse_state;
+pub mod peak_memory;
 pub mod python_polylogue;
 pub mod query;
 pub mod query_objects;
@@ -94,14 +96,13 @@ pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
     BehindChain, CapturedSession, ChainCensus, KnownInput, Lane, LatestChain, ReadPool, Reader,
-    ReadingContract, RevisionChains, SqlValue, Status, StoredSource,
-    scope::{ReadScopeToken, ScopeInvalidation},
+    ReadingContract, RevisionChains, SqlValue, Status, StoredSource, scope::ReadScopeToken,
 };
 pub use scope_index::{
     NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
 };
 pub use writer::{
-    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParsePart,
     WriteReport, Writer, WriterSender,
 };
 

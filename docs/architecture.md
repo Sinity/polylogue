@@ -205,20 +205,18 @@ to WAL and renamed `ready.db`, and `ready.db` is renamed over `index.db`; the
 installed index stays `index.db` until that rename. A rebuild never changes
 the record or the stored bytes, so losing one costs the rebuild and nothing
 else: a start that finds a rebuild writing discards its files and rebuilds
-from the stored bytes for the reason on disk, a rebuild that fails in a
-running daemon is started again the same way, and a start that finds a ready
-rebuild installs it. An install that fails in a running daemon leaves the
-rebuild ready and the index writer without an index connection: index writes
+from the stored bytes for the reason on disk, and a rebuild that fails in a
+running daemon is started again the same way. A ready rebuild installs at
+start after its archive identity and position are checked. An install that
+fails in a running daemon leaves the rebuild ready and the index writer
+without an index connection. Index writes
 are refused with the install's error, `status` shows it, and the install is
 tried again when the writer next wakes for a commit or a message, and at the
-next start; nothing retries it on a timer. A new archive's first index is
-rebuilt the same way, from the files its first pass stores. While a rebuild
-runs, reads are served from the installed index when this build of Polylogue
-can read it, and otherwise reply `index_building` with the rebuild's reason
-and progress
-([installing.md](installing.md#replacing-an-index-from-another-schema)). A
-read that has not started when an install renames the file starts on the
-installed index; a read already started keeps the file it opened.
+next start; nothing retries it on a timer. A usable installed index serves
+while a private bulk rebuild runs. With no usable index, daemon startup
+installs the empty current schema for [incremental catch-up](#one-path).
+A read that has not started when an install renames the file starts on the
+installed index. A read already started keeps the file it opened.
 
 ## Pipeline
 
@@ -276,7 +274,7 @@ store's module documentation, not of this page.
 - **A chain is in one of three states**: it has no reading; its reading is
   complete at a length under a parse version; or reading it failed at a
   version, with the reason
-  ([parse versions](archive.md#reading-versions)). A chain is read when
+  ([parse versions](archive.md#parse-versions)). A chain is read when
   its stored length or its parser's parse version differs from what its
   state names, and for no other cause. The state is one value in one row;
   every reader judges it, with what the archive says of the chain, through
@@ -351,7 +349,20 @@ store's module documentation, not of this page.
 
 ### One path
 
-The daemon reaches the index two ways, which must agree.
+The daemon reaches the index two ways, which must agree. At startup, a
+daemon with no usable index installs a complete empty index schema. Its
+ordinary index writer fills that index by capture, replay and derivation.
+Committed readings survive a stop and are available without waiting for
+older inputs. At the start of replay, a bounded batch takes the most
+recent unread current chains from each origin, using recorded observation
+times, with file modification times as a fallback. An origin with no
+known time still gets a turn. This priority is
+about observed inputs and does not claim that a date range of sessions is
+complete. The daemon starts deriving the recent readings before its
+ordinary traversal catches up the remaining chains. A date-filtered
+listing can include those readings once their own activity times commit.
+A restart resumes at the committed parser positions. A daemon with a
+usable index can keep serving it during a private bulk rebuild.
 
 - **Upkeep** keeps the installed index current as the record grows: for each
   chain whose state is behind, it reads on, and commits the new rows with
@@ -380,8 +391,8 @@ The daemon reaches the index two ways, which must agree.
   holds. A session whose shown rows depend on readings stated
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
-  under several sessions, a reading holding part of a version other readings
-  complete, or readings upkeep wrote while the build ran. A session's events
+  under several sessions, or a reading holding part of a version other
+  readings complete. A session's events
   that follow a message of another session are placed knowing, from what the
   merge read of every message's statements, that the message is shown
   there, so a session composed from its group looks no message up by ID
@@ -396,26 +407,36 @@ The daemon reaches the index two ways, which must agree.
   the property the write path is tested by: one property test over generated
   inputs, orders and divisions, comparing replies and not tables
   ([testing](testing.md)).
-- **Either may stand in for the other.** Because they agree, the daemon
-  builds anew instead of catching up when that is less work (an index far
-  behind its record, a parse version changed for most of the corpus, a
-  large import into a small archive), and nothing a reader sees depends on
-  which it chose.
-- **A build reads the record as it stood at one position.** It writes only
-  its own private files; upkeep writes only the installed index. What is
-  captured while a build runs is stored and committed to the record at once,
-  as always, and kept current in the installed index if there is one. When
-  the build installs, it is an index behind its record like any other and
-  upkeep brings it forward from the position it was built at. Preparing may
+- **Either gives the same final answers.** A private bulk rebuild can
+  replace a usable index while readers keep their existing view. With no
+  usable index, incremental catch-up gives readers committed rows and
+  search entries as they arrive. Replies stay incomplete while known
+  capture, parsing, derivation or search work remains due. Discovery can
+  report that watched files have not yet been processed before the record
+  contains enough information to count them.
+- **A build reads the record as it stood at one position.** It is its own
+  object with its own connection to its private file, on a thread of its
+  own; the index writer never writes that file, and writes only the
+  installed index. During a serving daemon's private bulk rebuild, captured
+  inputs are stored and committed to the record and parsed into the
+  installed index. The build records the record position it started at, takes in what the record
+  committed up to it (the text of alternates as well as every chain at the
+  length it was stored at when planned) and writes that position into its
+  meta. When the build installs, it is an index behind its record like any
+  other: chains that grew or appeared meanwhile are due by their stored
+  length, and the index writer follows the record's other changes from that
+  position. The index writer stops using its index only for the install, and
+  starts again on the new file. Preparing may
   start on a chain as soon as its bytes are stored, also while other inputs
   are still being captured; the merge takes only readings that are of their
   chain at the length the build's position gives.
 - **A build never makes a request wait for it.** Its workers read chains
-  without the writer or the index a request reads, so they never pause;
-  an import is answered between the chains handed to the workers, and the
-  writer's own build work (load, indexes, composition, full text) runs in
-  steps of one transaction each, between the requests it serves. No chain
-  is read twice.
+  without the writer or the index a request reads, so they never pause; an
+  import is answered between the chains handed to the workers and while the
+  build's later stages (load, assembly, indexes, full text) run on the
+  build's own thread. An import's reply does not wait for a private build.
+  The installed index follows the import through the ordinary writer. No
+  chain is read twice by the build.
 - **Live inputs go before bulk work.** A file being written now is read and
   committed ahead of stored chains waiting for a reading.
 - **Memory is bounded by streaming.** A build's memory does not grow with
@@ -428,7 +449,7 @@ The daemon reaches the index two ways, which must agree.
   shared by the caches and the work, with no fixed ceiling: a build's
   prepared readings in flight, its workers' sort buffers, each step's run
   readers and read-ahead are given fixed shares, and the build file's cache
-  takes what the step leaves. Parse workers follow the physical cores the
+  takes what the stage leaves. Parse workers follow the physical cores the
   process may use, each with at least a minimum share of memory; the
   memory a chain's prepared readings need is admitted per chain, so the
   number of workers does not trade against the caches. A worker holds the

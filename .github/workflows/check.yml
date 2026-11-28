@@ -1,4 +1,6 @@
 name: check
+# The landing controller uses this title to verify the dispatch input.
+run-name: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'land-queue-') && format('Staging {0}', inputs.rev) || '' }}
 
 on:
   pull_request:
@@ -24,7 +26,9 @@ env:
 
 concurrency:
   group: check-${{ inputs.rev || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A newer push supersedes an older run on the same ref: on master the newest
+  # commit's run is the one that says whether master is green.
+  cancel-in-progress: true
 
 # Each job runs one xtask command that `cargo xtask check` also runs locally.
 jobs:
@@ -115,6 +119,9 @@ jobs:
           actual=$(git rev-parse HEAD)
           printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
           test "$actual" = "$EXPECTED_REV"
+          if [[ "$GITHUB_REF_NAME" == land-queue-* ]]; then
+            test "$actual" = "$GITHUB_SHA"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

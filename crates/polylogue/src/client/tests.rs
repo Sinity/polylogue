@@ -117,7 +117,8 @@ fn an_async_caller_that_cancels_hangs_up_its_connection() {
         .unwrap();
     let answer = runtime
         .block_on(async {
-            let call = call_ready_as_bounded(&archive, &request, &cancelled, this_process(), None);
+            let target = Target::Archive(archive);
+            let call = call_as_bounded(&target, &request, &cancelled, this_process(), None);
             let cancel = async {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 cancelled.cancel();

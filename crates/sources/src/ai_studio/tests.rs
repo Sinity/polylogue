@@ -30,6 +30,11 @@ fn parse_at(path: &str, bytes: &[u8]) -> crate::parse::Step {
 
 use crate::content_ids::tests::expected;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 #[test]
 fn chunks_become_messages_with_thoughts_split_out() {
     let bytes = prompt(vec![
@@ -110,6 +115,7 @@ fn chunks_become_messages_with_thoughts_split_out() {
 fn inline_bytes_are_stored_and_drive_files_keep_their_id() {
     let bytes = prompt(vec![
         json!({"role": "user", "inlineImage": {"mimeType": "image/png", "data": "aGVsbG8="},
+               "inlineFile": {"mimeType": "text/plain", "data": "invalid!!"},
                "driveDocument": {"id": "1AbC"}}),
         json!({"role": "model", "executableCode": {"language": "PYTHON", "code": "print(1)"},
                "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "1\n"}}),
@@ -120,6 +126,8 @@ fn inline_bytes_are_stored_and_drive_files_keep_their_id() {
     let user = &step.output.messages[1].message;
     assert!(matches!(&user.blocks[0], Block::File(a) if a.source_id.as_deref() == Some("1AbC")));
     assert!(matches!(&user.blocks[1], Block::Image(a) if a.blob.is_some()));
+    assert!(matches!(&user.blocks[2], Block::File(a)
+        if a.failure == Some(polylogue_model::AttachmentFailure::InvalidBase64) && a.blob.is_none()));
     let model = &step.output.messages[2].message;
     assert!(
         matches!(&model.blocks[0], Block::ToolCall { command: Some(c), .. } if c == "print(1)")

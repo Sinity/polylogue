@@ -1,7 +1,7 @@
 use super::*;
 use command_surface::RunnableRequest as ResumeArguments;
 use polylogue_model::read::{
-    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, View,
+    ItemKind, ItemPlace, ReadDelivery, ReadItem, ReadOptions, ReadPage, ValueState, View,
 };
 
 fn request(
@@ -176,7 +176,6 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     loop {
         let page = page(d, target, inherited, view, 8, cursor.as_ref());
         assert!(serde_json::to_vec(&page).unwrap().len() <= 25_000);
-        assert!(page.records.is_empty());
         text.page(&page);
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {
@@ -617,8 +616,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         "available child body",
     ))
     .unwrap();
-    record["forkedFrom"] =
-        serde_json::json!({"sessionId":"missing-parent", "messageUuid":"missing-anchor"});
+    record["resumeSessionId"] = serde_json::json!("missing-parent");
     std::fs::write(
         d.home.join(".claude/projects/-p/issue-child.jsonl"),
         format!("{record}\n"),
@@ -627,7 +625,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
     d.wait_for(|status| {
         status["store"]["messages"] == 2
             && status["store"]["search_pending"] == 0
-            && status["busy"] == false
+            && status["caught_up"] == true
     });
     let target = "session:claude-code:issue-child";
     let whole = page(&d.daemon, target, true, View::Transcript, 4000, None);
@@ -640,7 +638,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         .unwrap();
     assert!(boundary > 0);
     assert!(
-        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingParent { child, parent } }
+        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingBranchPoint { child, parent, branch_point: None } }
         if child.to_string() == "claude-code:issue-child" && parent.to_string() == "claude-code:missing-parent")
     );
     // Calibrate the payload cap through the public encoder and sole estimator,
@@ -723,15 +721,24 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
     let parent = "inherited -----BEGIN VENDOR PRIVATE KEY-----synthetic";
     let child = "still synthetic -----END VENDOR PRIVATE KEY----- visible λ🙂";
     let d = test_daemon::start(parent);
-    let mut record: serde_json::Value =
-        serde_json::from_str(&polylogue_testkit::claude_user("child-u1", "child", child)).unwrap();
+    let mut record: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
+        "child-copy",
+        "child",
+        parent,
+    ))
+    .unwrap();
     record["forkedFrom"] = serde_json::json!({"sessionId":"s1", "messageUuid":"u1"});
     std::fs::write(
         d.home.join(".claude/projects/-p/child.jsonl"),
-        format!("{record}\n"),
+        format!(
+            "{record}\n{}",
+            polylogue_testkit::claude_user("child-u1", "child", child)
+        ),
     )
     .unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["messages"] == 2);
+    d.wait_for(|status| {
+        status["store"]["sessions_physical"] == 2 && status["store"]["messages"] == 2
+    });
     assert_eq!(
         all(
             &d.daemon,
@@ -750,6 +757,35 @@ fn inherited_source_text_survives_parent_child_page_boundaries() {
         ),
         format!("{parent}{child}")
     );
+    let source = page(
+        &d.daemon,
+        "session:claude-code:s1",
+        false,
+        View::Transcript,
+        300,
+        None,
+    );
+    let from = source
+        .document
+        .items
+        .iter()
+        .find(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+        .unwrap()
+        .source
+        .reference
+        .clone();
+    let mut read = polylogue_reading::ReadRequest::new(
+        "session:claude-code:child",
+        ReadOptions {
+            from: Some(from),
+            ..Default::default()
+        },
+    );
+    read.budget = polylogue_model::read::ReadBudget::Unlimited;
+    let ranged = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+    let mut text = Text::default();
+    text.page(&ranged);
+    assert_eq!(text.value, format!("{parent}{child}"));
 }
 
 #[test]
@@ -775,6 +811,95 @@ fn selected_latest_user_message_does_not_include_later_assistant_bodies() {
         ),
         "latest human prompt λ🙂"
     );
+}
+
+#[test]
+fn first_and_last_select_messages_and_report_the_exact_omission() {
+    let d = test_daemon::start("placeholder");
+    add_selected_session(
+        &d,
+        &[
+            ("m1", "alpha"),
+            ("m2", "beta"),
+            ("m3", "gamma"),
+            ("m4", "delta"),
+        ],
+    );
+    for (first, last, expected, omitted) in [
+        (Some(1), Some(1), "alphadelta", 2),
+        (Some(2), None, "alphabeta", 2),
+        (None, Some(2), "gammadelta", 2),
+        (Some(3), Some(3), "alphabetagammadelta", 0),
+        (Some(0), Some(0), "", 4),
+    ] {
+        let mut read = polylogue_reading::ReadRequest::new(
+            "session:claude-code:s2",
+            ReadOptions {
+                view: View::Dialogue,
+                first,
+                last,
+                ..Default::default()
+            },
+        );
+        read.budget = polylogue_model::read::ReadBudget::Unlimited;
+        let page = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+        let mut text = Text::default();
+        text.page(&page);
+        assert_eq!(text.value, expected);
+        let counts: Vec<_> = page
+            .document
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Omission {
+                    count: ValueState::Value { value },
+                    why,
+                    ..
+                } if why == "outside the requested message window" => Some(*value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts, if omitted == 0 { vec![] } else { vec![omitted] });
+    }
+}
+
+#[test]
+fn tail_pages_keep_their_original_end_after_an_append() {
+    let d = test_daemon::start("placeholder");
+    add_selected_session(
+        &d,
+        &[
+            ("m1", "alpha"),
+            ("m2", "beta"),
+            ("m3", "gamma"),
+            ("m4", "delta"),
+        ],
+    );
+    let target = "session:claude-code:s2";
+    let mut read = polylogue_reading::ReadRequest::new(
+        target,
+        ReadOptions {
+            view: View::Dialogue,
+            last: Some(2),
+            ..Default::default()
+        },
+    );
+    read.budget = polylogue_model::read::ReadBudget::Tokens(8);
+    let opening = crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon));
+    let mut cursor = Some(next(&opening).expect("the tail takes multiple pages"));
+    let path = d.home.join(".claude/projects/-p/s2.jsonl");
+    let mut source = std::fs::read_to_string(&path).unwrap();
+    source.push_str(&polylogue_testkit::claude_user("m5", "s2", "epsilon"));
+    std::fs::write(path, source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 6 && status["store"]["search_pending"] == 0);
+    let mut text = Text::default();
+    text.page(&opening);
+    while let Some(current) = cursor {
+        let continued = page(&d.daemon, target, false, View::Dialogue, 8, Some(&current));
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    assert_eq!(text.value, "gammadelta");
 }
 
 #[test]
@@ -978,4 +1103,110 @@ fn middle_page_start_does_not_visit_prefix() {
         last.document.footer.count,
         polylogue_model::read::ValueState::known(2 * (MESSAGES + 10))
     );
+}
+
+#[test]
+fn session_ranges_use_message_time_and_compaction_boundaries() {
+    let d = test_daemon::start("placeholder");
+    let target = "session:claude-code:range";
+    let message = |id: &str, second: u32, text: &str| {
+        let mut line: serde_json::Value =
+            serde_json::from_str(&polylogue_testkit::claude_user(id, "range", text)).unwrap();
+        line["timestamp"] = serde_json::json!(format!("2026-03-01T10:00:{second:02}Z"));
+        format!("{line}\n")
+    };
+    let compaction = |id: &str, parent: &str, second: u32| {
+        let line = serde_json::json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": id, "sessionId": "range",
+            "logicalParentUuid": parent, "timestamp": format!("2026-03-01T10:00:{second:02}Z"),
+            "compactMetadata": {"trigger": "auto", "preTokens": 1000}
+        });
+        format!("{line}\n")
+    };
+    let path = d.home.join(".claude/projects/-p/range.jsonl");
+    let mut source = [
+        message("a", 0, "alpha"),
+        compaction("ab", "a", 1),
+        message("b", 2, "beta"),
+        message("c", 3, "gamma"),
+    ]
+    .concat();
+    std::fs::write(&path, &source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    let read = |from: Option<String>, until: Option<String>, budget| {
+        let mut read = polylogue_reading::ReadRequest::new(
+            target,
+            ReadOptions {
+                view: View::Dialogue,
+                from,
+                until,
+                ..Default::default()
+            },
+        );
+        read.budget = budget;
+        crate::test_answers::read(crate::test_daemon::read_call(read).answer(&d.daemon))
+    };
+    let all = read(None, None, polylogue_model::read::ReadBudget::Unlimited);
+    let last = all
+        .document
+        .items
+        .iter()
+        .rfind(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
+        .unwrap()
+        .source
+        .reference
+        .clone();
+    for (until, expected) in [
+        ("compaction", "alpha"),
+        ("2026-03-01T10:00:02Z", "alpha"),
+        ("2s", "alpha"),
+        (last.as_str(), "alphabeta"),
+    ] {
+        let mut text = Text::default();
+        text.page(&read(
+            None,
+            Some(until.into()),
+            polylogue_model::read::ReadBudget::Unlimited,
+        ));
+        assert_eq!(text.value, expected, "end before {until}");
+    }
+    for (from, until, expected) in [
+        ("2026-03-01T10:00:02Z", None, "betagamma"),
+        ("2s", Some(last.as_str()), "beta"),
+        (last.as_str(), None, "gamma"),
+        (last.as_str(), Some("2s"), ""),
+    ] {
+        let mut text = Text::default();
+        text.page(&read(
+            Some(from.into()),
+            until.map(str::to_owned),
+            polylogue_model::read::ReadBudget::Unlimited,
+        ));
+        assert_eq!(text.value, expected, "start at {from}, end at {until:?}");
+    }
+    let first = read(
+        None,
+        Some("compaction".into()),
+        polylogue_model::read::ReadBudget::Tokens(8),
+    );
+    let mut cursor = Some(next(&first).expect("the range takes multiple pages"));
+    source.push_str(&compaction("bc", "c", 4));
+    source.push_str(&message("d", 5, "delta"));
+    std::fs::write(path, source).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 5);
+    let mut text = Text::default();
+    text.page(&first);
+    while let Some(current) = cursor {
+        let continued = page(&d.daemon, target, false, View::Dialogue, 8, Some(&current));
+        text.page(&continued);
+        cursor = next(&continued);
+    }
+    assert_eq!(text.value, "alpha");
+    let mut latest = Text::default();
+    latest.page(&read(
+        None,
+        Some("compaction".into()),
+        polylogue_model::read::ReadBudget::Unlimited,
+    ));
+    assert_eq!(latest.value, "alphabetagamma");
 }

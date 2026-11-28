@@ -1,11 +1,12 @@
 //! The verbs that write annotations: `note`, `tag`, `edit`, `withdraw` and
 //! `judge`. Notes and tags over the rows are one query annotation, which the
 //! writer checks and expands into one annotation per row.
-use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use, undo_line};
+use super::{RowRule, Selection, StepCall, StepDone, Verb, undo_line};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{EditStep, JudgeStep, NoteStep, TagStep, WithdrawStep};
+use crate::unbuilt;
 use polylogue_model::annotation::{
     AnnotationKind, AnnotationPatch, Change, LinkRole, NewAnnotation, NewAnnotationLink,
 };
@@ -43,7 +44,6 @@ fn note(step: &NoteStep) -> Result<NewAnnotation, Failure> {
         text,
         kind,
         key,
-        parts,
         evidence,
         replies_to,
         supports,
@@ -54,43 +54,10 @@ fn note(step: &NoteStep) -> Result<NewAnnotation, Failure> {
         blocks,
         scope,
         valid_until,
-        check,
-        expect,
-        page,
-        section,
-        level,
-        template,
-        param,
-        layout,
-        about,
-        role,
-        brief,
-        rename,
     } = step;
-    for (given, option) in [
-        (parts.is_some(), "parts"),
-        (check.is_some(), "check"),
-        (expect.is_some(), "expect"),
-        (page.is_some(), "page"),
-        (section.is_some(), "section"),
-        (level.is_some(), "level"),
-        (template.is_some(), "template"),
-        (!param.is_empty(), "param"),
-        (layout.is_some(), "layout"),
-        (about.is_some(), "about"),
-        (role.is_some(), "role"),
-        (brief.is_some(), "brief"),
-        (*rename, "rename"),
-    ] {
-        if given {
-            return Err(not_built("note", option));
-        }
-    }
     let kind = match kind.as_deref() {
         None => AnnotationKind::Note,
-        Some(name) => AnnotationKind::from_name(name)
-            .filter(|kind| !matches!(kind, AnnotationKind::Tag))
-            .ok_or_else(|| not_built_use("note", &format!("--as {name}")))?,
+        Some(name) => note_kind(name)?,
     };
     let mut links = Vec::new();
     for (references, role) in [
@@ -124,6 +91,39 @@ fn note(step: &NoteStep) -> Result<NewAnnotation, Failure> {
         value: Some(Value::String(text.clone())),
         valid_until,
         links,
+    })
+}
+
+/// The kind `note --as NAME` writes: any kind but `tag`, which has its own
+/// verb. Alternates and headings are designed kinds of note not built yet.
+fn note_kind(name: &str) -> Result<AnnotationKind, Failure> {
+    if let Some(kind) =
+        AnnotationKind::from_name(name).filter(|kind| !matches!(kind, AnnotationKind::Tag))
+    {
+        return Ok(kind);
+    }
+    let alternate = ["translation:", "transliteration:"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || matches!(name, "simplification" | "summary");
+    Err(if alternate {
+        unbuilt::refusal(
+            "note",
+            "--as translation:LANG, transliteration:LANG, simplification or summary",
+        )
+        .into()
+    } else if name == "heading" {
+        unbuilt::refusal("note", "--as heading").into()
+    } else {
+        Failure::bad_value(format!(
+            "note --as {name}: not a kind of note; kinds: {}",
+            AnnotationKind::NAMES
+                .iter()
+                .filter(|kind| **kind != "tag")
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     })
 }
 
@@ -216,23 +216,26 @@ fn each(
         }
         .into());
     }
-    let mut committed = Vec::new();
+    let mut written = Vec::new();
+    let mut position = None;
     let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
         write,
         Some(scope),
-        |receipt| {
-            committed = receipt.written;
-            polylogue_model::user::AssertQueryOutcome::new(
-                receipt.outcome,
-                targets,
-                committed.len(),
-                receipt.already,
-            )
-        },
-    );
+    )
+    .map(|committed| {
+        position = Some(committed.position);
+        let result = committed.outcome;
+        written = result.written;
+        polylogue_model::user::AssertQueryOutcome::new(
+            result.outcome,
+            targets,
+            written.len(),
+            result.already,
+        )
+    });
     let answer = if targets == 0 {
         match answer.outcome {
             command_surface::Outcome::Ok(value) => command_surface::Answer {
@@ -245,8 +248,8 @@ fn each(
         answer
     };
     let mut done = StepDone::from(answer.map(StepAnswer::WroteEach)).checked()?;
-    done.undo
-        .extend(undo_line(call.call.request_id, &committed)?);
+    done.position = position;
+    done.undo.extend(undo_line(call.call.request_id, &written)?);
     Ok(done)
 }
 
@@ -340,21 +343,24 @@ fn wrote(
     call: &StepCall<'_>,
     scope: Option<polylogue_store::ReadScopeToken>,
 ) -> Result<StepDone, Failure> {
-    let mut committed = Vec::new();
+    let mut written = Vec::new();
+    let mut position = None;
     let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
         write,
         scope,
-        |receipt| {
-            committed = receipt.written;
-            receipt.outcome
-        },
-    );
+    )
+    .map(|committed| {
+        position = Some(committed.position);
+        let result = committed.outcome;
+        written = result.written;
+        result.outcome
+    });
     let mut done = StepDone::from(answer.map(StepAnswer::Wrote)).checked()?;
-    done.undo
-        .extend(undo_line(call.call.request_id, &committed)?);
+    done.position = position;
+    done.undo.extend(undo_line(call.call.request_id, &written)?);
     Ok(done)
 }
 
@@ -483,22 +489,24 @@ fn verdict<'s>(
     step: &JudgeStep,
     selection: &'s Selection,
 ) -> Result<(&'s Reference, bool), Failure> {
-    if step.on.is_some() {
-        return Err(not_built("judge", "on"));
-    }
-    if step.seed.is_some() {
-        return Err(not_built("judge", "seed"));
-    }
+    let references = selection.references()?;
+    let [note] = references else {
+        return Err(unbuilt::refusal("judge", "over several rows").into());
+    };
     let accepted = match step.verdict.as_str() {
         "accept" => true,
         "reject" => false,
-        other => return Err(not_built_use("judge", other)),
+        "defer" => return Err(unbuilt::refusal("judge", "defer").into()),
+        other => {
+            return Err(Failure::bad_value(format!(
+                "judge {other:?}: an annotation is judged accept, reject or defer"
+            )));
+        }
     };
-    match selection.references()? {
-        [note @ Reference::Annotation(_)] => Ok((note, accepted)),
-        [other] => Err(Failure::bad_request(format!(
+    match note {
+        Reference::Annotation(_) => Ok((note, accepted)),
+        other => Err(Failure::bad_request(format!(
             "judge accepts or rejects annotations; {other} is not one"
         ))),
-        _ => Err(not_built_use("judge", "over several rows")),
     }
 }

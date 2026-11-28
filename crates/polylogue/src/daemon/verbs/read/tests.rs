@@ -26,14 +26,16 @@ fn an_unknown_format_is_a_bad_value_naming_the_formats() {
     );
 }
 
-/// A documented format whose encoder is not built is reported as such.
+/// A designed format whose encoder is not built is refused from the list
+/// of what is not built, naming its page.
 #[test]
 fn a_documented_format_without_an_encoder_is_not_built() {
     assert_eq!(
         refusal("citation"),
         (
             "not_built".to_owned(),
-            "read --format citation is not built yet".to_owned()
+            "read --format citation is not built yet; docs/page-text.md#citation-lines designs it"
+                .to_owned()
         )
     );
 }
@@ -55,6 +57,8 @@ fn every_option() -> ReadStep {
         "show": ["tools:5", "thinking", "turns"],
         "hide": ["annotations"],
         "from": "seen",
+        "first": 3,
+        "last": 2,
         "around": 2,
         "diff": "compaction:1",
         "alternate": "translation:pl",
@@ -91,16 +95,16 @@ fn a_continuation_carries_every_option_of_its_step() {
         "read",
         "--view",
         "dialogue",
+        "--first",
+        "3",
+        "--last",
+        "2",
         "--cursor",
         "sealed",
     ]
     .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     let call = crate::cli::run_line::request(&parsed).unwrap();
     assert!(call.cursor.is_none());
     let rows: Rows = serde_json::from_value(call.arguments).unwrap();
@@ -108,6 +112,7 @@ fn a_continuation_carries_every_option_of_its_step() {
         panic!("one read")
     };
     assert_eq!(step.options.view, View::Dialogue);
+    assert_eq!((step.options.first, step.options.last), (Some(3), Some(2)));
     assert_eq!(step.cursor.as_deref(), Some("sealed"));
 }
 
@@ -264,7 +269,7 @@ fn cursor_from_before_the_change_is_stale_with_rerun() {
     let reader = d.daemon.reads.reader().unwrap();
     let seal = CursorSeal {
         key: reader.cursor_key().unwrap(),
-        generation: reader.change_position().unwrap().generation,
+        index_instance: reader.change_position().unwrap().index_instance,
     };
     drop(reader);
     let mut cursor = PageCursor::open(step.cursor.as_deref().unwrap(), &seal).unwrap();
