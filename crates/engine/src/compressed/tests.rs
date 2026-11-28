@@ -360,7 +360,7 @@ fn an_unrecognized_rollout_header_keeps_bytes_and_a_refusal_after_rebuild() {
     std::fs::write(&plain, &body).unwrap();
     std::fs::write(&compressed, &encoded).unwrap();
     let ids = [&plain, &decoded_path]
-        .map(|path| format!("codex:unidentified-rollout:{}", e.location_id(&path)));
+        .map(|path| format!("codex:unidentified-rollout:{}", e.location_id(path)));
     let verify = |e: &Engine| {
         for id in &ids {
             assert_eq!(captured(e, id), body);
