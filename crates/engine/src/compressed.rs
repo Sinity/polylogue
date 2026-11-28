@@ -585,6 +585,7 @@ impl Engine {
         // A storage condition that passes (the index file held by a long
         // write) and a file that changed are both captured again.
         let outcome = match outcome {
+            Err(error) if error.source_changed() => Ok(None),
             Err(EngineError::Store(error))
                 if polylogue_model::Caused::cause(&error) == polylogue_model::Cause::Transient =>
             {

@@ -840,6 +840,15 @@ fn a_moving_rollout_retries_after_other_queued_rollouts() {
         engine.config.reader_memory_per_connection().unwrap(),
     );
     first.answered();
+    assert!(matches!(first.outcome, Ok(None)));
+    // A second change while checking a live sample can also arrive as a
+    // source-changed error. Both forms yield to the next queued capture.
+    first.outcome = Err(
+        std::io::Error::other(polylogue_store::StoreError::SourceChanged(
+            "rollout changed during retry",
+        ))
+        .into(),
+    );
     assert!(engine.captured_rollout(first, &mut pass).unwrap().is_none());
     let paths = engine
         .rollout_captures
