@@ -348,10 +348,16 @@ fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
     let suffix = keyed_fragment("late", "response-a", "last");
     home.append("keyed.jsonl", &suffix);
     // The append joins a response stated before it from the chain's rows.
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 128);
+    let chunk = 128;
+    assert!(suffix.len() as u64 > chunk && suffix.len() as u64 <= 2 * chunk);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, chunk);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert_eq!(pass.bytes_read, prefix + suffix.len() as u64, "{pass:?}");
+    assert_eq!(
+        pass.bytes_read,
+        prefix + chunk + suffix.len() as u64,
+        "one prefix comparison and two reads of the split record"
+    );
     assert_eq!(pass.bytes_stored, suffix.len() as u64, "{pass:?}");
     let reader = engine.reads.reader().unwrap();
     let messages = reader
