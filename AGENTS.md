@@ -8,10 +8,10 @@ sessions and their lineage, and lets people and agents search, read, measure
 and annotate that history. Agents are primary users: they get the same powers
 as the operator, through MCP first and the CLI second.
 
-Polylogue runs alone (standalone, on SQLite) or on Sinex (primary mode), where
-its bytes live in Sinex's store and its record is shipped to Sinex. Primary
-mode is the integration the operator runs; standalone is a complete product
-for everyone else and for development.
+Standalone is the runnable mode. In the primary-mode design, Polylogue keeps
+the same local record and index, stores bytes through Sinex, and ships the
+record to Sinex after local commit. See `docs/primary-mode.md` for that
+design and `docs/installing.md` for what the current build accepts.
 
 This file explains how the product is designed and how work is done in this
 repository. Claude Code, Codex and any other agent read it; it holds the
@@ -91,7 +91,7 @@ copy.
 | `crates/render` | text, markdown and HTML over typed replies |
 | `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature); primary mode's shipper and reader of Sinex's log are written here |
+| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature) |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
