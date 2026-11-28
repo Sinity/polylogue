@@ -38,6 +38,7 @@ const DECLARED_POINTS: &[&str] = &[
     "reparse.commit",
     "reparse.prepare",
     "repo_lookup.refresh",
+    "scope_index.apply",
     "search.before_queue",
     "search.read_queue",
     "segment.after_append",

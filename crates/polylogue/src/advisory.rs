@@ -2,6 +2,7 @@
 //! delivery history; only uncommitted coordination lives in memory.
 use crate::brief::Prepared;
 use crate::daemon::{query, scope::SharedScopeIndex};
+use polylogue_model::user::LeftOut;
 use polylogue_model::{Reference, SessionId, Timestamp, annotation::LinkRole};
 use polylogue_store::{Reader, StoreError};
 use std::collections::HashMap;
@@ -214,7 +215,13 @@ pub fn prepare(
     let Some(repos) =
         scope.try_read(|index| index.repos_under(&[cwd.to_string_lossy().into_owned()]))
     else {
-        return Ok(empty());
+        return Ok(Prepared {
+            left_out: vec![LeftOut {
+                what: "advisories".into(),
+                reason: "scope index could not be read".into(),
+            }],
+            ..empty()
+        });
     };
     let now: Timestamp = context.clock.now.into();
     // The query decides current revisions and the operator's latest judgment of a revision.

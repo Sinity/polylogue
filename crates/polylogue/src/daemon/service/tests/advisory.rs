@@ -6,6 +6,7 @@ use polylogue_model::{
     annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
     authorship::{Authorship, Channel},
 };
+use polylogue_store::fault::{self, Action};
 use polylogue_store::read::limit::ReadLimit;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
@@ -74,25 +75,29 @@ fn positive(w: &TestDaemon, id: &str, session: &str) -> Value {
 }
 
 #[test]
-fn busy_scope_change_returns_empty_without_reserving_advice() {
+fn advisory_brief_reports_an_unreadable_scope_index() {
     let (w, _) = fixture();
-    statement(
-        &w,
-        "locked-file",
-        AnnotationKind::Decision,
-        "file:src/parser.rs@fixture-commit",
-        Some("cwd:/synthetic/repo"),
-        true,
+    fault::arm("scope_index.apply", "", Action::Hold, 0, 1);
+    let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        statement(
+            &w,
+            "locked-file",
+            AnnotationKind::Decision,
+            "file:src/parser.rs@fixture-commit",
+            Some("cwd:/synthetic/repo"),
+            true,
+        );
+        fault::wait_held();
+        call(&w, "busy-scope", "codex:advisory-test")
+    }));
+    fault::release();
+    let answer = answer.unwrap();
+    assert_eq!(answer["delivery"], Value::Null);
+    assert_eq!(answer["prepared"]["empty"], true);
+    assert_eq!(
+        answer["prepared"]["left_out"],
+        json!([{"what": "advisories", "reason": "scope index could not be read"}])
     );
-    w.daemon
-        .scope
-        .read(None, |_| {
-            assert!(w.daemon.scope.try_read(|_| ()).is_none());
-            let answer = call(&w, "busy-scope", "codex:advisory-test");
-            assert_eq!(answer["delivery"], Value::Null);
-            assert_eq!(answer["prepared"]["empty"], true);
-        })
-        .expect("fixture scope is loaded");
     assert!(
         w.daemon
             .reads
