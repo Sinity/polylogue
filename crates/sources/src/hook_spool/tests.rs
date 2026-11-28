@@ -56,6 +56,30 @@ fn each_line_is_an_event_on_the_harness_session() {
 }
 
 #[test]
+fn unreadable_hook_payload_has_its_recorded_reason() {
+    let input = lines(&[
+        json!({"event_id":"e1", "event":"Stop", "provider":"claude-code",
+            "unreadable_payload":{"bytes_base64":"/w==", "reason":"hook payload is not JSON"}}),
+        json!({"event_id":"e2", "event":"Stop", "provider":"claude-code",
+            "session_id":"s1", "payload":{"cwd":"/repo"}}),
+    ]);
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
+    assert_eq!(step.counts.unreadable["Stop: hook payload is not JSON"], 1);
+    assert!(step.counts.unread_fields.is_empty());
+    let [event] = &step.output.events[..] else {
+        panic!("unexpected events: {:?}", step.output.events);
+    };
+    assert_eq!(event.data["event_id"], "e2");
+    assert_eq!(event.data["cwd"], "/repo");
+}
+
+#[test]
 fn recognizes_both_layouts() {
     assert!(recognize(
         Path::new("/s/polylogue/hooks/claude-code-s1.jsonl"),

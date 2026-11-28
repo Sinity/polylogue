@@ -28,10 +28,13 @@
 //! own `event_id`, so equal payloads and timestamps still name two events.
 //! That ID, the line's time and its process stay in its data; storing the
 //! same file again adds none.
+//! A payload the recorder could not parse has an `unreadable_payload`
+//! object containing the original base64 bytes and the reason. The reader
+//! accounts for that line as unreadable without inventing a session event.
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 parser_modules! {}
 
@@ -164,6 +167,10 @@ static FIELDS: Fields = Fields::new(
             "payload",
             Rule::Kept("the hook's input, kept whole as the event's data"),
         ),
+        (
+            "unreadable_payload",
+            Rule::Kept("the original bytes and reason for an unreadable hook input"),
+        ),
     ],
 );
 
@@ -221,6 +228,13 @@ impl Parser for HookSpool {
     ) -> RecordOutcome {
         let kind = self.kind(value);
         records.fields(&kind, value, &FIELDS);
+        if let Some(payload) = value.get("unreadable_payload") {
+            return RecordOutcome::unreadable(
+                payload
+                    .str("reason")
+                    .unwrap_or("unreadable hook payload has no reason"),
+            );
+        }
         let Some(event_type) = event_type(value) else {
             return RecordOutcome::unreadable("no event_type");
         };
