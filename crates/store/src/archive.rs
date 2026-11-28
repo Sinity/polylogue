@@ -268,10 +268,16 @@ impl Archive {
     /// at their current versions, or opens an existing one. Takes the writer
     /// lock; a second daemon on the same archive is refused.
     pub fn open_or_create(root: &Path) -> Result<(Self, ArchiveLock)> {
-        Self::open_configured(Self::at(root))
+        Self::open_configured(Self::at(root), false)
     }
 
-    fn open_configured(archive: Self) -> Result<(Self, ArchiveLock)> {
+    /// Opens the archive for the daemon. Without a usable index, the
+    /// installed index starts empty and catches up through ordinary writes.
+    pub fn open_for_serving(root: &Path) -> Result<(Self, ArchiveLock)> {
+        Self::open_configured(Self::at(root), true)
+    }
+
+    fn open_configured(archive: Self, install_for_catch_up: bool) -> Result<(Self, ArchiveLock)> {
         metadata::check(&archive)?;
         let lock = Self::lock(&archive.root)?;
         metadata::check(&archive)?;
@@ -281,7 +287,7 @@ impl Archive {
         let schema_lock = crate::write_lock::hold(&source)?;
         schema::ensure_archive(&source)?;
         drop(schema_lock);
-        archive.finish_open()?;
+        archive.finish_open(install_for_catch_up)?;
         Ok((archive, lock))
     }
 
@@ -303,7 +309,7 @@ impl Archive {
                 .into());
             }
         };
-        Self::open_configured(archive)
+        Self::open_configured(archive, false)
     }
 
     fn lock(root: &Path) -> Result<ArchiveLock> {
@@ -341,21 +347,16 @@ impl Archive {
         self.root.join("staging")
     }
 
-    fn finish_open(&self) -> Result<()> {
+    fn finish_open(&self, install_for_catch_up: bool) -> Result<()> {
         fs::create_dir_all(self.staging_dir())?;
         clear_directory(&self.staging_dir())?;
         let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        self.prepare_index()?;
+        index_build::prepare(self, install_for_catch_up)?;
         crate::search::files::sweep(&self.root)
     }
 
-    /// The caller holds the archive lock. An index is rebuilt in a private
-    /// file and installed when its rebuild ends ([`index_build`]).
-    pub(crate) fn prepare_index(&self) -> Result<()> {
-        index_build::prepare(self)
-    }
     /// Creates the index schema in an empty file or opens the one there.
     /// `building`: the file is a build, which leaves out the
     /// indexes it builds when it ends.

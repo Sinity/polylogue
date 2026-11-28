@@ -126,6 +126,7 @@ stored_names! {
         MissingCheckpoint => "missing_checkpoint",
         ParseVersionChanged => "parse_version_changed",
         ParserBehind => "parser_behind",
+        CapturePending => "capture_pending",
         /// Some stored inputs failed their origin's shape check.
         Refused => "refused",
         /// Some stored inputs' bytes could not be parsed under the current parser.
@@ -163,6 +164,9 @@ impl CompletenessReason {
             Self::MissingCheckpoint => ("has not been parsed yet", "have not been parsed yet"),
             Self::ParseVersionChanged => ("awaits the current parser", "await the current parser"),
             Self::ParserBehind => ("has bytes not parsed yet", "have bytes not parsed yet"),
+            Self::CapturePending => {
+                return Words::Index("watched inputs are still being collected");
+            }
             Self::Refused => ("was refused by its parser", "were refused by their parser"),
             Self::ParseFailed => ("failed to parse", "failed to parse"),
             Self::DerivationBehind => {

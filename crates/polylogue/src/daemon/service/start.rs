@@ -279,7 +279,7 @@ pub fn start(
     }
     let (archive, lock, mode, engine) = match mode {
         ArchiveMode::Standalone => {
-            let (archive, lock) = Archive::open_or_create(root).map_err(std::io::Error::other)?;
+            let (archive, lock) = Archive::open_for_serving(root).map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
             steps.next("starting the writer");
             let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
@@ -355,6 +355,7 @@ pub fn start(
         mode,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
+        captures_sources: settings.reads_sources && engine.is_some(),
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
         idle_gate: crate::daemon::schema::IdleGate::default(),

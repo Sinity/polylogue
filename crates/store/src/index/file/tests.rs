@@ -136,6 +136,61 @@ fn an_index_ahead_of_its_archive_is_replaced_by_a_rebuild() {
     assert_eq!(archive.index_build().unwrap().reason, why);
 }
 
+#[test]
+fn serving_open_does_not_install_a_ready_index_from_another_archive() {
+    let dir = tempfile::tempdir().unwrap();
+    built(dir.path());
+    let paths = Paths::of(dir.path());
+    std::fs::create_dir(&paths.dir).unwrap();
+    std::fs::copy(&paths.index, &paths.ready).unwrap();
+    {
+        let ready = open_write(&paths.ready, cache::SETUP).unwrap();
+        crate::meta_set(&ready, ARCHIVE_ID, "a different archive").unwrap();
+    }
+    let expected = IndexFiles::read(dir.path()).unwrap().installed;
+    let (archive, _lock) = Archive::open_for_serving(dir.path()).unwrap();
+    assert_eq!(
+        archive.index_files().unwrap(),
+        IndexFiles {
+            installed: expected,
+            rebuilding: Rebuilding::No
+        }
+    );
+    assert!(!paths.dir.exists());
+    let reads = ReadPool::serving(&archive, 1, 8 << 20).unwrap();
+    reads.reader().unwrap().status(&[]).unwrap();
+}
+
+#[test]
+fn serving_open_replaces_an_unusable_index_and_keeps_the_new_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    built(dir.path());
+    set_index_meta(dir.path(), ARCHIVE_ID, "an earlier archive");
+    let instance = {
+        let (archive, _lock) = Archive::open_for_serving(dir.path()).unwrap();
+        assert!(archive.index_files().unwrap().serves());
+        assert!(archive.index_build().is_none());
+        let reads = ReadPool::serving(&archive, 1, 8 << 20).unwrap();
+        reads
+            .reader()
+            .unwrap()
+            .change_position()
+            .unwrap()
+            .index_instance
+    };
+    let (archive, _lock) = Archive::open_for_serving(dir.path()).unwrap();
+    let reads = ReadPool::serving(&archive, 1, 8 << 20).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .change_position()
+            .unwrap()
+            .index_instance,
+        instance
+    );
+}
+
 /// A process that does not hold the archive derives the same files the
 /// daemon's open made: during a rebuild of an index this build reads, it is
 /// served from the installed index; with no index, reads answer

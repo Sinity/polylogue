@@ -127,15 +127,31 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 ### Replacing an index from another schema
 
-`index.db` holds only what is parsed and derived from the archive's stored bytes, and it has one current format, so an index this build cannot use is replaced rather than converted or refused. At start, an index whose tables, indexes or triggers differ from the build's, that is at another index format version, that carries no Polylogue format identity, that was built from another archive, or that has taken in record positions its archive does not have, is replaced by a rebuild: its reason is written to `index-rebuild/reason.json` first, and the new index is written beside the old one in `index-rebuild/build.db`. The old index stays `index.db` until the new one is renamed over it. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a rebuild defers some.
+The schema identity of `index.db` is a hash of the version, format
+identity, tables, views and triggers. Read indexes are completed at open
+and a private bulk rebuild can defer their creation. An index that belongs
+to another archive, uses an incompatible schema, or is ahead of its
+archive cannot serve reads.
 
-The rebuild writes its private file with no journal on disk and no syncs, and only the rebuild pipeline opens it; how a stop, a crash and the end of the rebuild leave it is in [architecture.md#durability](architecture.md#durability). Until the new index is installed, reads are served from `index.db` when this build can read it (an index that differs only in its indexes), so the daemon keeps serving what it had; otherwise, and on a first rebuild with no index at all, every read replies `index_building` with the rebuild's reason and progress (input chains read of those stored), and `status` shows that progress beside the daemon's own state. When the rebuild ends, it is renamed over `index.db`, reads move to it, and the index it replaced is gone.
+When there is no usable index, the daemon creates the current empty
+schema in a private file and installs it atomically. The ordinary writer
+fills it from live captures and the archive's stored inputs. Sessions and
+search results become readable once their own rows and search entries
+commit. Queries report incomplete coverage during catch-up, and status
+names pending work in capture, parsing, session figures and search.
+Stopping during catch-up keeps every committed reading. The next start
+continues work that is still due. Moving `index.db` out of the way while
+the daemon is stopped has the same effect.
 
-`status` shows the index files as one pair under `index`: `installed` (`none`, `current` with the archive identity and record position, or `unusable` with `why`) and `rebuilding` (`no`, `writing` with its `reason`, or `ready`), with `install_failure` when an install failed in the running daemon. The reasons are `no_index`, `schema_differs`, `format_version` with the version found and wanted, `older_format`, `other_archive`, and `ahead_of_archive` with both positions. The new index records why it replaced the old one, and `status` reports that record under `store.index_rebuild` once it is installed: the reason and the previous and current schema identities. A rebuild that starts again after a stop or a crash keeps its reason: it reads it again from `index-rebuild/reason.json`, which stays until the install. The same holds in primary mode: the index is built from the record, with the bytes read from Sinex's store ([primary-mode.md](primary-mode.md#rebuild-and-parser-upgrades)).
+When a usable index is privately rebuilt, readers keep using it until the
+replacement is complete. The rebuild's reason and current stage are
+reported in status. An interrupted private rebuild can be recomputed from
+the record. If the finished replacement survives a stop, the open checks
+its archive identity and position before installing it.
 
-The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed. The embeddings store from an earlier build only gains the tables added since ([archive.md#evolution](archive.md#evolution)).
-
-A first build reads every chain that is due a reading ([archive.md](archive.md#reading-versions)) and replies to reads with `index_building` and its progress until it installs, with its read indexes, search and derived values built ([architecture.md](architecture.md#one-path)). A new archive's first pass is such a build: its index is built, not filled file by file. The build's first pass stores the files no earlier pass stored, the newest first, without reading them; the build then reads them with every other stored chain, and once the index is installed the pass reads what those files gained meanwhile. With nothing stored and nothing found (a daemon started without sources on an empty archive), the empty build installs at the end of that pass. The daemon's log records the build: a line as each step starts or ends (finding files and storing files, then the rebuild's stages: parsing, keying texts, loading parses, building parse indexes, assembling, indexing, full text, installing; [operations.md](operations.md#status)) naming how long the step took, what it handled, the bytes read and written, the stage's peak memory and the process's, a line a minute in the journal with the storing rate while files are stored, and one line when the index is installed; a reader waiting for the index logs that once. Moving `index.db` aside by hand and starting the daemon builds a new index the same way. Moving a whole archive aside and starting fresh is a deliberate act, never something code does to get past a change.
+Moving a whole archive aside is a deliberate operation. Original input
+bytes, authored records and paid vectors stay in the archive across an
+index replacement.
 
 ### Continuing an indexed cut of the same archive
 

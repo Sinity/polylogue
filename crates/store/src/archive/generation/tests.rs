@@ -92,7 +92,7 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
             std::fs::remove_file(path).unwrap();
         }
     }
-    archive.prepare_index().unwrap();
+    super::super::index_build::prepare(&archive, false).unwrap();
     assert!(matches!(
         before_replacement.check(),
         Err(crate::StoreError::ScopeChanged)

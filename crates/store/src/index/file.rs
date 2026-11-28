@@ -202,6 +202,12 @@ pub enum Installed {
     Unusable { why: RebuildReason },
 }
 
+impl Installed {
+    pub(crate) fn is_current(&self) -> bool {
+        matches!(self, Self::Current { .. })
+    }
+}
+
 /// The rebuild in `index-rebuild/`, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -264,7 +270,7 @@ impl IndexFiles {
 
     /// Whether reads are served from `index.db`.
     pub fn serves(&self) -> bool {
-        matches!(self.installed, Installed::Current { .. })
+        self.installed.is_current()
     }
 
     /// Why a rebuild runs, or else why no index can be read.
@@ -328,7 +334,9 @@ impl IndexFiles {
                 self.installed = current(&crate::archive::open_read(&paths.index)?)?;
                 crate::fault::check("index.install.after_rename", &root.to_string_lossy())?;
                 // A reader of the replaced index keeps its open files.
-                if let Some(replaced) = replaced {
+                if let Some(replaced) = replaced
+                    && crate::search::files::named_on_disk(&paths.index).as_ref() != Some(&replaced)
+                {
                     crate::search::files::remove(&replaced)?;
                 }
                 remove_rebuild_dir(root, &paths)?;
@@ -393,7 +401,10 @@ fn rebuilding(paths: &Paths) -> Result<Rebuilding> {
 
 /// What `index` is beside the archive `archive` at its position; `None`
 /// when there is no archive, so that any index there is of another one.
-fn installed(index: &Path, archive: Option<(&ArchiveId, Position)>) -> Result<Installed> {
+pub(crate) fn installed(
+    index: &Path,
+    archive: Option<(&ArchiveId, Position)>,
+) -> Result<Installed> {
     if !index.exists() {
         return Ok(Installed::None);
     }
@@ -471,8 +482,9 @@ fn remove_rebuild_dir(root: &Path, paths: &Paths) -> Result<()> {
     if !paths.dir.exists() {
         return Ok(());
     }
-    remove_database(&paths.build)?;
-    remove_database(&paths.ready)?;
+    let serving_search = crate::search::files::named_on_disk(&paths.index);
+    remove_database_except(&paths.build, serving_search.as_deref())?;
+    remove_database_except(&paths.ready, serving_search.as_deref())?;
     remove_tree(&paths.dir)?;
     sync_directory(root)
 }
@@ -480,11 +492,17 @@ fn remove_rebuild_dir(root: &Path, paths: &Paths) -> Result<()> {
 /// Removes a SQLite database file with its journal, log and shared-memory
 /// siblings, then the full-text files it names.
 pub(crate) fn remove_database(path: &Path) -> Result<()> {
+    remove_database_except(path, None)
+}
+
+fn remove_database_except(path: &Path, serving_search: Option<&[PathBuf]>) -> Result<()> {
     let search = crate::search::files::named_on_disk(path);
     for suffix in ["-journal", "-wal", "-shm", ""] {
         remove(&with_suffix(path, suffix))?;
     }
-    if let Some(search) = search {
+    if let Some(search) = search
+        && Some(search.as_slice()) != serving_search
+    {
         crate::search::files::remove(&search)?;
     }
     Ok(())

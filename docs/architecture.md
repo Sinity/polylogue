@@ -351,7 +351,13 @@ store's module documentation, not of this page.
 
 ### One path
 
-The daemon reaches the index two ways, which must agree.
+The daemon reaches the index two ways, which must agree. At startup, a
+daemon with no usable index installs a complete empty index schema. Its
+ordinary index writer fills that index by capture, replay and derivation.
+Committed readings survive a stop and are available without waiting for
+older inputs. A restart resumes at the committed parser positions. A
+daemon with a usable index can keep serving it during a private bulk
+rebuild.
 
 - **Upkeep** keeps the installed index current as the record grows: for each
   chain whose state is behind, it reads on, and commits the new rows with
@@ -396,19 +402,19 @@ The daemon reaches the index two ways, which must agree.
   the property the write path is tested by: one property test over generated
   inputs, orders and divisions, comparing replies and not tables
   ([testing](testing.md)).
-- **Either may stand in for the other.** Because they agree, the daemon
-  builds anew instead of catching up when that is less work (an index far
-  behind its record, a parse version changed for most of the corpus, a
-  large import into a small archive), and nothing a reader sees depends on
-  which it chose.
+- **Either gives the same final answers.** A private bulk rebuild can
+  replace a usable index while readers keep their existing view. With no
+  usable index, incremental catch-up gives readers committed rows and
+  search entries as they arrive. Replies stay incomplete while known
+  capture, parsing, derivation or search work remains due. Discovery can
+  report that watched files have not yet been processed before the record
+  contains enough information to count them.
 - **A build reads the record as it stood at one position.** It is its own
   object with its own connection to its private file, on a thread of its
   own; the index writer never writes that file, and writes only the
-  installed index. What is captured while a build runs is stored and
-  committed to the record at once, as always, and parsed into the installed
-  index if there is a current one; with none, the index writer refuses
-  index writes with `index_building` and what was refused stays due. The
-  build records the record position it started at, takes in what the record
+  installed index. During a serving daemon's private bulk rebuild, captured
+  inputs are stored and committed to the record and parsed into the
+  installed index. The build records the record position it started at, takes in what the record
   committed up to it (the text of alternates as well as every chain at the
   length it was stored at when planned) and writes that position into its
   meta. When the build installs, it is an index behind its record like any
@@ -423,9 +429,9 @@ The daemon reaches the index two ways, which must agree.
   without the writer or the index a request reads, so they never pause; an
   import is answered between the chains handed to the workers and while the
   build's later stages (load, assembly, indexes, full text) run on the
-  build's own thread. An import's reply does not wait for the build: with no
-  installed index it says its rows are readable once the build is installed.
-  No chain is read twice by the build.
+  build's own thread. An import's reply does not wait for a private build.
+  The installed index follows the import through the ordinary writer. No
+  chain is read twice by the build.
 - **Live inputs go before bulk work.** A file being written now is read and
   committed ahead of stored chains waiting for a reading.
 - **Memory is bounded by streaming.** A build's memory does not grow with

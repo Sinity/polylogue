@@ -226,14 +226,14 @@ pub(super) fn answer(
         },
     };
     let freshness = match &snapshot.reading {
-        Ok(local) => super::state::freshness_of(local.clone()),
+        Ok(local) => d.freshness_at(local.clone(), &loop_status),
         Err(_) => {
             let mut local = polylogue_model::freshness::ReadCompleteness::empty();
             local.parsing = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
             local.derivation =
                 polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
             local.search = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
-            super::state::freshness_of(local)
+            d.freshness_at(local, &loop_status)
         }
     };
     let caught_up = build.is_none()
