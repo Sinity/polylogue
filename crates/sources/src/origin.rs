@@ -38,8 +38,8 @@ pub enum InputIdentity {
     Location,
     /// An ID the provider writes into the file, with the machine
     /// (`codex:rollout:<session id>@<machine>`), for a tool that moves or
-    /// compresses its own files. The file is not stored until that ID is
-    /// readable.
+    /// compresses its own files. A complete first record without an ID is
+    /// kept at its location with a refusal.
     ProviderId(ProviderId),
     /// The bytes: the full BLAKE3 hex of an imported file.
     Content,
@@ -59,9 +59,15 @@ pub struct ProviderId {
     /// Whether the file at a path is one named by the ID it states; the
     /// origin's other files are named by their location.
     pub named: fn(&Path) -> bool,
-    /// The input ID the file states, read from its first record (decoded);
-    /// `None` until that record is complete.
-    pub read: fn(&mut dyn std::io::BufRead) -> std::io::Result<Option<String>>,
+    /// How the decoded file names its input, from its first record.
+    pub read: fn(&mut dyn std::io::BufRead) -> std::io::Result<RecordedId>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecordedId {
+    Named(String),
+    Incomplete,
+    Unrecognized,
 }
 
 /// Visits the local file paths written in a source record.

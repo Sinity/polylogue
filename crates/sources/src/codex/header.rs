@@ -4,32 +4,40 @@ pub const VERSION: u32 = 1;
 
 parser_modules! {}
 
+use crate::origin::RecordedId;
 use polylogue_model::Json;
 use polylogue_model::JsonExt;
 use std::io::BufRead;
 
 /// Reads the first nonempty record. Only a rollout header establishes
 /// identity; file names and conversation text do not.
-pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<Option<String>> {
+pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<RecordedId> {
     let mut line = Vec::new();
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
-            return Ok(None);
+            return Ok(RecordedId::Incomplete);
         }
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
         let Ok(value) = serde_json::from_slice::<Json>(&line) else {
-            return Ok(None);
+            return Ok(if line.ends_with(b"\n") {
+                RecordedId::Unrecognized
+            } else {
+                RecordedId::Incomplete
+            });
         };
         // A mid-2025 header has no type and names the session at the top level.
         let id = match value.str("type").filter(|t| !t.is_empty()) {
             Some("session_meta") => value.get("payload").and_then(|p| p.str("id")),
             None => value.str("id"),
-            Some(_) => return Ok(None),
+            Some(_) => None,
         };
-        return Ok(id.filter(|id| !id.is_empty()).map(str::to_owned));
+        return Ok(match id.filter(|id| !id.is_empty()) {
+            Some(id) => RecordedId::Named(id.to_owned()),
+            None => RecordedId::Unrecognized,
+        });
     }
 }
 
