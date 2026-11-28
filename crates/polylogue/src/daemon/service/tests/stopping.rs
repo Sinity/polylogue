@@ -155,7 +155,13 @@ fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
             .filter(|id| !reader.messages(id, false).unwrap().is_empty())
             .collect();
         if let [visible] = visible.as_slice() {
+            // An exact census still accounts for the missing reading.
+            // The normal read below may omit it before that census exists.
+            let completeness = reader
+                .completeness(&polylogue_engine::reading_contracts())
+                .unwrap();
             let freshness = runtime.daemon.freshness(&reader).unwrap();
+            assert_eq!(freshness.local.parsing, completeness.parsing);
             assert!(
                 freshness.local.parsing.reasons().iter().any(|reason| {
                     reason.reason == CompletenessReason::MissingCheckpoint
