@@ -264,7 +264,16 @@ while IFS= read -r line; do
             printf '%s\n' "$line" >> prompts.jsonl
             n=$((n+1)); prompt=$id
             printf '{"jsonrpc":"2.0","id":%s,"method":"session/request_permission","params":{"sessionId":"morrow","options":[{"optionId":"yes","kind":"allow_once"}]}}\n' "$n" ;;
-        *'"optionId":"yes"'*) printf '{"jsonrpc":"2.0","id":"%s","result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
+        *'"optionId":"yes"'*)
+            if [ "$n" -eq 1 ]; then
+                tries=0
+                while [ ! -f release-first-prompt ]; do
+                    tries=$((tries+1))
+                    [ "$tries" -lt 3000 ] || exit 4
+                    sleep 0.01
+                done
+            fi
+            printf '{"jsonrpc":"2.0","id":"%s","result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
     esac
 done
 "#,
@@ -329,12 +338,27 @@ done
     assert_eq!(queued["outcome"], "prepared");
     assert_eq!(sent("queued", 0), queued);
     assert_eq!(prompt_count(), 1);
-    release_prompt();
-    wait_for_prompt(2);
-
     let lost = sent("lost", 0);
     assert_eq!(lost["outcome"], "prepared");
+
+    release_prompt();
+    // The relay can receive the queued prompt, but the daemon cannot commit
+    // its outcome while this connection holds the archive's write lock.
+    let mut archive = rusqlite::Connection::open(env.archive().join("archive.db")).unwrap();
+    let locked = archive
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    std::fs::write(root.path().join("release-first-prompt"), "").unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while prompt_count() != 2 {
+        assert!(
+            std::time::Instant::now() < until,
+            "relay did not receive the queued prompt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     drop(daemon);
+    drop(locked);
     let mut command = env.command();
     command.env(
         "XDG_RUNTIME_DIR",
@@ -359,11 +383,11 @@ done
     assert_eq!(claim.status.code(), Some(0), "{claim:?}");
     assert_eq!(json(&claim)["deliveries"], json!([]));
 
+    release_prompt();
+    wait_for_state("idle");
     let completed = sent("queued", 0);
     assert_eq!(completed["outcome"], "delivered");
     assert_eq!(completed["delivery"], queued["delivery"]);
-    release_prompt();
-    wait_for_state("idle");
     let intentional = sent("new", 0);
     assert_eq!(intentional["outcome"], "delivered");
     assert_ne!(intentional["delivery"], completed["delivery"]);
