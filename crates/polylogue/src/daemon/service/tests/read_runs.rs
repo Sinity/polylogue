@@ -56,6 +56,100 @@ fn only_card(page: &ReadPage) -> &Card {
 }
 
 #[test]
+fn waiting_on_run_history_records_once_and_wakes_for_an_independent_run() {
+    use polylogue_model::{
+        Author,
+        authorship::{Authorship, Channel},
+    };
+    use polylogue_store::read::limit::ReadLimit;
+    use std::time::{Duration, Instant};
+
+    let mut d = test_daemon::start("waiting on query history");
+    d.pause_signals();
+    let daemon = &d.daemon;
+    let limits = std::array::from_fn::<_, 2, _>(|_| {
+        ReadLimit::new(Duration::from_secs(20), Default::default())
+    });
+    let number_of_runs = || {
+        let reader = daemon.reads.reader().unwrap();
+        let program = polylogue_store::query::compile("runs", &Default::default()).unwrap();
+        let mut count = 0;
+        reader
+            .visit_query_values(&program, None, |_| {
+                count += 1;
+                Ok::<_, polylogue_store::StoreError>(std::ops::ControlFlow::Continue(()))
+            })
+            .unwrap();
+        count
+    };
+    std::thread::scope(|scope| {
+        let (send, received) = std::sync::mpsc::channel();
+        for limit in &limits {
+            let send = send.clone();
+            let wait = Call::new(
+                "rows",
+                json!({"selection":"runs where author:operator AND outcome:ok","wait":"1m"}),
+            )
+            .within(limit);
+            scope.spawn(move || send.send(wait.answer(daemon)).unwrap());
+        }
+        let ready = Instant::now() + Duration::from_secs(7);
+        while limits
+            .iter()
+            .any(|limit| limit.stage() != Some("listing wait"))
+            && Instant::now() < ready
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            limits
+                .iter()
+                .all(|limit| limit.stage() == Some("listing wait"))
+        );
+        assert_eq!(
+            number_of_runs(),
+            2,
+            "each waiting request has one beginning"
+        );
+
+        let independent = crate::test_answers::listing(
+            Call::new("rows", json!({"selection":"sessions"}))
+                .authorship(Authorship {
+                    author: Author::Operator,
+                    via: Channel::Cli,
+                })
+                .answer(daemon),
+        );
+        let independent = independent.value().unwrap()["resolved"]["run"].clone();
+        let mut waits = Vec::new();
+        for _ in 0..2 {
+            let reply = received.recv_timeout(Duration::from_secs(6));
+            if reply.is_err() {
+                for limit in &limits {
+                    limit.cancellation.cancel();
+                }
+            }
+            let wait =
+                crate::test_answers::listing(reply.expect("the independent run wakes both waits"));
+            let wait = wait.value().unwrap();
+            assert_eq!(wait["rows"][0]["id"], independent);
+            let Reference::Run(id) =
+                Reference::parse(wait["resolved"]["run"].as_str().unwrap()).unwrap()
+            else {
+                panic!("a waiting query's run identity");
+            };
+            let reader = daemon.reads.reader().unwrap();
+            let recorded = reader.query_run_outcome(&id).unwrap().unwrap();
+            assert_eq!(recorded.outcome, RunOutcome::Ok);
+            assert_eq!(recorded.count, Some(1));
+            waits.push(id);
+        }
+        assert_ne!(waits[0], waits[1]);
+        assert_eq!(number_of_runs(), 3, "rechecks have no run records");
+    });
+}
+
+#[test]
 fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     let mut d = test_daemon::start("run reader fixture");
     d.pause_signals();
