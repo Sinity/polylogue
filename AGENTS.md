@@ -219,7 +219,9 @@ related. The body ends with a line `Task: <id>` naming the task it lands.
 made from the principles here and the pages in `docs/`, and recorded on the
 Bead and in the PR.
 The operator decides product scope and intent, privacy, money (paid APIs,
-purchased vectors) and anything published outward. Deploying, activating,
+purchased vectors) and publication to a new audience. A request to change
+this repository includes pushing the branch, opening the pull request and
+landing it through the protected queue described above. Deploying, activating,
 restarting, rebuilding an archive and moving to a new release are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
 deleted. No stored format or archive is deployed in a sense that needs
