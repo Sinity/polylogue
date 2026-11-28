@@ -26,6 +26,26 @@ pub(crate) fn is_rollout(found: &collect::Found) -> bool {
 
 const UNIDENTIFIED_ROLLOUT: &str = "codex:unidentified-rollout:";
 
+fn rollout_input(
+    recorded: RecordedId,
+    machine: &str,
+    path: &Path,
+    compressed: bool,
+) -> Option<String> {
+    match recorded {
+        RecordedId::Named(id) => Some(InputIdentity::provider_named(&id, machine)),
+        RecordedId::Incomplete => None,
+        RecordedId::Unrecognized => {
+            let location = if compressed {
+                location_id(machine, &path.with_extension(""))
+            } else {
+                location_id(machine, path)
+            };
+            Some(format!("{UNIDENTIFIED_ROLLOUT}{location}"))
+        }
+    }
+}
+
 /// The stored input name records that the provider did not identify it.
 /// It still means the same thing when a rebuild reads the chain alone.
 pub(crate) fn rollout_refusal(input: &InputKey) -> Option<&'static str> {
@@ -254,16 +274,11 @@ impl RolloutCapture {
         let (mut source, observed) = match frozen {
             Some(frozen) => {
                 let source = frozen.open()?;
-                let polylogue_sources::InputIdentity::ProviderId(provider) =
-                    found_origin.input_identity
-                else {
+                let InputIdentity::ProviderId(provider) = found_origin.input_identity else {
                     unreachable!("a captured rollout has a provider ID");
                 };
-                let native = (provider.read)(&mut decoded(&source, false)?)?;
-                if !native.is_some_and(|native| {
-                    polylogue_sources::InputIdentity::provider_named(&native, &observation.machine)
-                        == *id
-                }) {
+                let recorded = (provider.read)(&mut decoded(&source, false)?)?;
+                if rollout_input(recorded, &observation.machine, path, false).as_ref() != Some(id) {
                     return Ok(None);
                 }
                 (source, frozen.observed.clone())
@@ -532,17 +547,9 @@ impl Engine {
         // grows. Keep complete files without a provider ID at their location.
         let source = std::fs::File::open(path)?;
         let read_id = provider_id(found).expect("a rollout states its ID").read;
-        let input = match read_id(&mut decoded(&source, compressed)?)? {
-            RecordedId::Named(id) => InputIdentity::provider_named(&id, &self.config.machine),
-            RecordedId::Incomplete => return Ok(RolloutStep::Planned(None)),
-            RecordedId::Unrecognized => {
-                let location = if compressed {
-                    self.location_id(&path.with_extension(""))
-                } else {
-                    self.location_id(path)
-                };
-                format!("{UNIDENTIFIED_ROLLOUT}{location}")
-            }
+        let recorded = read_id(&mut decoded(&source, compressed)?)?;
+        let Some(input) = rollout_input(recorded, &self.config.machine, path, compressed) else {
+            return Ok(RolloutStep::Planned(None));
         };
         Ok(RolloutStep::Capture(Box::new(RolloutCapture {
             path: path.clone(),
