@@ -80,7 +80,7 @@
     "7b6c40723ad956c9a495b4d80ab64635380654b922fa917304a4579ea379e250"
   ],
   "hook-spool": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::hook_spool::VERSION=5,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::hook_spool::VERSION=6,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "f4115e2f3cda1a916bd063fc32fdf5c58478d709469274c6b4c787ef82cd9196"
   ],
   "openai-chat": [
