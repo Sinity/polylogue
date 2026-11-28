@@ -1182,6 +1182,7 @@ pub fn stream(
         operation,
         &reading,
         |compiled, snapshot, header, near| {
+            let record = query_route && executes_query(&reading, compiled);
             let execute = || match route {
                 Route::Session(scope) => session::stream(
                     reader, services, request, operation, scope, snapshot, output,
@@ -1204,12 +1205,16 @@ pub fn stream(
                     None,
                     ReadFooter::default(),
                     output,
+                    !record,
                 ),
             };
-            if query_route && executes_query(&reading, compiled) {
-                record_stream(
+            if record {
+                let footer = record_stream(
                     reader, services, operation, request, &reading, compiled, execute,
-                )
+                )?;
+                reader.check()?;
+                output::complete(output, &footer)?;
+                Ok(footer)
             } else {
                 execute()
             }
@@ -1230,6 +1235,7 @@ fn rows_stream(
     object_facts: Option<&LayoutFacts>,
     mut footer: ReadFooter,
     output: &mut dyn Write,
+    complete: bool,
 ) -> Result<ReadFooter, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(services, message, block, index, input)
@@ -1289,5 +1295,9 @@ fn rows_stream(
         },
     )?;
     check()?;
-    stream.finish(footer)
+    if complete {
+        stream.finish(footer)
+    } else {
+        Ok(stream.footer(footer))
+    }
 }

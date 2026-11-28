@@ -604,7 +604,10 @@ fn socket_events(d: &TestDaemon, id: &str, arguments: Value) -> Vec<(String, Val
             Ok(false)
         },
     )
-    .unwrap()
+    .unwrap_or_else(|error| {
+        let frames: Vec<_> = events.iter().map(|(name, _)| name.as_str()).collect();
+        panic!("socket line {id:?} after {frames:?}: {error}")
+    })
     .expect("the line answers");
     events.push(("answer".into(), serde_json::to_value(answer).unwrap()));
     events
