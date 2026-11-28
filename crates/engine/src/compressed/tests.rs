@@ -795,3 +795,74 @@ fn an_empty_compressed_copy_stores_nothing() {
         ["independent payload", "second turn", "third turn"]
     );
 }
+
+#[test]
+fn a_moving_rollout_retries_after_other_queued_rollouts() {
+    let home = ClaudeHome::new();
+    let dir = home.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let origin = polylogue_sources::origin::by_name("codex").unwrap();
+    let moving = collect::Found {
+        path: dir.join("rollout-moving.jsonl"),
+        origin,
+    };
+    let other = collect::Found {
+        path: dir.join("rollout-other.jsonl"),
+        origin,
+    };
+    let moving_bytes = rollout("moving");
+    let stable_bytes = moving_bytes.replace("independent payload", "replacement payload");
+    let other_bytes = rollout("other");
+    std::fs::write(&moving.path, &moving_bytes).unwrap();
+    std::fs::write(&other.path, &other_bytes).unwrap();
+    let (mut engine, _lock) = engine(&home, 1 << 20);
+    let mut plan = |found: &collect::Found| {
+        let facts = FileFacts::of(&std::fs::metadata(&found.path).unwrap());
+        let RolloutStep::Capture(capture) = engine
+            .rollout_step(found, facts, pool::Priority::Bulk)
+            .unwrap()
+        else {
+            panic!("new rollout needs capture");
+        };
+        *capture
+    };
+    let first = plan(&moving);
+    let other_capture = plan(&other);
+    engine.rollout_captures.push_back(other_capture);
+    // Invalidate the planned sample without a size increase. The changed
+    // file needs a new sample, and the queue may store the other one first.
+    std::fs::write(&moving.path, &stable_bytes).unwrap();
+    let mut pass = Pass::default();
+    let mut first = first.run(
+        &engine.archive,
+        &engine.blobs,
+        &engine.writer.sender(),
+        engine.config.reader_memory_per_connection().unwrap(),
+    );
+    first.answered();
+    assert!(engine.captured_rollout(first, &mut pass).unwrap().is_none());
+    let paths = engine
+        .rollout_captures
+        .iter()
+        .map(|capture| &capture.path)
+        .collect::<Vec<_>>();
+    assert_eq!(paths, [&other.path, &moving.path]);
+    // Invalidate the retry again before running the queue.
+    std::fs::write(&moving.path, &moving_bytes).unwrap();
+    engine.execute(vec![], &mut pass).unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        captured(&engine, "codex:rollout:other@test-machine"),
+        other_bytes.as_bytes()
+    );
+    assert_eq!(
+        captured(&engine, "codex:rollout:moving@test-machine"),
+        moving_bytes.as_bytes()
+    );
+    assert_eq!(
+        home.count(
+            "SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:moving@test-machine'"
+        ),
+        1
+    );
+}

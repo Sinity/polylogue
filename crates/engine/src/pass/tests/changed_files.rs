@@ -208,3 +208,35 @@ fn early_edit_and_growth_during_a_read_leave_the_committed_chain_intact() {
         replacement.as_bytes()
     );
 }
+
+#[test]
+fn a_device_number_change_reuses_only_compared_bytes() {
+    let home = ClaudeHome::new();
+    let first = claude_user("u1", "remount", "before remount");
+    let second = claude_user("u2", "remount", "after remount");
+    let path = home.file("remount.jsonl");
+    home.append("remount.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+
+    let change_device = |engine: &mut Engine| {
+        let state = engine.inputs.get_mut(&path).unwrap();
+        state.facts.as_mut().unwrap().device ^= 1;
+    };
+    change_device(&mut engine);
+    let same = engine.run_pass().unwrap();
+    assert!(same.errors.is_empty(), "{same:?}");
+    assert_eq!(
+        (same.bytes_read, same.bytes_stored),
+        (first.len() as u64, 0)
+    );
+    assert_eq!(engine.inputs[&path].chain, Some(1));
+
+    change_device(&mut engine);
+    home.append("remount.jsonl", &second);
+    let appended = engine.run_pass().unwrap();
+    assert!(appended.errors.is_empty(), "{appended:?}");
+    assert_eq!(appended.bytes_stored, second.len() as u64);
+    assert_eq!(engine.inputs[&path].chain, Some(1));
+    assert_eq!(home.texts("remount"), ["before remount", "after remount"]);
+}

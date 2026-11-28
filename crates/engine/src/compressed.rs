@@ -606,7 +606,9 @@ impl Engine {
                 RolloutStep::Planned(plan) => return Ok(plan.map(|plan| *plan)),
                 RolloutStep::Capture(mut capture) => {
                     capture.storing_only = storing_only;
-                    self.rollout_captures.push_front(*capture);
+                    // Give other eligible rollouts a turn before trying
+                    // this moving source again.
+                    self.rollout_captures.push_back(*capture);
                     return Ok(None);
                 }
             }
