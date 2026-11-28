@@ -240,7 +240,7 @@ fn prepare_inner(
             },
             &mut |_| Ok(()),
         )?;
-        normalize_references(&mut query)?;
+        normalize_references(&mut query, &options.origins)?;
 
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
@@ -250,7 +250,7 @@ fn prepare_inner(
         walk(&mut query, &mut |_| Ok(()), &mut |condition| {
             resolve(&mut condition.kind)
         })?;
-        normalize_references(&mut query)?;
+        normalize_references(&mut query, &options.origins)?;
         let (original, _) =
             bind_spelled(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
         let mut identity = original.query().clone();
@@ -550,21 +550,26 @@ fn visit_extensions(
     })
 }
 
-fn normalize_references(query: &mut Query) -> Result<(), QueryError> {
+fn normalize_references(query: &mut Query, origins: &[String]) -> Result<(), QueryError> {
+    use polylogue_model::{Reference, SessionId};
+
     walk(query, &mut |_| Ok(()), &mut |condition| {
         let ConditionKind::Reference { reference: text } = &condition.kind else {
             return Ok(());
         };
-        let Some(reference) = polylogue_model::Reference::parse(text)
-            .or_else(|_| polylogue_model::Reference::parse(text))
-            .ok()
-            .filter(|reference| crate::catalog::reference_unit(reference).is_some())
-        else {
-            return Ok(());
-        };
-        condition.kind = ConditionKind::Reference {
-            reference: reference.to_string(),
-        };
+        let reference = Reference::parse(text).ok().or_else(|| {
+            let (origin, _) = text.split_once(':')?;
+            if origins.iter().any(|known| known == origin) {
+                SessionId::parse(text).ok().map(Reference::Session)
+            } else {
+                None
+            }
+        });
+        if let Some(reference) = reference.filter(|r| crate::catalog::reference_unit(r).is_some()) {
+            condition.kind = ConditionKind::Reference {
+                reference: reference.to_string(),
+            };
+        }
         Ok(())
     })
 }
