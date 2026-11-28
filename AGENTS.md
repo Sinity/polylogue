@@ -8,10 +8,10 @@ sessions and their lineage, and lets people and agents search, read, measure
 and annotate that history. Agents are primary users: they get the same powers
 as the operator, through MCP first and the CLI second.
 
-Polylogue runs alone (standalone, on SQLite) or on Sinex (primary mode), where
-its bytes live in Sinex's store and its record is shipped to Sinex. Primary
-mode is the integration the operator runs; standalone is a complete product
-for everyone else and for development.
+Standalone is the runnable mode. In the primary-mode design, Polylogue keeps
+the same local record and index, stores bytes through Sinex, and ships the
+record to Sinex after local commit. See `docs/primary-mode.md` for that
+design and `docs/installing.md` for what the current build accepts.
 
 This file explains how the product is designed and how work is done in this
 repository. Claude Code, Codex and any other agent read it; it holds the
@@ -91,7 +91,7 @@ copy.
 | `crates/render` | text, markdown and HTML over typed replies |
 | `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature); primary mode's shipper and reader of Sinex's log are written here |
+| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature) |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
@@ -219,7 +219,9 @@ related. The body ends with a line `Task: <id>` naming the task it lands.
 made from the principles here and the pages in `docs/`, and recorded on the
 Bead and in the PR.
 The operator decides product scope and intent, privacy, money (paid APIs,
-purchased vectors) and anything published outward. Deploying, activating,
+purchased vectors) and publication to a new audience. A request to change
+this repository includes pushing the branch, opening the pull request and
+landing it through the protected queue described above. Deploying, activating,
 restarting, rebuilding an archive and moving to a new release are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
 deleted. No stored format or archive is deployed in a sense that needs
