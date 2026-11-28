@@ -108,6 +108,7 @@ impl Engine {
         let mut authored_records = Vec::new();
         let mut items = Vec::new();
         let mut hashes = std::collections::BTreeMap::new();
+        let mut original = None;
         let classify_only = options.dry_run;
         let import_id = import_identity(
             &self.config.machine,
@@ -134,6 +135,9 @@ impl Engine {
             classify_accepted(report, &mut package, &member.path, origin, member.container);
             if classify_only {
                 continue;
+            }
+            if member.parent.is_none() && member.path == path {
+                original = Some(member.bytes.hash());
             }
             let authored_bytes = (origin.name == polylogue_sources::polylogue_bundle::ORIGIN)
                 .then(|| member.bytes.clone());
@@ -176,7 +180,16 @@ impl Engine {
             items.push((member.path, origin, None, captured));
         }
         if !classify_only {
+            let imported_before = report.imported.len();
+            let stored_before = report.already_stored.len();
             let executed = self.store_import_group(items, report)?;
+            if report.imported[imported_before..]
+                .iter()
+                .chain(&report.already_stored[stored_before..])
+                .any(|stored| stored == path)
+            {
+                package.original = original;
+            }
             for (at, id, bytes) in authored_records {
                 if executed.contains(&id) {
                     continue;

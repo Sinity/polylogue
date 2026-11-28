@@ -150,6 +150,8 @@ Each reply is an `answer` message carrying the shared answer. `internal capture-
 - In an export, one element the parser cannot read (nested deeper than the 128 levels the JSON reader builds into a value, for example) is counted as unreadable on its own; the other elements still parse, and the export's bytes stay stored. A key an element repeats is counted as an unread field (`path (repeated key; earlier value)`): readers see only its last value.
 - The report lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets once its inputs are read into the index; its inputs are parsed and derived before it answers, so they are readable at once and `readable` says `now`; where that waits for a build, `readable` is `after_build` with the build's progress and the reply is degraded until the build installs. Bytes the request stored are `imported` even when the request is read again because a build installed under it. With `--dry-run` the daemon recognizes and classifies every member and stores nothing; `--explain` says how the line is read and which structures it would try, reading no file ([terminal.md#explain](terminal.md#explain)).
 
+A package for a named file includes the BLAKE3 content address of its original bytes in `original`, including when those bytes were already stored. Directory imports and dry runs omit this field.
+
 When importing files into the archive, the reply and command exit status follow what was stored.
 
 | Result | Outcome | Exit status |
