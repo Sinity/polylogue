@@ -4,7 +4,7 @@ use super::*;
 fn completeness_reasons_keep_their_wire_names_and_order() {
     let wire = concat!(
         r#"["missing_declaration","missing_checkpoint","parse_version_changed","parser_behind","#,
-        r#""refused","parse_failed","derivation_behind","search_pending","index_building","#,
+        r#""capture_pending","refused","parse_failed","derivation_behind","search_pending","index_building","#,
         r#""stream_not_applied","stream_behind"]"#,
     );
     assert_eq!(

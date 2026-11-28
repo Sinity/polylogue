@@ -136,10 +136,12 @@ fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
 
     fault::clear();
     fault::arm("parse", "", Action::Hold, 1, 1);
-    let mut runtime = test_daemon::start_runtime(
-        &root,
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&config, &root),
         config.clone(),
         crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
+        &Default::default(),
     )
     .unwrap();
     let _release = runtime.daemon.archive.stop().on_cancel(fault::release);
