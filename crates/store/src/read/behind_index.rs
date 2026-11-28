@@ -153,7 +153,22 @@ fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
             CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
             GROUP BY r.input,r.chain",
     };
-    let (revisions, observations, database) = if at_cut {
+    let (revisions, observations, database, chain_lengths) = if at_cut {
+        let extents = if selected {
+            "FROM chosen CROSS JOIN source_extent e ON e.input=chosen.input"
+        } else {
+            "FROM source_extent e"
+        };
+        // Another chunk of the same read extends a revision in place. Its
+        // original commit stays put, so cap that revision's chain at the
+        // last extent committed through this cut.
+        let cut_lengths = format!(
+            "SELECT c.input,c.chain,min(c.length,coalesce(e.length,c.length)) AS length
+             FROM ({chain_lengths}) c LEFT JOIN (
+                 SELECT e.input,e.chain,max(e.offset + e.length) AS length
+                 {extents} WHERE e.commit_seq <= ?2 GROUP BY e.input,e.chain
+             ) e USING (input,chain)"
+        );
         (
             format!("{revisions} WHERE r.commit_seq <= ?2"),
             format!("{observations} WHERE o.commit_seq <= ?2"),
@@ -161,12 +176,14 @@ fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
                 "c.input",
                 "(SELECT * FROM source_observation WHERE commit_seq <= ?2)",
             ),
+            cut_lengths,
         )
     } else {
         (
             revisions.into(),
             observations.into(),
             crate::source::database_original("c.input"),
+            chain_lengths.into(),
         )
     };
     let chain_rows = chain_rows();
@@ -209,7 +226,8 @@ impl Reader<'_> {
     }
 
     /// A page of inputs whose stored contents or observations changed in
-    /// (after, through]. A database row stream's observation can also change
+    /// (after, through]. A continued read can change only the extents in
+    /// this range. A database row stream's observation can also change
     /// whether its original database needs a reading.
     pub fn changed_input_ids(
         &self,
@@ -227,6 +245,7 @@ impl Reader<'_> {
              )
              SELECT input FROM (
                 SELECT input FROM source_revision WHERE commit_seq > ?1 AND commit_seq <= ?2
+                UNION SELECT input FROM source_extent WHERE commit_seq > ?1 AND commit_seq <= ?2
                 UNION SELECT input FROM changes
                 UNION SELECT member.container_input FROM changes o
                 JOIN source_observation_container member ON member.observation_id = o.id
