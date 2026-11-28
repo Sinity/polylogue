@@ -25,6 +25,7 @@ pub(crate) mod open_calls;
 
 use crate::brief::{Ask, StartSource};
 use crate::config::Startup;
+use base64::Engine as _;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
@@ -125,18 +126,23 @@ pub fn append_to_spool(
         dir,
         harness,
         event,
-        payload,
+        RecordedPayload::Json(payload),
         observed,
         session_of(harness, payload, startup),
         startup,
     )
 }
 
+enum RecordedPayload<'a> {
+    Json(&'a Value),
+    Unreadable { bytes: &'a [u8], reason: &'a str },
+}
+
 fn append_record(
     dir: &Path,
     harness: Harness,
     event: &str,
-    payload: &Value,
+    payload: RecordedPayload<'_>,
     observed: &Value,
     session: Option<SessionId>,
     startup: &Startup,
@@ -156,12 +162,6 @@ fn append_record(
     let at = startup.client.clock.now();
     let ns = at.as_nanosecond();
     let event_id = request_id(at)?;
-    let mut payload = payload.clone();
-    // Hermes sends the whole conversation with every turn; its transcript
-    // is read from its own database.
-    if let Some(extra) = payload.get_mut("extra").and_then(Value::as_object_mut) {
-        extra.remove("conversation_history");
-    }
     let mut line = json!({
         "event_id": event_id,
         "at_ns": ns.to_string(),
@@ -169,8 +169,24 @@ fn append_record(
         "harness_pid": process,
         "harness_start": crate::live_events::identity(process).map(|i| i.start),
         "provider": harness.origin(),
-        "payload": payload,
     });
+    match payload {
+        RecordedPayload::Json(payload) => {
+            let mut payload = payload.clone();
+            // Hermes sends the whole conversation with every turn; its transcript
+            // is read from its own database.
+            if let Some(extra) = payload.get_mut("extra").and_then(Value::as_object_mut) {
+                extra.remove("conversation_history");
+            }
+            line["payload"] = payload;
+        }
+        RecordedPayload::Unreadable { bytes, reason } => {
+            line["unreadable_payload"] = json!({
+                "bytes_base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                "reason": reason,
+            });
+        }
+    }
     if let Some(observed) = observed.as_object() {
         for (key, value) in observed {
             line[key] = value.clone();
@@ -232,7 +248,7 @@ impl EmissionRecorder<'_> {
                         self.dir,
                         self.harness,
                         polylogue_sources::hook_spool::CONTEXT_EMITTED,
-                        &payload,
+                        RecordedPayload::Json(&payload),
                         self.observed,
                         Some(session.clone()),
                         self.startup,
@@ -491,7 +507,7 @@ fn record_start_context(
         &spool,
         harness,
         "SessionContext",
-        &payload,
+        RecordedPayload::Json(&payload),
         &json!({}),
         session.clone(),
         startup,
@@ -1013,27 +1029,45 @@ fn respond(
 
 pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let until = Instant::now() + CONTEXT_BUDGET;
-    let mut input = String::new();
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+    let mut input = Vec::new();
+    let payload = std::io::stdin()
+        .read_to_end(&mut input)
+        .map_err(|error| format!("could not read the hook payload: {error}"))
+        .and_then(|_| {
+            serde_json::from_slice(&input)
+                .map_err(|error| format!("hook payload is not JSON: {error}"))
+        });
+    let reason = match payload {
+        Ok(payload) => return run_event(harness, event, payload, startup, until, emit),
+        Err(reason) => reason,
+    };
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let record = append_record(
+        &spool,
+        harness,
+        event,
+        RecordedPayload::Unreadable {
+            bytes: &input,
+            reason: &reason,
+        },
+        &Value::Null,
+        None,
+        startup,
+    );
+    if let Err(error) = record {
+        spool_error(
+            &format!("unreadable {event} for {}", harness.origin()),
+            &error,
+        );
+    } else {
         eprintln!(
             "{}",
-            polylogue_render::terminal::escape(&format!(
-                "polylogue hook: could not read the {event} payload: {error}"
-            ))
+            polylogue_render::terminal::escape(&format!("polylogue hook: {event}: {reason}"))
         );
     }
-    let payload: Value = serde_json::from_str(&input).unwrap_or_else(|error| {
-        if !input.trim().is_empty() {
-            eprintln!(
-                "{}",
-                polylogue_render::terminal::escape(&format!(
-                    "polylogue hook: the {event} payload is not JSON: {error}"
-                ))
-            );
-        }
-        Value::Null
-    });
-    run_event(harness, event, payload, startup, until, emit)
+    ExitCode::SUCCESS
 }
 
 fn run_event(
