@@ -72,8 +72,8 @@ pub use batch::{
     OrderKey, Output, RecordCounts, RecordOutcome, RepoLookup, StoredField, WireShape,
 };
 pub use block::{
-    Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,
-    ToolOutcome, UnknownReason,
+    Attachment, AttachmentDirection, AttachmentFailure, Block, BlockKind, CallOutcome, ErrorReason,
+    ToolAction, ToolOutcome, UnknownReason,
 };
 pub use change_position::ChangePosition;
 pub use delivery::{DELIVERY_STATES, DeliveryEvent, DeliveryOutcome, DeliverySender};

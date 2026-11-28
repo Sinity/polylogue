@@ -2,16 +2,15 @@
 //! message a record is.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 parser_modules! {}
 
 use crate::parse::ExtractedBlob;
-use base64::Engine;
 use polylogue_model::JsonExt;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
-    ToolOutcome, UnknownReason,
+    Attachment, AttachmentDirection, Block, ErrorReason, Json, PromptKind, ToolAction, ToolOutcome,
+    UnknownReason,
 };
 
 /// The blocks of `message.content`, which is a string or an array of
@@ -157,18 +156,14 @@ fn image(
         direction,
         ..Attachment::default()
     };
-    if source.str("type").map(str::to_owned).as_deref() == Some("base64")
-        && let Some(data) = source.str("data")
-        && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
-    {
-        let hash = BlobHash::of(&bytes);
-        attachment.size = Some(bytes.len() as u64);
-        attachment.blob = Some(hash);
-        blobs.push(ExtractedBlob {
-            hash,
-            size: bytes.len() as u64,
-            bytes,
-        });
+    if source.str("type") == Some("base64") {
+        match crate::inline_bytes::decode(source.str("data"), blobs) {
+            Ok((hash, size)) => {
+                attachment.size = Some(size);
+                attachment.blob = Some(hash);
+            }
+            Err(failure) => attachment.failure = Some(failure),
+        }
     }
     attachment
 }

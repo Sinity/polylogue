@@ -254,13 +254,17 @@ fn a_design_chat_delivers_the_bytes_of_its_inline_images() {
     "messages": [
         {"uuid": "m1", "role": "assistant", "created_at": "2026-01-01T00:00:30Z",
          "content": {"role": "assistant", "attachments": [], "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQID"}}
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQID"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "invalid!!"}}
          ]}}
     ]});
     let step = run_document(&Design, &serde_json::to_vec(&chat).unwrap()).unwrap();
     assert_eq!(step.output.blobs.len(), 1);
     assert_eq!(step.output.blobs[0].bytes, vec![1, 2, 3]);
     assert_eq!(step.output.blobs[0].hash, BlobHash::of(&[1, 2, 3]));
+    let blocks = &step.output.messages[0].message.blocks;
+    assert!(matches!(&blocks[1], Block::Image(a)
+        if a.failure == Some(polylogue_model::AttachmentFailure::InvalidBase64) && a.blob.is_none()));
 }
 
 #[test]

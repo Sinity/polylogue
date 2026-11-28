@@ -96,6 +96,7 @@ An attachment is a stored entity, not a flag on a block:
 | `source_ref` | the provider's file ID, Drive ID, path or URL |
 
 - **"Preserved" means stored bytes whose hash matches.** Anything else states its availability.
+- Malformed inline bytes or an invalid blob hash give the attachment a failure reason. The source record and its other blocks remain readable.
 - Who supplied a file matters: an upload and a file the model generated for download are different things.
 - **Every route delivers the bytes** when the source has them:
 

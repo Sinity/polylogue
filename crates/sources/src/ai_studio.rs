@@ -13,7 +13,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 parser_modules! {}
 
@@ -22,13 +22,12 @@ use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
-use crate::parse::{ExtractedBlob, MessageRow, Output, Parse};
+use crate::parse::{MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
-use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Event, IdKind, Json, Link,
-    LinkKind, Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction,
-    ToolOutcome, UnknownReason, Usage,
+    Attachment, AttachmentDirection, Block, ErrorReason, Event, IdKind, Json, Link, LinkKind,
+    Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome,
+    UnknownReason, Usage,
 };
 use std::path::Path;
 
@@ -784,32 +783,20 @@ fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
 }
 
 /// Stores the base64 `data` of an inline part as a blob and names it on the
-/// attachment. A value that is not base64 leaves the attachment without a blob.
+/// attachment, or records a failure for a malformed byte claim.
 fn store_inline_bytes(a: &mut Attachment, inline: &Json, sink: &mut Sink<'_>) {
-    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
-    let Some(data) = inline.str("data").filter(|s| !s.is_empty()) else {
+    let data = inline.get("data").filter(|value| !value.is_null());
+    if data.is_none() || data.and_then(Json::as_str) == Some("") {
         return;
-    };
-    // Clients wrap base64 across lines, drop the padding or use the URL-safe
-    // alphabet; all of them state the same bytes.
-    let data: String = data.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    let Some(bytes) = STANDARD
-        .decode(&data)
-        .or_else(|_| STANDARD_NO_PAD.decode(&data))
-        .or_else(|_| URL_SAFE.decode(&data))
-        .or_else(|_| URL_SAFE_NO_PAD.decode(&data))
-        .ok()
-    else {
-        return;
-    };
-    let hash = BlobHash::of(&bytes);
-    a.size = Some(bytes.len() as u64);
-    a.blob = Some(hash);
-    sink.out.blobs.push(ExtractedBlob {
-        hash,
-        size: bytes.len() as u64,
-        bytes,
-    });
+    }
+    match crate::inline_bytes::decode_wrapped(data.and_then(Json::as_str)) {
+        Ok(bytes) => {
+            let (hash, size) = crate::inline_bytes::keep(bytes, &mut sink.out.blobs);
+            a.size = Some(size);
+            a.blob = Some(hash);
+        }
+        Err(failure) => a.failure = Some(failure),
+    }
 }
 
 /// Inline bytes (`{mimeType, data}`), stored as a blob: an image when the

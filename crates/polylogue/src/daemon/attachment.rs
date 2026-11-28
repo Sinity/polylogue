@@ -159,8 +159,11 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     };
     let Some(found) = found else {
         let message = if resolution.matches.is_empty() {
-            let state = resolution.state.as_str();
-            format!("the attachment has no stored file (availability: {state})")
+            let availability = resolution.source.failure.map_or_else(
+                || resolution.state.as_str().to_owned(),
+                |failure| format!("failed: {}", failure.describe()),
+            );
+            format!("the attachment has no stored file (availability: {availability})")
         } else {
             "select one of the stored files with --input".to_string()
         };

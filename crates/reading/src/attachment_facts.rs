@@ -1,7 +1,7 @@
 //! Attachment pages use stored file metadata. The byte operation checks bodies.
 //! Stored descriptors and the names their sources gave stay unchanged.
 use super::Error;
-use polylogue_model::{Attachment, MessageId, read::*};
+use polylogue_model::{Attachment, AttachmentFailure, MessageId, read::*};
 use polylogue_store::{Reader, StoreError, assets::AttachmentState};
 
 pub(super) type ReadyAttachment<'a> =
@@ -11,6 +11,7 @@ enum Availability {
     Present { input: Option<String> },
     Unknown(&'static str),
     Unavailable(String),
+    Failed(AttachmentFailure),
 }
 
 fn resolve(
@@ -43,6 +44,11 @@ fn resolve(
             )));
         }
         return Ok(Availability::Present { input: None });
+    }
+    if resolution.state != AttachmentState::Available
+        && let Some(failure) = attachment.failure
+    {
+        return Ok(Availability::Failed(failure));
     }
     match resolution.state {
         AttachmentState::Unknown => Ok(Availability::Unknown(
@@ -127,6 +133,9 @@ pub(super) fn prepare(
         }
         Availability::Unavailable(reason) => {
             *availability = ValueState::Unavailable { reason };
+        }
+        Availability::Failed(failure) => {
+            *availability = ValueState::known(format!("failed: {}", failure.describe()));
         }
     }
     reader.check()?;

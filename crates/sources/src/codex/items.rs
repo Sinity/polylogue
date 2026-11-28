@@ -9,16 +9,15 @@
 //! a success.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 parser_modules! {}
 
 use crate::parse::ExtractedBlob;
-use base64::Engine;
 use polylogue_model::JsonExt;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
-    ToolOutcome, UnknownReason,
+    Attachment, AttachmentDirection, Block, ErrorReason, Json, PromptKind, ToolAction, ToolOutcome,
+    UnknownReason,
 };
 
 fn ty(item: &Json) -> &str {
@@ -63,8 +62,7 @@ fn content_block(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Block {
     }
 }
 
-/// An image item: a base64 `data:` URL becomes a blob; any other URL, including
-/// a `data:` URL that is not valid base64, is kept whole as a reference.
+/// A base64 `data:` URL claims inline bytes. Other URLs are references.
 fn image(
     item: &Json,
     direction: AttachmentDirection,
@@ -79,30 +77,28 @@ fn image(
         ..Attachment::default()
     };
     match url.and_then(data_url) {
-        Some((media_type, bytes)) => {
-            let hash = BlobHash::of(&bytes);
-            attachment.media_type = Some(media_type);
-            attachment.size = Some(bytes.len() as u64);
-            attachment.blob = Some(hash);
-            blobs.push(ExtractedBlob {
-                hash,
-                size: bytes.len() as u64,
-                bytes,
-            });
+        Some((media_type, data)) => {
+            attachment.media_type = Some(media_type.to_owned());
+            match crate::inline_bytes::decode(data, blobs) {
+                Ok((hash, size)) => {
+                    attachment.blob = Some(hash);
+                    attachment.size = Some(size);
+                }
+                Err(failure) => attachment.failure = Some(failure),
+            }
         }
         None => attachment.url = url.map(str::to_owned),
     }
     attachment
 }
 
-fn data_url(url: &str) -> Option<(String, Vec<u8>)> {
+fn data_url(url: &str) -> Option<(&str, Option<&str>)> {
     let rest = url.strip_prefix("data:")?;
-    let (meta, data) = rest.split_once(',')?;
+    let (meta, data) = rest
+        .split_once(',')
+        .map_or((rest, None), |(meta, data)| (meta, Some(data)));
     let media_type = meta.strip_suffix(";base64")?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data)
-        .ok()?;
-    Some((media_type.to_owned(), bytes))
+    Some((media_type, data))
 }
 
 pub fn prompt_kind(content: &Json) -> PromptKind {
