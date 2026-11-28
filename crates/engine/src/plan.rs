@@ -270,11 +270,9 @@ impl Plan {
         // Parsing can fail after new source bytes were sent to the writer.
         // Its rejected writes reload their checkpoints through the existing
         // write report; a parse failure must still remember the stored prefix.
-        if d.error.is_none() || d.stored > 0 {
-            if d.end > self.stored_upto {
-                self.stored_upto = d.end;
-                self.storing_started = true;
-            }
+        if (d.error.is_none() || d.stored > 0) && d.end > self.stored_upto {
+            self.stored_upto = d.end;
+            self.storing_started = true;
         }
         if d.restart {
             // Without the reading it continues, the chain is read again
