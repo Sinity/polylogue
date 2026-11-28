@@ -147,7 +147,7 @@ For a one-time standalone cutover using the current archive and index formats, f
 
 Both cuts must belong to the same native archive. Between preparation and capture, only its native writer may change it. A restored, rewritten or independently converted source needs a new proof. This procedure depends on the native writer keeping committed segment ranges and captured record rows intact. Independent sealed copies use `reuse_archive_index <earlier> <later>` to check their complete common prefix before indexing the later one.
 
-Suffix planning uses extent commits as well as revision and observation commits. A read can finish in a later commit while keeping the same revision number. A bounded read of that chain uses the extents present at its requested cut.
+A read can finish in a later commit while keeping the same revision number. The prefix check accepts that growth when a later committed extent accounts for the new length. It checks the earlier extents and their bytes and rejects changes to the revision's identity or original commit. Suffix planning uses extent commits alongside revisions and observations, and a bounded read uses the extents present at its requested cut.
 
 ## Backup and restore
 
