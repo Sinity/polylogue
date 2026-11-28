@@ -14,6 +14,7 @@ use super::Failure;
 
 pub(crate) mod annotations;
 pub(crate) mod feed;
+mod history;
 mod page;
 use query_language::cursor::CursorSeal;
 
@@ -469,6 +470,8 @@ pub(crate) fn accepted_population(
         resolved: crate::protocol::query::Resolved {
             context: context.run_context(),
             times: retained.binding.replay.context.resolved_times.clone(),
+            run: None,
+            query: None,
         },
         definitions: serde_json::from_value(value["definitions"].clone())
             .map_err(Failure::internal)?,
@@ -531,6 +534,8 @@ fn save_measure(
             .replay_clock(program.clock.clone())?
             .run_context(),
         times: program.resolved_times.clone(),
+        run: None,
+        query: None,
     };
     let mut after = None;
     let mut data = None;
@@ -740,16 +745,61 @@ fn cursor_failure(mut failure: Failure, text: &str) -> Failure {
     failure
 }
 
-pub fn prepare<'read, 'pool>(
+fn prepare<'read, 'pool>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
 ) -> Result<PreparedQuery<'read, 'pool>, Failure> {
+    prepare_with(reader, ask, None, |page| {
+        Ok(polylogue_reading::execution::Completed {
+            value: page,
+            count: None,
+            exact: false,
+            next: None,
+        })
+    })
+}
+
+/// Execute a public listing; continuations carry its initial execution identity.
+pub(super) fn listing<'read, 'pool, T>(
+    reader: &'read Reader<'pool>,
+    ask: Ask<'_>,
+    call: &super::handler::Call<'_>,
+    finish: impl FnOnce(
+        PreparedQuery<'read, 'pool>,
+    ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
+) -> Result<T, Failure> {
+    prepare_with(reader, ask, Some(call), finish)
+}
+
+fn prepare_with<'read, 'pool, T>(
+    reader: &'read Reader<'pool>,
+    ask: Ask<'_>,
+    call: Option<&super::handler::Call<'_>>,
+    finish: impl FnOnce(
+        PreparedQuery<'read, 'pool>,
+    ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
+) -> Result<T, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
     let index_file = reader.index_identity()?;
     let mut opts = execution_options(reader, &ask, 0)?;
-    let plan = reader.prepare_query_plan(ask.text, &opts)?;
+    let mut original_count = None;
+    let plan = if let Some(cursor) = ask.cursor.filter(|_| call.is_some()) {
+        let authenticated = polylogue_store::read::authenticate_cursor(
+            &seal,
+            &position.index_instance,
+            &query_language::cursor::SealedCursor::from_wire(cursor),
+        )
+        .map_err(|failure| cursor_failure(failure.into(), ask.text))?;
+        let (plan, options, count) = history::replay(reader, &authenticated, &ask, &opts)
+            .map_err(|failure| cursor_failure(failure, ask.text))?;
+        original_count = count;
+        opts = options;
+        plan
+    } else {
+        reader.prepare_query_plan(ask.text, &opts)?
+    };
     let question = plan.question_id();
     let cursor = ask
         .cursor
@@ -790,12 +840,6 @@ pub fn prepare<'read, 'pool>(
     let mut program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
     prepare_measure(&mut program, ask.page_size)?;
-    let similarity = program.ranking(reader, ask.near)?;
-    let ready = |_: &str| {
-        similarity.clone().ok_or_else(|| {
-            polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
-        })
-    };
     let after = cursor
         .as_ref()
         .map(|cursor| {
@@ -810,41 +854,81 @@ pub fn prepare<'read, 'pool>(
         )?,
     };
     context.versions.extend(operation_versions);
-    let paging = page::Paging {
-        seal: &seal,
-        context,
-    };
     let evaluation = ask.context.replay_clock(program.clock.clone())?;
-    let resolved = crate::protocol::query::Resolved {
-        context: evaluation.run_context(),
-        times: program.resolved_times.clone(),
+    let history = call
+        .filter(|_| ask.cursor.is_none())
+        .map(|call| {
+            history::ListingRun::new(call, &ask, &opts, &plan, &program, &context, position)
+        })
+        .transpose()?;
+    if let Some(history) = &history {
+        context
+            .versions
+            .insert("run".into(), history.id().to_string());
+    }
+    let run = context
+        .versions
+        .get("run")
+        .map(|id| polylogue_model::RunId::parse(id).map(polylogue_model::Reference::Run))
+        .transpose()
+        .map_err(Failure::internal)?;
+    let execute = || {
+        let paging = page::Paging {
+            seal: &seal,
+            context,
+        };
+        let resolved = crate::protocol::query::Resolved {
+            context: evaluation.run_context(),
+            times: program.resolved_times.clone(),
+            query: run.as_ref().map(|_| polylogue_model::Reference::Query {
+                key: question.to_string(),
+                parameters: Vec::new(),
+            }),
+            run,
+        };
+        let similarity = program.ranking(reader, ask.near)?;
+        let ready = |_: &str| {
+            similarity.clone().ok_or_else(|| {
+                polylogue_store::StoreError::from(polylogue_model::Reason::EmbeddingsOff {})
+            })
+        };
+        let mut answer = with_similarity(
+            reader,
+            &program,
+            ask.near.map(|_| &ready as &NearFn<'_>),
+            || {
+                answer(
+                    reader,
+                    &program,
+                    &program.clock.day,
+                    after,
+                    &paging,
+                    ask.why,
+                    resolved,
+                )
+            },
+        )?;
+        if ask.cursor.is_some() && call.is_some() {
+            answer.value.set_count(original_count);
+        }
+        let count_program = if (call.is_some() && ask.cursor.is_some())
+            || matches!(answer.value, crate::protocol::query::Answer::Measure(_))
+        {
+            None
+        } else {
+            Some(program)
+        };
+        finish(PreparedQuery {
+            reader,
+            answer,
+            count_program,
+            similarity,
+        })
     };
-    let answer = with_similarity(
-        reader,
-        &program,
-        ask.near.map(|_| &ready as &NearFn<'_>),
-        || {
-            answer(
-                reader,
-                &program,
-                &program.clock.day,
-                after,
-                &paging,
-                ask.why,
-                resolved,
-            )
-        },
-    )?;
-    let count_program = match &answer.value {
-        crate::protocol::query::Answer::Measure(_) => None,
-        _ => Some(program),
-    };
-    Ok(PreparedQuery {
-        reader,
-        answer,
-        count_program,
-        similarity,
-    })
+    match history {
+        Some(history) => history.record(execute),
+        None => execute().map(|completed| completed.value),
+    }
 }
 
 /// Prepare one page after `after`, before its optional population count.

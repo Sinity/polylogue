@@ -359,3 +359,80 @@ fn object_read_runs_have_no_invented_question_or_followup() {
     ));
     assert!(page.document.footer.next.is_none());
 }
+
+#[test]
+fn a_listing_continuation_reuses_its_durable_original_run() {
+    let mut daemon = test_daemon::start_over_morrow(&|_| {});
+    daemon.pause_signals();
+    let save = |d: &Daemon, question: &str, request: &str| {
+        crate::test_answers::step(
+            Call::new(
+                "rows",
+                json!({"selection":question,"steps":[{"verb":"save","name":"paging"}]}),
+            )
+            .id(request)
+            .answer(d),
+        )
+    };
+    save(
+        &daemon.daemon,
+        "sessions | sort by id",
+        "save-paging-original",
+    );
+    let listing = |selection: &str, cursor: Option<&str>| {
+        Call::new("rows", json!({"selection":selection, "page_size":1}))
+            .channel(command_surface::Via::Cli)
+            .cursor(cursor)
+            .answer(&daemon.daemon)
+    };
+    let first = crate::test_answers::listing(listing("query:paging", None));
+    let first = first
+        .value()
+        .unwrap_or_else(|| panic!("first page: {first:?}"));
+    let run_ref = first["resolved"]["run"].as_str().expect("run reference");
+    let Reference::Run(id) = Reference::parse(run_ref).unwrap() else {
+        panic!("expected a run reference");
+    };
+    let next = first["next"].as_str().expect("more than one session");
+    save(
+        &daemon.daemon,
+        "messages | sort by id",
+        "save-paging-changed",
+    );
+    let second = crate::test_answers::listing(listing("query:paging", Some(next)));
+    let second = second
+        .value()
+        .unwrap_or_else(|| panic!("second page: {second:?}"));
+    assert_eq!(second["resolved"]["run"], run_ref);
+    assert_eq!(second["unit"], "sessions");
+    assert_eq!(second["resolved"]["query"], first["resolved"]["query"]);
+    assert_eq!(second["count"], first["count"]);
+    assert_ne!(second["rows"], first["rows"]);
+    let count_before_restart = {
+        let read = daemon.daemon.reads.reader().unwrap();
+        let run = read.query_run(&id).unwrap().unwrap();
+        assert_eq!(run.authorship.author, polylogue_model::Author::Operator);
+        assert_eq!(
+            run.authorship.via,
+            polylogue_model::authorship::Channel::Cli
+        );
+        assert_eq!(
+            read.query_run_outcome(&id).unwrap().unwrap().outcome,
+            RunOutcome::Ok
+        );
+        // Both pages use the same immutable run, with a completed first-page outcome.
+        let completion = read.query_run_outcome(&id).unwrap().unwrap();
+        assert_eq!(
+            completion.next.unwrap().request.cursor.as_deref(),
+            Some(next)
+        );
+        completion.count
+    };
+    assert_eq!(count_before_restart, first["count"].as_u64());
+    daemon.restart();
+    let read = daemon.daemon.reads.reader().unwrap();
+    assert_eq!(
+        read.query_run_outcome(&id).unwrap().unwrap().count,
+        count_before_restart
+    );
+}

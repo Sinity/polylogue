@@ -472,7 +472,7 @@ fn attachment_call(
     })
 }
 
-/// First pages queue their run after reading; an answer stands without its run record.
+/// First pages commit their completed run before returning the answer.
 fn record_run(
     reader: &Reader<'_>,
     services: &impl ReadServices,
@@ -810,9 +810,9 @@ pub fn page(
                         ReadFooter::default(),
                     )?;
                     if cursor.is_none() {
-                        let _ = record_compiled(
+                        record_compiled(
                             reader, services, operation, request, &reading, compiled, history,
-                        );
+                        )?;
                     }
                     Ok((page, vec![]))
                 },
@@ -820,7 +820,7 @@ pub fn page(
         }
     };
     if cursor.is_none() {
-        let _ = record_run(reader, services, operation, request, &reading, history);
+        record_run(reader, services, operation, request, &reading, history)?;
     }
     Ok(page)
 }

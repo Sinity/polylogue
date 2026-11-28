@@ -17,6 +17,7 @@ use query_language::{
 use serde_json::Value;
 
 mod execution;
+pub use execution::bind_execution;
 mod prepare;
 pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on};
 mod shipped;

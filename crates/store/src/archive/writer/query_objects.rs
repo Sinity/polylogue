@@ -44,20 +44,24 @@ pub(super) struct History {
 }
 
 impl HistorySlot {
-    /// Hand one whole record to the writer, without waiting for a commit.
+    /// Commit one whole execution record before returning a successful read.
     pub fn record(
         self,
         object: QueryObject,
         run: QueryRun,
         outcome: QueryRunOutcome,
     ) -> Result<()> {
-        self.slot.push(UserMsg::History(Box::new(History {
-            object,
-            run,
-            outcome,
-        })))?;
+        let (reply, wait) = sync_channel(1);
+        self.slot.push(UserMsg::History(
+            Box::new(History {
+                object,
+                run,
+                outcome,
+            }),
+            reply,
+        ))?;
         self.writer.wake();
-        Ok(())
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 }
 

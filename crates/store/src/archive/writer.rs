@@ -148,7 +148,7 @@ enum UserMsg {
         Box<polylogue_model::query_objects::QueryRunOutcome>,
         SyncSender<Result<()>>,
     ),
-    History(Box<query_objects::History>),
+    History(Box<query_objects::History>, SyncSender<Result<()>>),
 }
 
 /// User writes waiting before their senders block.
@@ -699,13 +699,14 @@ impl Inner {
                     }
                     let _ = reply.send(result);
                 }
-                UserMsg::History(history) => {
-                    if let Err(error) = self
+                UserMsg::History(history, reply) => {
+                    let result = self
                         .check_user_parent(history.run.id.as_str(), None)
-                        .and_then(|()| self.write_history(&history))
-                    {
-                        self.failed(format_args!("query history {}", history.run.id), &error);
+                        .and_then(|()| self.write_history(&history));
+                    if let Err(error) = &result {
+                        self.failed(format_args!("query history {}", history.run.id), error);
                     }
+                    let _ = reply.send(result);
                 }
             }
         }

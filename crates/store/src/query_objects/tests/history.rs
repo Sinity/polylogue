@@ -1,13 +1,13 @@
 use super::*;
 
 #[test]
-fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
+fn completed_history_acknowledges_one_committed_record() {
     let archive = WriterArchive::new();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let object = question("sessions");
     let expected = run(
         &object,
-        "asynchronous-history",
+        "acknowledged-history",
         123,
         pool.reader().unwrap().change_position().unwrap(),
     );
@@ -17,25 +17,35 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
         expected.id.as_str(),
         crate::writer::DispatchPhase::BeforeParentCheck,
     );
-    sender
-        .archive()
-        .reserve_history()
-        .unwrap()
-        .record(object.clone(), expected.clone(), completed.clone())
-        .unwrap();
-    pause.wait().unwrap();
-    let reader = pool.reader().unwrap();
-    assert!(
-        reader
-            .query_object(&object.id.to_string())
-            .unwrap()
-            .is_none()
-    );
-    assert!(reader.query_run(&expected.id).unwrap().is_none());
-    assert!(reader.query_run_outcome(&expected.id).unwrap().is_none());
-    drop(reader);
-    pause.release();
-    assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
+    let slot = sender.archive().reserve_history().unwrap();
+    let recorded = std::thread::scope(|scope| {
+        let (reply, result) = std::sync::mpsc::channel();
+        let (write_object, write_run, write_outcome) =
+            (object.clone(), expected.clone(), completed.clone());
+        scope.spawn(move || {
+            reply
+                .send(slot.record(write_object, write_run, write_outcome))
+                .unwrap();
+        });
+        pause.wait().unwrap();
+        assert!(matches!(
+            result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        let reader = pool.reader().unwrap();
+        assert!(
+            reader
+                .query_object(&object.id.to_string())
+                .unwrap()
+                .is_none()
+        );
+        assert!(reader.query_run(&expected.id).unwrap().is_none());
+        assert!(reader.query_run_outcome(&expected.id).unwrap().is_none());
+        drop(reader);
+        pause.release();
+        result.recv().unwrap()
+    });
+    recorded.unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
@@ -73,13 +83,15 @@ fn conflicting_history_rolls_back_its_question_and_run() {
         .recv()
         .unwrap()
         .unwrap();
-    archive
-        .writer
-        .archive()
-        .reserve_history()
-        .unwrap()
-        .record(object.clone(), expected.clone(), completed)
-        .unwrap();
+    assert!(
+        archive
+            .writer
+            .archive()
+            .reserve_history()
+            .unwrap()
+            .record(object.clone(), expected.clone(), completed)
+            .is_err()
+    );
     let report = archive.writer.flush_rows().unwrap();
     assert!(
         report
