@@ -87,18 +87,23 @@ fn parser<'a>(versions: &'a [(String, String)], origin: &str) -> Option<&'a str>
         .map(|(_, version)| version.as_str())
 }
 
-fn chain_rows() -> String {
+fn import_formats(observations: &str) -> String {
     use crate::source::{IMPORT_FORMAT, IMPORT_FORMAT_ORDER, STATES_IMPORT_FORMAT};
+    format!(
+        "SELECT o.input, o.path_bytes, {IMPORT_FORMAT} AS format,
+            row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
+        FROM {observations} o WHERE {STATES_IMPORT_FORMAT}"
+    )
+}
+
+fn chain_rows() -> String {
+    let formats = import_formats("observations");
     let state = crate::parse_state::PLANNED_COLUMNS;
     format!(
         r#"first_paths AS MATERIALIZED (
                 SELECT input, min(id) AS observation
                 FROM observations GROUP BY input
-            ), formats AS (
-                SELECT o.input, o.path_bytes, {IMPORT_FORMAT} AS format,
-                    row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
-                FROM observations o WHERE {STATES_IMPORT_FORMAT}
-            )
+            ), formats AS ({formats})
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
                 COALESCE(f.format, i.origin) AS format,
@@ -352,15 +357,24 @@ impl Reader<'_> {
     /// against the origins' parser versions in `contracts`.
     pub fn chain_census(&self, contracts: &[ReadingContract]) -> Result<ChainCensus> {
         let token = self.scope_token();
-        let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("c.input", "i.origin");
+        // Census visits the entire archive. Resolve formats and SQLite member
+        // links once rather than reopening each input's observation history
+        // for every chain.
+        let formats = import_formats("source_observation");
+        let database_inputs = crate::source::database_links_from("source_observation");
         let state = crate::parse_state::PLANNED_COLUMNS;
         let sql = format!(
-            "SELECT c.input, c.length,
-                CASE WHEN {database} THEN 'export-file' ELSE {format} END, {state}
+            "WITH database_inputs(input) AS MATERIALIZED (
+                SELECT DISTINCT container_input FROM ({database_inputs})
+             ), formats AS MATERIALIZED ({formats})
+             SELECT c.length,
+                CASE WHEN db.input IS NOT NULL THEN 'export-file'
+                     ELSE coalesce(f.format, i.origin) END, {state}
              FROM (SELECT input, chain, max(length) AS length FROM source_revision
                    GROUP BY input, chain) c
              JOIN source_input i ON i.id = c.input
+             LEFT JOIN database_inputs db ON db.input = c.input
+             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
              LEFT JOIN input_ref ir ON ir.id = c.input
              LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain"
         );
@@ -370,9 +384,9 @@ impl Reader<'_> {
         let mut census = ChainCensus::default();
         while let Some(row) = rows.next()? {
             token.check()?;
-            let stored: u64 = row.get(1)?;
-            let origin: String = row.get(2)?;
-            let state = crate::parse_state::ParseStateRow::planned(row, 3)?;
+            let stored: u64 = row.get(0)?;
+            let origin: String = row.get(1)?;
+            let state = crate::parse_state::ParseStateRow::planned(row, 2)?;
             let parser = contracts
                 .iter()
                 .find(|c| c.origin() == origin)
