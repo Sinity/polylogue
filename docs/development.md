@@ -286,12 +286,15 @@ request. With the queue running an owner does not land by hand.
 cycle takes the oldest ready ones, at most eight, and builds one staging
 commit on master's tip that adds each as a squash commit, computed with
 `git merge-tree` and `git commit-tree`; one that does not merge onto the
-staging commit is left out of this batch. Each dispatch gets its own
-`land-queue-<commit>-<suffix>` branch and passes that exact commit to the
-`check` workflow as `rev`. The queue uses the returned run URL if available,
-or looks for the run on that branch with that commit. When the run is green
-and master has not moved since, or moved only in packages the batch does not change, it
-squash-merges the members in order with `--match-head-commit` and says
+staging commit is left out of this batch. The squash commits record each
+pull request's source head. Each dispatch gets its own branch and commit SHA
+and passes that exact SHA to the `check` workflow as `rev`. The queue uses the
+returned run URL if available or looks up the run on GitHub. It verifies the
+workflow, repository, branch, commit, requested revision and attempt before
+taking the result. The workflow checks that a staging dispatch tests its
+branch tip.
+When the run is green and master has not moved since, or moved only in
+packages the batch does not change, it squash-merges the members in order with `--match-head-commit` and says
 whether master's tree is then identical to the tree the staging commit
 predicts. If master moved in a package the batch changes, it builds a new
 staging commit and tests again. Master's protection requires `check` on the
@@ -319,11 +322,13 @@ request while its head is the one that comment names. A new head or a branch
 update puts it back. If the next attempt cannot be confirmed, the pull
 request waits for another cycle.
 
-The queue keeps nothing beyond GitHub. Stopping it abandons the batch in
-flight (its run finishes unused); members already merged stay merged, and the
-rest are ready pull requests on the next cycle. Each cycle removes only its
-own staging branches whose runs it confirmed as finished. An abandoned
-branch can be removed once its run has finished. Each cycle prints what is
+GitHub holds the staging branches and runs. On a Linux checkout with
+`flock`, the controller that holds the Git directory lock can resume a run
+from a previous controller in that checkout. The current base, ordered pull
+requests, source heads and staged trees must match the recorded batch. A
+concurrent controller uses separate branches and commit SHAs. The queue
+deletes the staging branches it used when it confirms their runs finished.
+An unused branch can be removed after its run finishes. Each cycle prints what is
 not in the batch (check running,
 red on its own head with the failed jobs, conflicting, waiting on review
 threads, sent back, held, draft), then the batch, the staging commit, the
@@ -334,7 +339,8 @@ conflicting or sent back; `--dry-run` prints the batch and its staging commit
 without pushing or merging.
 
 `python3 dev/test-land.py` exercises the queue with a local Git remote and a
-simulated forge. It uses `jq` to evaluate the run lookup and result filters.
+simulated forge. It uses `jq` to evaluate the run lookup and result filters
+and exercises restart recovery with the real advisory lock.
 
 `dev/land <n>` lands one pull request by hand and refuses while a
 `land-queue-*` branch exists, so a hand merge does not move master under a
