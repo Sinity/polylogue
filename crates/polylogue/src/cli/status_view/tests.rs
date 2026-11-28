@@ -142,6 +142,12 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
                 ("codex:payload.extra".into(), 5),
             ],
             unused_fields: 41,
+            capture_faults: vec![polylogue_store::CaptureFault {
+                category: polylogue_store::CaptureFaultCategory::FieldFault,
+                kind: "attachment".into(),
+                count: 3,
+                most_common_reason: "invalid inline base64".into(),
+            }],
             search_pending: 0,
             search_pending_is_minimum: false,
             summaries_due: 0,
@@ -272,6 +278,8 @@ SOURCES    walked 13:00:00
            claude-code /home/op/.claude · present · 100 collected · 43 ignored
              ignored: 40 cache, 3 lock files
            /home/op/.codex · absent
+
+FAULTS     attachment · 3 field faults · most often: invalid inline base64
 
 UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 40 more, 1 of them in --json
 

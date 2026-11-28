@@ -101,6 +101,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                 .unwrap_or_default(),
         ),
         ("SOURCES", sources(status, view)),
+        ("FAULTS", capture_faults(status)),
         ("UNUSED", unused(status)),
         ("THREADS", threads(status, view)),
         ("RECENT", recent(status, view)),
@@ -995,6 +996,30 @@ fn collected_by(root: &std::path::Path, pattern: &str) -> Option<&'static str> {
         [(name, _)] => Some(name),
         _ => None,
     }
+}
+
+fn capture_faults(status: &Answer) -> Vec<String> {
+    use polylogue_store::CaptureFaultCategory;
+    let Some(store) = &status.store else {
+        return Vec::new();
+    };
+    store
+        .capture_faults
+        .iter()
+        .map(|fault| {
+            let category = match fault.category {
+                CaptureFaultCategory::UnreadableRecord => "unreadable records",
+                CaptureFaultCategory::FieldFault => "field faults",
+            };
+            format!(
+                "{} · {} {} · most often: {}",
+                clean(&fault.kind),
+                count(fault.count),
+                category,
+                clean(&fault.most_common_reason),
+            )
+        })
+        .collect()
 }
 
 fn unused(status: &Answer) -> Vec<String> {

@@ -95,8 +95,9 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
-    BehindChain, CapturedSession, ChainCensus, KnownInput, Lane, LatestChain, ReadPool, Reader,
-    ReadingContract, RevisionChains, SqlValue, Status, StoredSource, scope::ReadScopeToken,
+    BehindChain, CaptureFault, CaptureFaultCategory, CapturedSession, ChainCensus, KnownInput,
+    Lane, LatestChain, ReadPool, Reader, ReadingContract, RevisionChains, SqlValue, Status,
+    StoredSource, scope::ReadScopeToken,
 };
 pub use scope_index::{
     NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,

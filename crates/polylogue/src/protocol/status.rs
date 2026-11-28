@@ -326,8 +326,11 @@ pub struct Store {
     pub parse_states: BTreeMap<String, u64>,
     /// The 20 most frequent unread fields, with --details only.
     pub unused: Vec<(String, u64)>,
-    /// How many record kinds and fields parsers did not read, all of them.
+    /// The number of distinct unread fields.
     pub unused_fields: u64,
+    /// Unreadable records and field faults by kind.
+    #[serde(default)]
+    pub capture_faults: Vec<polylogue_store::CaptureFault>,
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
@@ -387,6 +390,7 @@ impl Store {
             parse_states: store.parse_states,
             unused: if details { store.unused } else { Vec::new() },
             unused_fields: store.unused_fields,
+            capture_faults: store.capture_faults,
             search_pending: store.search_pending,
             search_pending_is_minimum: store.search_pending_is_minimum,
             summaries_due: store.summaries_due,
