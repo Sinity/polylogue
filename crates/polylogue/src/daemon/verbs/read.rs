@@ -216,8 +216,11 @@ pub(crate) fn page(
     } else {
         None
     };
+    polylogue_store::read::limit::ReadLimit::set_stage("read connection checkout");
     let reader = call.reader()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read context");
     let context = call.context()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read selection");
     polylogue_reading::resolve_start(&reader, &context, &mut request)
         .map_err(|error| failure(error, &request))?;
     let services = &LineReads {
@@ -273,7 +276,9 @@ pub(crate) fn stream(
     services: &impl ReadServices,
 ) -> Result<Answer<ReadFooter>, Failure> {
     crate::daemon::service::accepting(call.daemon)?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read connection checkout");
     let reader = call.reader()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read selection");
     polylogue_reading::resolve_start(&reader, context, &mut request)
         .map_err(|error| failure(error, &request))?;
     let request = polylogue_reading::with_alternates(&reader, services, request.clone())
