@@ -17,7 +17,6 @@ pub enum Paging {
 
 pub mod comparison;
 pub mod daily;
-pub mod drift;
 pub mod facets;
 pub mod outlook;
 pub mod quota;

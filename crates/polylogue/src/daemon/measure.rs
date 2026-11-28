@@ -7,7 +7,7 @@
 use super::Failure;
 use polylogue_render::measures as text;
 use polylogue_store::Reader;
-use polylogue_store::measure::{self, Selection, daily, drift, quota, survival, tool_calls};
+use polylogue_store::measure::{self, Selection, daily, quota, survival, tool_calls};
 use query_language::time::DaySetting;
 use serde::Serialize;
 use serde_json::Value;
@@ -206,17 +206,6 @@ pub static MEASURES: &[Measure] = &[
         metrics: &[],
         run: |r, x| json(tool_calls::failing_commands(r, &x.selection)),
         text: text::failing,
-    },
-    Measure {
-        name: "drift",
-        help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
-        whole_archive: true,
-        messages: false,
-        paging: None,
-        argument: None,
-        metrics: &[],
-        run: |r, _| json(drift::drift(r)),
-        text: |data, _| text::drift(data),
     },
     Measure {
         name: "unanswered",

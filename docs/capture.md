@@ -215,7 +215,7 @@ Gemini activity times keep their original text and zone. Explicit offsets are re
 ## Capture status
 
 `polylogue status` (CLI, MCP, HTTP and web) says whether everything is being captured, in one place. Its capture section holds:
-- **per origin:** state (`live`, `collector off`, `not authorized`, `no parser yet`), newest input time, input and session counts, refusals, and format drift;
+- **per origin:** state (`live`, `collector off`, `not authorized`, `no parser yet`), newest input time, input and session counts, and refusals;
 - **per root:** the coverage classes with their reasons and counts;
 - **hooks:** per harness and event, whether it is wired and whether events arrived recently;
 - **extension:** the native-messaging host manifest present and pointing at this binary; per provider, the last capture and its state; running provider imports;

@@ -618,7 +618,7 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
     assert_eq!(error.code.as_deref(), Some("bad_value"));
     assert_eq!(
         error.message,
-        "unknown measurement `nosuch`; choose one of compare, daily, drift, facets, failing, outcomes, outlook, process, quota, responses, rhythm, sessions, shell-stages, survival, survival-turns, time, unanswered, usage"
+        "unknown measurement `nosuch`; choose one of compare, daily, facets, failing, outcomes, outlook, process, quota, responses, rhythm, sessions, shell-stages, survival, survival-turns, time, unanswered, usage"
     );
     let origin = answer("origin:nosuch", false);
     assert_eq!(origin.exit_code(), 2, "{origin:?}");
