@@ -1620,7 +1620,7 @@ impl Engine {
                     through,
                     self.config.workers.max(1),
                 )?;
-                self.reparse_chains(recent, pass)?;
+                self.reparse_chains(recent, pass, true)?;
             }
             // Unfinished plans remain due. Catch-up visits them through its
             // ordinary finite scan even if a new request interrupted the seed.
@@ -1661,7 +1661,7 @@ impl Engine {
                 .reads
                 .reader()?
                 .chains_behind_index(&versions, chains, Some(&ids))?;
-            self.reparse_chains(behind, pass)?;
+            self.reparse_chains(behind, pass, false)?;
             if self.yielding() || self.archive.stop().is_cancelled() {
                 return Ok(false);
             }
@@ -1739,7 +1739,7 @@ impl Engine {
                 Some(through),
             )?;
             drop(reader);
-            self.reparse_chains(behind, &mut pass)?;
+            self.reparse_chains(behind, &mut pass, false)?;
             last = Some(end);
         }
         pass.sessions_derived += self.derive()?;
@@ -1789,6 +1789,7 @@ impl Engine {
         &mut self,
         behind: Vec<polylogue_store::read::BehindChain>,
         pass: &mut Pass,
+        recent_first: bool,
     ) -> Result<(), EngineError> {
         let mut replacements = Vec::new();
         let mut parse = Vec::new();
@@ -1911,7 +1912,7 @@ impl Engine {
                 tracked,
             )?;
             plan.input_finished = c.imported;
-            if c.current && origin.arrival == polylogue_sources::Arrival::Live {
+            if !recent_first && c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
             if from.is_none() && replaces(&c.state, origin) {
@@ -1925,13 +1926,18 @@ impl Engine {
         if self.yielding() {
             return Ok(());
         }
-        self.execute_by_path(parse, pass)
+        self.execute_by_path(parse, pass, recent_first)
     }
 
     /// Runs plans of stored chains on the parse pool together, in rounds that
     /// hold one chain per path, since the pool runs one plan per path at a
     /// time; within a path, plans keep their order.
-    fn execute_by_path(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
+    fn execute_by_path(
+        &mut self,
+        plans: Vec<Plan>,
+        pass: &mut Pass,
+        recent_first: bool,
+    ) -> Result<(), EngineError> {
         let mut rounds: Vec<Vec<Plan>> = Vec::new();
         let mut chains_per_path: HashMap<PathBuf, usize> = HashMap::new();
         for plan in plans {
@@ -1946,7 +1952,7 @@ impl Engine {
             if self.poll_request() {
                 break;
             }
-            self.execute(round, pass)?;
+            self.execute_plans(round, pass, recent_first)?;
             if self.yielding() {
                 break;
             }
@@ -2216,6 +2222,15 @@ impl Engine {
     /// every input is stored and parsed up to its size; then waits for the
     /// writer to commit.
     pub(crate) fn execute(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
+        self.execute_plans(plans, pass, false)
+    }
+
+    fn execute_plans(
+        &mut self,
+        plans: Vec<Plan>,
+        pass: &mut Pass,
+        recent_first: bool,
+    ) -> Result<(), EngineError> {
         if plans.is_empty() && self.rollout_captures.is_empty() {
             return Ok(());
         }
@@ -2232,7 +2247,8 @@ impl Engine {
         if !self.archive.index_files()?.serves() {
             self.store_without_parsing(&mut plans);
         }
-        if self.archive.index_build().is_some() {
+        // The recent replay seed already interleaves origins by age.
+        if !recent_first && self.archive.index_build().is_some() {
             let key = |plan: &Plan| {
                 let stores =
                     matches!(plan.source, pool::Bytes::File) && plan.stored_upto < plan.size;
@@ -2251,7 +2267,7 @@ impl Engine {
                     .cmp(&key(b))
                     .then_with(|| (&a.input.id, &a.path).cmp(&(&b.input.id, &b.path)))
             });
-        } else {
+        } else if !recent_first {
             plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         }
         let mut pooled = Vec::new();
