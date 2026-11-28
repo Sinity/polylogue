@@ -11,6 +11,7 @@
 use super::{Daemon, Failure, authored_preparation, error, writer};
 use crate::commands::ToolAccess;
 use crate::daemon::handler::{Call, Operation, Policy};
+use crate::hosting::SendFailure;
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::acts::{
     ActOutcome, Answered, Claim, Claimed, ClaimedDelivery, Continued, Decided, Delivered,
@@ -145,17 +146,26 @@ fn outcome_event(
     outcome: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
-    let request = invocation.request(
+    let request = outcome_request(invocation, delivery, outcome, detail);
+    let written = writer(d)?.archive().accept_delivery(request)?;
+    d.acts.watch_delivery(delivery, written);
+    Ok(())
+}
+
+fn outcome_request(
+    invocation: &Invocation,
+    delivery: &str,
+    outcome: DeliveryOutcome,
+    detail: String,
+) -> polylogue_model::user::UserRequest {
+    invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
             outcome,
             detail: Some(detail),
         },
-    );
-    let written = writer(d)?.archive().accept_delivery(request)?;
-    d.acts.watch_delivery(delivery, written);
-    Ok(())
+    )
 }
 
 /// Who an address names when it is sent.
@@ -320,10 +330,9 @@ pub(crate) fn refuse_running_resume(d: &Daemon, session: &SessionId) -> Result<(
     }
 }
 
-/// Sends a message or notice over a hosted connection: `delivered` when
-/// written, recorded later when it waits for the running prompt, and
-/// `not_sent` when the connection fails. The delivery stays handed out, so
-/// no hook takes it as well.
+/// Submits a new hosted message and records the result before confirming
+/// a direct submission. On loss of the connection after writing began,
+/// the prepared record still prevents a retry from submitting it again.
 fn protocol_send(
     d: &Daemon,
     invocation: &Invocation,
@@ -331,51 +340,113 @@ fn protocol_send(
     delivery: &str,
     pack: &str,
 ) -> Result<Delivered, Failure> {
-    let row = |outcome, reason, note: Option<&str>| Delivered {
+    let (outcome, reason, note, event) = match d.acts.host_send(session, pack, Some(delivery)) {
+        Ok(true) => (
+            ActOutcome::Delivered,
+            None,
+            None,
+            Some((
+                DeliveryOutcome::Delivered,
+                "sent over the hosted connection".into(),
+            )),
+        ),
+        Ok(false) => (
+            ActOutcome::Prepared,
+            None,
+            Some("waits for the running prompt; recorded when it is sent".into()),
+            None,
+        ),
+        Err(SendFailure::NotSent(message)) => {
+            let reason = NotSentReason::Failed { message };
+            let detail = reason.to_string();
+            (
+                ActOutcome::NotSent,
+                Some(reason),
+                None,
+                Some((DeliveryOutcome::NotSent, detail)),
+            )
+        }
+        Err(SendFailure::Unknown(message)) => (
+            ActOutcome::Unknown,
+            None,
+            Some(format!("submission could not be confirmed: {message}")),
+            None,
+        ),
+    };
+    if let Some((outcome, detail)) = event {
+        writer(d)?
+            .archive()
+            .accept_delivery(outcome_request(invocation, delivery, outcome, detail))?
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)??;
+    }
+    Ok(Delivered {
         session: session.clone(),
         delivery: Some(delivery.to_owned()),
         channel: Some(Channel::Protocol),
         outcome,
         reason,
-        note: note.map(str::to_owned),
+        note,
         started: None,
+    })
+}
+
+/// Repeats only the receipt. The record already chose the recipient and
+/// channel, even if the current connection or live state has changed.
+fn previous_send(
+    d: &Daemon,
+    delivery: &str,
+    session: &SessionId,
+) -> Result<Option<Delivered>, Failure> {
+    let writer = writer(d)?;
+    let Some(request) = writer.archive().committed_for(delivery)? else {
+        return Ok(None);
     };
-    Ok(match d.acts.host_send(session, pack, Some(delivery)) {
-        Ok(true) => {
-            outcome_event(
-                d,
-                invocation,
-                delivery,
-                DeliveryOutcome::Delivered,
-                "sent over the hosted connection".into(),
-            )?;
-            row(ActOutcome::Delivered, None, None)
+    let UserWrite::Deliver(prepared) = request.request.write else {
+        return Err(polylogue_store::StoreError::Conflict(delivery.into()).into());
+    };
+    if prepared.event != DeliveryEvent::Message
+        || prepared.recipient_id.as_deref() != Some(session.to_string().as_str())
+    {
+        return Err(polylogue_store::StoreError::Conflict(delivery.into()).into());
+    }
+    let channel = (prepared.sender == DeliverySender::Act).then_some(Channel::Protocol);
+    let queued = channel.is_some() && d.acts.host_queued(session, delivery);
+    let event = writer
+        .archive()
+        .delivery_events(delivery)?
+        .into_iter()
+        .next_back();
+    let (outcome, reason, note) = match event.map(|event| (event.outcome, event.detail)) {
+        Some((DeliveryOutcome::Delivered | DeliveryOutcome::Failed | DeliveryOutcome::Used, _)) => {
+            (ActOutcome::Delivered, None, None)
         }
-        Ok(false) => row(
+        Some((DeliveryOutcome::NotSent, detail)) => (ActOutcome::NotSent, None, detail),
+        None if queued => (
             ActOutcome::Prepared,
             None,
-            Some("waits for the running prompt; recorded when it is sent"),
+            Some("waits for the running prompt; recorded when it is sent".into()),
         ),
-        Err(reason) => {
-            outcome_event(
-                d,
-                invocation,
-                delivery,
-                DeliveryOutcome::NotSent,
-                format!("failed({reason})"),
-            )?;
-            row(
-                ActOutcome::NotSent,
-                Some(NotSentReason::Failed { message: reason }),
-                None,
-            )
-        }
-    })
+        None => (
+            ActOutcome::Unknown,
+            None,
+            Some("the previous submission has no confirmed outcome".into()),
+        ),
+    };
+    Ok(Some(Delivered {
+        session: session.clone(),
+        delivery: Some(delivery.into()),
+        channel,
+        outcome,
+        reason,
+        note,
+        started: None,
+    }))
 }
 
 /// Records what happened to a message that waited for a hosted session's
 /// running prompt.
-fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
+fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), SendFailure>) {
     let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
         "hosted",
     ));
@@ -384,7 +455,16 @@ fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
             DeliveryOutcome::Delivered,
             "sent over the hosted connection after the running prompt".to_owned(),
         ),
-        Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
+        Err(SendFailure::NotSent(reason)) => {
+            (DeliveryOutcome::NotSent, format!("failed({reason})"))
+        }
+        Err(SendFailure::Unknown(reason)) => {
+            polylogue_store::log!(
+                warning,
+                "submission of delivery {delivery} could not be confirmed: {reason}"
+            );
+            return;
+        }
     };
     if let Err(error) = outcome_event(d, &invocation, delivery, what, detail) {
         d.acts.delivery_write_failed(delivery, &error.message);
@@ -464,12 +544,17 @@ pub(crate) fn send(
         UserWrite::Assert {
             annotations: vec![annotation],
         },
-    )?
-    .id;
+    )?;
     let author_name = invocation.authorship.author.to_string();
     let mut sent = Vec::new();
     for (n, session) in sessions.iter().enumerate() {
         let delivery = format!("{request_id}-{n}");
+        if message.repeat
+            && let Some(previous) = previous_send(d, &delivery, session)?
+        {
+            sent.push(previous);
+            continue;
+        }
         let (view_state, facts, cwd) = match session_state(d, session, now)? {
             Some(state) => state,
             None => {
@@ -485,34 +570,45 @@ pub(crate) fn send(
                 continue;
             }
         };
-        let pack = message_text(&delivery, &message, &author_name, text, about.as_deref());
-        // Held from before its row exists, so nothing closes or claims it
-        // until its channel is decided.
-        {
+        let chosen = channel(
+            Act::Send { live },
+            view_state,
+            &probe(&d.acts, session, &facts),
+        );
+        let pack = message_text(&delivery, &message.id, &author_name, text, about.as_deref());
+        let hosted = matches!(chosen, Ok(Channel::Protocol));
+        // The archive keeps hosted messages out of the mailbox. For the
+        // others, hold the claim until the channel takes the delivery.
+        if !hosted {
             let _claims = d.acts.claim_lock();
             d.acts.take(vec![(delivery.clone(), ())]);
         }
-        author(
+        let prepared = author(
             d,
             invocation,
             delivery.clone(),
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.to_string()),
-                sender: DeliverySender::Send,
+                sender: if hosted {
+                    DeliverySender::Act
+                } else {
+                    DeliverySender::Send
+                },
                 event: DeliveryEvent::Message,
                 cwd,
                 text: pack.clone(),
-                refs: vec![format!("annotation:{message}")],
+                refs: vec![format!("annotation:{}", message.id)],
                 left_out: Vec::new(),
                 prepared_position: None,
             }),
         )?;
-        let chosen = channel(
-            Act::Send { live },
-            view_state,
-            &probe(&d.acts, session, &facts),
-        );
+        if prepared.repeat {
+            let previous = previous_send(d, &delivery, session)?
+                .ok_or_else(|| Failure::internal("the repeated send has no delivery record"))?;
+            sent.push(previous);
+            continue;
+        }
         let row = |channel, outcome, note: Option<&str>| Delivered {
             session: session.clone(),
             delivery: Some(delivery.clone()),
@@ -616,7 +712,7 @@ pub(crate) fn send(
         sent.push(row);
     }
     Ok(Answer::ok(Sent {
-        message: Some(message),
+        message: Some(message.id),
         deliveries: sent,
         undo: "none: a sent message cannot be taken back".into(),
     }))

@@ -381,7 +381,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT d.id, d.body FROM source_delivery d
-              WHERE d.recipient_id = ?1 AND d.event IN ('message', 'notice')
+              WHERE d.recipient_id = ?1 AND d.event IN ('message', 'notice') AND d.sender <> 'act'
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.at, d.id",
         )?;
@@ -418,7 +418,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT d.recipient_id FROM source_delivery d
-              WHERE d.recipient_id IS NOT NULL AND d.event IN ('message', 'notice')
+              WHERE d.recipient_id IS NOT NULL AND d.event IN ('message', 'notice') AND d.sender <> 'act'
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.recipient_id",
         )?;

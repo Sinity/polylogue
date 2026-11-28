@@ -18,6 +18,7 @@ while IFS= read -r line; do
       n=$((n+1)); echo "$n" > "$count"; prompt=$id
       printf '{"jsonrpc":"2.0","id":90%s,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t%s"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}\n' "$n" "$n" ;;
     *'"optionId":"yes"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$prompt" ;;
+    *'"optionId":"no"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"prompt failed"}}\n' "$prompt" ;;
     *'"method":"session/cancel"'*) echo cancel >> "$count.cancel" ;;
     *'"outcome":"cancelled"'*) echo cancelled >> "$count.cancel"; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"cancelled"}}\n' "$prompt" ;;
   esac
@@ -215,7 +216,6 @@ fn a_stopped_host_appends_neither_late_status_nor_a_late_retry() {
     let session = SessionId::parse("claude-code:s1").unwrap();
     let relay = Mutex::new(Relay {
         client: None,
-        backlog: VecDeque::new(),
         tracker: Tracker::new(config.protocol),
         session: Some(session.clone()),
         spool: crate::live_events::PendingLines::new("registry", "host", Default::default()),
@@ -469,6 +469,15 @@ fn record(hosting: &Hosting) -> Record {
 /// and none is sent twice.
 #[test]
 fn a_hosted_session_survives_its_daemon_connection() {
+    reattach_during_prompt(true);
+}
+
+#[test]
+fn a_reattached_hosted_session_accepts_the_next_prompt_after_an_error() {
+    reattach_during_prompt(false);
+}
+
+fn reattach_during_prompt(first_succeeds: bool) {
     let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
     let first =
         HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, String::new()).unwrap();
@@ -485,8 +494,11 @@ fn a_hosted_session_survives_its_daemon_connection() {
     // The daemon stops before answering.
     drop(first);
     let second = HostedStdio::reattach(&record(&hosting)).unwrap();
-    wait_until("the replayed request", || second.request().is_some());
-    assert!(second.state.0.locked().turn, "the hello says a turn runs");
+    assert!(
+        second.request().is_some(),
+        "the handover includes the unanswered request"
+    );
+    assert_eq!(second.state.0.locked().prompts.len(), 1);
     let (sent, outcomes) = std::sync::mpsc::channel();
     second.on_sent(Arc::new(move |delivery, result| {
         // A failed test may already have dropped its observer during unwind.
@@ -495,7 +507,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
     // A message sent while the turn runs waits for it.
     assert!(!second.send("second turn", Some("queued-success")).unwrap());
     assert_eq!(second.state.0.locked().queued.len(), 1);
-    second.answer(true, None).unwrap();
+    second.answer(first_succeeds, None).unwrap();
     // The first prompt finishes and the queued one is sent.
     wait_until("the second prompt", || {
         std::fs::read_to_string(hosting.dir.path().join("log")).is_ok_and(|n| n.trim() == "2")
@@ -506,7 +518,9 @@ fn a_hosted_session_survives_its_daemon_connection() {
         ("queued-success".into(), Ok(()))
     );
     second.answer(true, None).unwrap();
-    wait_until("the second turn's end", || !second.state.0.locked().turn);
+    wait_until("the second turn's end", || {
+        second.state.0.locked().prompts.is_empty()
+    });
     assert_eq!(hosting.log().trim(), "2", "every prompt ran exactly once");
     hosting.quit(&second);
     wait_until("the closed host connection", || !second.open());
@@ -563,8 +577,10 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
     for ((delivery, result), expected) in reported.iter().zip(["queued-one", "queued-two"]) {
         assert_eq!(delivery, expected);
         assert_eq!(
-            result.as_ref().unwrap_err(),
-            "the host connection closed before the queued prompt was sent"
+            result,
+            &Err(SendFailure::NotSent(
+                "the host connection closed before the queued prompt was sent".into()
+            ))
         );
     }
     assert!(client.state.0.locked().queued.is_empty());
@@ -608,7 +624,7 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
     wait_until("the permission request", || client.request().is_some());
     client.interrupt().unwrap();
     wait_until("the cancelled prompt's end", || {
-        !client.state.0.locked().turn
+        client.state.0.locked().prompts.is_empty()
     });
     // The cancel came first, then the pending permission was answered
     // `cancelled`, and only then did the agent end the prompt.
@@ -715,36 +731,27 @@ fn the_tracker_follows_turns_and_unanswered_requests() {
         Some("busy")
     );
     let ask = json!({"id": 5, "method": "session/request_permission"});
-    assert_eq!(acp.agent_sent(&ask, b"ask"), Some("blocked"));
-    assert_eq!(acp.unanswered().collect::<Vec<_>>(), [b"ask".as_slice()]);
-    assert_eq!(
-        acp.agent_sent(&json!({"method": "session/update"}), b"u"),
-        None
-    );
+    assert_eq!(acp.agent_sent(&ask), Some("blocked"));
+    assert_eq!(acp.open, [ask]);
+    assert_eq!(acp.agent_sent(&json!({"method": "session/update"})), None);
     assert_eq!(
         acp.client_sent(&json!({"id": 5, "result": {}})),
         Some("busy")
     );
-    assert_eq!(acp.unanswered().count(), 0);
+    assert!(acp.open.is_empty());
     assert_eq!(
-        acp.agent_sent(
-            &json!({"id": "a", "result": {"stopReason": "end_turn"}}),
-            b"r"
-        ),
+        acp.agent_sent(&json!({"id": "a", "result": {"stopReason": "end_turn"}})),
         Some("idle")
     );
     let mut claude = Tracker::new(HostProtocol::ClaudeStreamJson);
     assert_eq!(claude.client_sent(&json!({"type": "user"})), Some("busy"));
     assert_eq!(claude.client_sent(&json!({"type": "user"})), None);
     assert_eq!(
-        claude.agent_sent(&json!({"type": "result"}), b"r"),
+        claude.agent_sent(&json!({"type": "result"})),
         None,
         "the second message's turn runs next"
     );
-    assert_eq!(
-        claude.agent_sent(&json!({"type": "result"}), b"r"),
-        Some("idle")
-    );
+    assert_eq!(claude.agent_sent(&json!({"type": "result"})), Some("idle"));
 }
 
 /// Records round-trip, and removing one takes its socket with it.

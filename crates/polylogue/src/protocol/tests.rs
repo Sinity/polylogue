@@ -16,7 +16,7 @@ fn line_explanation_access_keeps_wire_and_family_names() {
 #[test]
 fn act_outcomes_keep_their_wire_names() {
     use crate::protocol::acts::ActOutcome;
-    let wire = r#"["delivered","prepared","started","queued","not_sent","cancelled"]"#;
+    let wire = r#"["delivered","prepared","started","queued","not_sent","unknown","cancelled"]"#;
     assert_eq!(serde_json::to_string(ActOutcome::ALL).unwrap(), wire);
     assert_eq!(
         serde_json::from_str::<Vec<ActOutcome>>(wire).unwrap(),

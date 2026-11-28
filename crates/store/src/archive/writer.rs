@@ -434,6 +434,21 @@ impl ArchiveSender {
         *self.0.followed.locked()
     }
 
+    /// The outcomes committed on a delivery, including those recorded while
+    /// the index was unavailable.
+    pub fn delivery_events(
+        &self,
+        id: &str,
+    ) -> Result<Vec<polylogue_model::authored::DeliveryEvent>> {
+        let conn = crate::archive::open_read(&self.0.location.archive_db())?;
+        crate::authored_records::delivery_events_from(
+            &conn,
+            crate::source::Source::Standalone,
+            id,
+            None,
+        )
+    }
+
     /// The pauses tests set on both writers' work.
     #[cfg(any(test, feature = "fixture"))]
     pub(crate) fn dispatch(&self) -> &dispatch::DispatchPauses {

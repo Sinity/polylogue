@@ -183,7 +183,7 @@ fn send(
             .push(super::gather(reached, &mut outcome, &mut envelope)?);
     }
     use crate::protocol::acts::ActOutcome;
-    let not_sent = report
+    let unconfirmed = report
         .reached
         .iter()
         .filter_map(|reached| match reached {
@@ -191,8 +191,8 @@ fn send(
             Reached::WebChat(_) => None,
         })
         .flatten()
-        .filter(|delivery| delivery.outcome == ActOutcome::NotSent);
-    let mut missing: Vec<_> = not_sent
+        .filter(|delivery| matches!(delivery.outcome, ActOutcome::NotSent | ActOutcome::Unknown));
+    let mut missing: Vec<_> = unconfirmed
         .map(|delivery| format!("message to {}", delivery.session))
         .collect();
     missing.extend(

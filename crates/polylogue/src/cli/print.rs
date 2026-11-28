@@ -287,6 +287,7 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
                         Started => "started a run for",
                         Prepared | Queued => "held message for",
                         NotSent => "could not send to",
+                        Unknown => "could not confirm delivery to",
                         Cancelled => "cancelled message to",
                     };
                     delivered(&mut out, action, one);

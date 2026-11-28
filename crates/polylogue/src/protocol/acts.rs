@@ -67,6 +67,8 @@ polylogue_model::stored_names! {
         /// Queued behind the session's running resume.
         Queued => "queued",
         NotSent => "not_sent",
+        /// Submission may have happened, but its outcome could not be confirmed.
+        Unknown => "unknown",
         Cancelled => "cancelled",
     }
 }

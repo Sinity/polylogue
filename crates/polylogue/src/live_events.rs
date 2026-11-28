@@ -553,6 +553,13 @@ impl Registry {
 /// app-server before it drops the connection and connects again later.
 const CODEX_ANSWER: Duration = Duration::from_secs(2);
 
+#[derive(Debug, thiserror::Error)]
+#[error("codex app-server refused {method}: {error}")]
+pub(crate) struct CodexRefusal {
+    method: String,
+    error: Value,
+}
+
 /// A JSON-RPC connection to Codex's shared app-server through `codex
 /// app-server proxy`, which carries newline-delimited JSON between its
 /// stdio and the daemon's control socket.
@@ -639,9 +646,10 @@ impl CodexConnection {
             })?;
             if message.u64("id") == Some(id) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
-                    return Err(std::io::Error::other(format!(
-                        "codex app-server refused {method}: {error}"
-                    )));
+                    return Err(std::io::Error::other(CodexRefusal {
+                        method: method.into(),
+                        error: error.clone(),
+                    }));
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
