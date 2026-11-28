@@ -11,7 +11,7 @@ fn fragment(uuid: &str, text: &str) -> String {
 }
 
 #[test]
-fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
+fn restart_resumes_response_assembly_after_checking_the_stored_prefix() {
     let home = ClaudeHome::new();
     home.append(
         "continuation.jsonl",
@@ -36,14 +36,13 @@ fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
         );
         assert!(stored.resume().is_some());
     }
-    home.append("continuation.jsonl", &fragment("last", "Final fragment."));
+    let suffix = fragment("last", "Final fragment.");
+    home.append("continuation.jsonl", &suffix);
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert!(
-        pass.bytes_read < prefix,
-        "restart read the provider prefix: {pass:?}"
-    );
+    assert_eq!(pass.bytes_read, prefix + suffix.len() as u64, "{pass:?}");
+    assert_eq!(pass.bytes_stored, suffix.len() as u64, "{pass:?}");
     let session = polylogue_model::SessionId::parse("claude-code:continuation").unwrap();
     let reader = engine.reads.reader().unwrap();
     let messages = reader.messages(&session, false).unwrap();
@@ -263,16 +262,16 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     let home = ClaudeHome::new();
     let mut length = 0;
     for (uuid, text) in [("first", "one"), ("second", "two"), ("third", "three")] {
-        home.append("keyed.jsonl", &keyed_fragment(uuid, "response-a", text));
+        let suffix = keyed_fragment(uuid, "response-a", text);
+        home.append("keyed.jsonl", &suffix);
         let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
-        assert!(
-            pass.bytes_read < std::fs::metadata(home.file("keyed.jsonl")).unwrap().len()
-                || length == 0,
-            "an append reread the parsed prefix: {pass:?}"
-        );
-        length = std::fs::metadata(home.file("keyed.jsonl")).unwrap().len();
+        if length > 0 {
+            assert_eq!(pass.bytes_read, length + suffix.len() as u64, "{pass:?}");
+            assert_eq!(pass.bytes_stored, suffix.len() as u64, "{pass:?}");
+        }
+        length += suffix.len() as u64;
     }
     let (engine, _lock) = crate::import::tests::engine(&home, 4096);
     let reader = engine.reads.reader().unwrap();
@@ -346,15 +345,14 @@ fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
     }
-    home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
+    let suffix = keyed_fragment("late", "response-a", "last");
+    home.append("keyed.jsonl", &suffix);
     // The append joins a response stated before it from the chain's rows.
     let (mut engine, _lock) = crate::import::tests::engine(&home, 128);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert!(
-        pass.bytes_read < prefix,
-        "restart reread the prefix: {pass:?}"
-    );
+    assert_eq!(pass.bytes_read, prefix + suffix.len() as u64, "{pass:?}");
+    assert_eq!(pass.bytes_stored, suffix.len() as u64, "{pass:?}");
     let reader = engine.reads.reader().unwrap();
     let messages = reader
         .messages(
