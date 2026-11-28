@@ -539,7 +539,14 @@ fn resolve(
             Given::None => None,
         };
         if let Some(text) = text {
-            let (retained, query_rows) = retain_selection(&text, call)?;
+            let (retained, query_rows) = retain_selection(
+                &text,
+                matches!(
+                    given,
+                    Given::Query(_) | Given::Reference(Reference::Query { .. })
+                ),
+                call,
+            )?;
             if return_selection && query_rows.is_none() {
                 return Err(Failure::bad_request(
                     "pick needs archive rows with native identities",
@@ -602,6 +609,7 @@ fn resolve(
 /// line population. Only derived relation values remain in the journal.
 fn retain_selection(
     text: &str,
+    record_history: bool,
     call: &Call<'_>,
 ) -> Result<(polylogue_model::user::LineSelection, Option<Vec<Reference>>), Failure> {
     let reader = call.reader()?;
@@ -625,6 +633,7 @@ fn retain_selection(
                     near: Some(near),
                     fields: &[],
                 },
+                record_history.then_some(call),
             )
         },
     )

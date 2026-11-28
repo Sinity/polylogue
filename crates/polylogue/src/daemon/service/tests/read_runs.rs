@@ -368,7 +368,7 @@ fn a_listing_continuation_reuses_its_durable_original_run() {
         crate::test_answers::step(
             Call::new(
                 "rows",
-                json!({"selection":question,"steps":[{"verb":"save","name":"paging"}]}),
+                json!({"selection":question,"all":true,"steps":[{"verb":"save","name":"paging"}]}),
             )
             .id(request)
             .answer(d),
@@ -434,5 +434,59 @@ fn a_listing_continuation_reuses_its_durable_original_run() {
     assert_eq!(
         read.query_run_outcome(&id).unwrap().unwrap().count,
         count_before_restart
+    );
+}
+
+#[test]
+fn saving_an_executed_query_records_one_run_and_copying_its_result_does_not() {
+    let mut daemon = test_daemon::start("Save this session");
+    daemon.pause_signals();
+    let step = crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":"sessions","steps":[{"verb":"save","name":"original"}]}),
+        )
+        .id("record-the-save")
+        .answer(&daemon.daemon),
+    );
+    let crate::protocol::line::StepAnswer::Saved(receipt) = step else {
+        panic!("saved query receipt");
+    };
+    let result = receipt.saved_rows.result;
+    crate::test_answers::step(
+        Call::new(
+            "rows",
+            json!({"selection":result,"steps":[{"verb":"save","name":"copy"}]}),
+        )
+        .id("copy-the-saved-rows")
+        .answer(&daemon.daemon),
+    );
+    let runs = crate::test_answers::listing(
+        Call::new("rows", json!({"selection":"runs"})).answer(&daemon.daemon),
+    );
+    let runs = runs
+        .value()
+        .unwrap_or_else(|| panic!("run history: {runs:?}"));
+    assert_eq!(runs["count"], 1, "one evaluation of the original question");
+    let Reference::Run(id) = Reference::parse(runs["rows"][0]["id"].as_str().unwrap()).unwrap()
+    else {
+        panic!("recorded Save evaluation");
+    };
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
+    let request = reader.user_request("record-the-save-1").unwrap().unwrap();
+    let polylogue_model::user::UserWrite::Save(save) = request.write else {
+        panic!("durable Save request");
+    };
+    let kept: serde_json::Value = serde_json::from_str(&save.rows_json).unwrap();
+    assert_eq!(kept["run"], Reference::Run(id.clone()).to_string());
+    let binding = run.binding.original().unwrap();
+    assert_eq!(
+        binding.accepted_request.as_ref().unwrap()["arguments"]["steps"][0]["verb"],
+        "save"
+    );
+    assert_eq!(
+        reader.query_run_outcome(&id).unwrap().unwrap().count,
+        Some(1)
     );
 }

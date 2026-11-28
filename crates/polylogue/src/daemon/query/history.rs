@@ -1,21 +1,21 @@
-//! Archive identity and acknowledged completion for a listing.
+//! Archive identity and acknowledged completion for an executed query.
 use super::{Ask, Failure, Options, Program};
 use crate::daemon::{handler::Call, service};
 use polylogue_model::{
     ChangePosition, RunId,
-    query_objects::{ExecutionPresentation, QueryObject, QueryRun, RunBinding},
+    query_objects::{ExecutionBinding, ExecutionPresentation, QueryObject, QueryRun, RunBinding},
 };
 use polylogue_reading::execution::{self, Completed};
 use query_language::cursor::{AuthenticatedCursor, CursorContext};
 
-pub(super) struct ListingRun<'a> {
+pub(in crate::daemon) struct RecordedQuery<'a> {
     daemon: &'a crate::daemon::service::Daemon,
     context: std::sync::Arc<polylogue_reading::operation::Context>,
     object: QueryObject,
     run: QueryRun,
 }
 
-impl<'a> ListingRun<'a> {
+impl<'a> RecordedQuery<'a> {
     pub(super) fn new(
         call: &Call<'a>,
         ask: &Ask<'_>,
@@ -44,10 +44,25 @@ impl<'a> ListingRun<'a> {
             ExecutionPresentation::Query,
             accepted,
         )?;
-        let object = plan.query_object()?;
+        Ok(Self::from_binding(
+            call,
+            ask,
+            plan.query_object()?,
+            binding,
+            read_position,
+        ))
+    }
+
+    pub(in crate::daemon) fn from_binding(
+        call: &Call<'a>,
+        ask: &Ask<'_>,
+        object: QueryObject,
+        binding: ExecutionBinding,
+        read_position: ChangePosition,
+    ) -> Self {
         let run = QueryRun {
             id: polylogue_reading::operation::new_run_id(),
-            query_id: Some(plan.question_id()),
+            query_id: Some(object.id),
             at: ask.context.ran_at,
             read_position,
             machine: ask.context.machine.clone(),
@@ -56,19 +71,19 @@ impl<'a> ListingRun<'a> {
                 execution: Box::new(binding),
             },
         };
-        Ok(Self {
+        Self {
             daemon: call.daemon,
             context: ask.context.clone(),
             object,
             run,
-        })
+        }
     }
 
     pub(super) fn id(&self) -> &RunId {
         &self.run.id
     }
 
-    pub(super) fn record<T>(
+    pub(in crate::daemon) fn record<T>(
         self,
         execute: impl FnOnce() -> Result<Completed<T>, Failure>,
     ) -> Result<T, Failure> {
@@ -137,12 +152,16 @@ pub(super) fn replay(
         .clone()
         .resolve(current_options.clock.day.zone().clone())
         .map_err(Failure::bad_value)?;
-    let options = polylogue_store::query::execute::options_from_snapshot(
+    let mut options = polylogue_store::query::execute::options_from_snapshot(
         &binding.query_options,
         clock,
         binding.replay.context.random_seed,
         ask.page_size,
     );
+    options.origins.clone_from(&current_options.origins);
+    options
+        .provider_catalog
+        .clone_from(&current_options.provider_catalog);
     Ok((
         polylogue_query::plan::replay_binding(&binding.replay)?,
         options,
