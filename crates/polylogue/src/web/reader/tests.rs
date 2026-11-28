@@ -63,7 +63,7 @@ fn reader_view_link_starts_a_new_typed_read_from_a_continuation() {
     });
     let router = super::super::router(web);
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let initial = "/s/claude-code:s1?deadline=null&budget_tokens=4000&budget=128&show=tools:line&show=inherited&request_id=original";
+        let initial = "/s/claude-code:s1?deadline=null&budget_tokens=4000&fresh=true&budget=128&show=tools:line&show=inherited&request_id=original";
         let (status, html) = get(&router, initial).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         let next = href(&html, "rel=\"next\">Next");
@@ -86,11 +86,20 @@ fn reader_view_link_starts_a_new_typed_read_from_a_continuation() {
         assert_eq!(page.document.header.target, "session:claude-code:s1");
         assert_eq!(page.document.header.view, View::Dialogue);
         assert_eq!(page.document.footer.position, Some(0));
-        let options = page.document.header.options.as_ref().unwrap();
-        assert_eq!(options.show, ["inherited"]);
-        assert!(link.contains("deadline=null"), "{link}");
-        assert!(link.contains("budget_tokens=4000"), "{link}");
-        assert!(!link.contains("original"), "{link}");
+        let request = request_of_link(&link);
+        let previous = request_of_link(&next);
+        assert_eq!(request.deadline, command_surface::Deadline::None);
+        assert_eq!(request.budget_tokens, command_surface::TokenBudget::Tokens(4000));
+        assert!(request.fresh);
+        assert!(request.cursor.is_none());
+        assert_ne!(request.request_id, previous.request_id);
+        let rows = Rows::deserialize(&request.arguments).unwrap();
+        let [Step::Read(read)] = rows.steps.as_slice() else {
+            panic!("expected one read step: {rows:?}");
+        };
+        assert_eq!(read.options.show, ["inherited"]);
+        assert_eq!(read.budget, polylogue_model::read::ReadBudget::Tokens(128));
+        assert!(read.cursor.is_none());
         let (status, html) = get(&router, &link).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("aria-current=\"page\">dialogue"), "{html}");
@@ -114,6 +123,11 @@ async fn get(router: &Router, path: &str) -> (StatusCode, String) {
         .await
         .unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+fn request_of_link(url: &str) -> RunnableRequest {
+    let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(&url.parse().unwrap()).unwrap();
+    super::super::api::get_request(row(), &pairs).unwrap()
 }
 
 fn href(html: &str, label: &str) -> String {
