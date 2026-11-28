@@ -49,6 +49,9 @@ fn html_reader_uses_the_request_deadline_and_identity() {
             assert!(body.contains("deadline_exceeded"), "{path}: {body}");
             assert!(body.contains("web-deadline"), "{path}: {body}");
         }
+        let fresh = "/rows?selection=sessions&fresh=true";
+        let (status, _) = get(&router, &format!("/api/v1{fresh}")).await;
+        assert_eq!(get(&router, fresh).await.0, status);
     });
 }
 
@@ -63,7 +66,7 @@ fn reader_view_link_starts_a_new_typed_read_from_a_continuation() {
     });
     let router = super::super::router(web);
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let initial = "/s/claude-code:s1?deadline=null&budget_tokens=4000&fresh=true&budget=128&show=tools:line&show=inherited&request_id=original";
+        let initial = "/s/claude-code:s1?deadline=null&budget_tokens=4000&budget=128&show=tools:line&show=inherited&request_id=original";
         let (status, html) = get(&router, initial).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         let next = href(&html, "rel=\"next\">Next");
@@ -90,7 +93,6 @@ fn reader_view_link_starts_a_new_typed_read_from_a_continuation() {
         let previous = request_of_link(&next);
         assert_eq!(request.deadline, command_surface::Deadline::None);
         assert_eq!(request.budget_tokens, command_surface::TokenBudget::Tokens(4000));
-        assert!(request.fresh);
         assert!(request.cursor.is_none());
         assert_ne!(request.request_id, previous.request_id);
         let rows = Rows::deserialize(&request.arguments).unwrap();
