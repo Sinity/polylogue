@@ -360,7 +360,9 @@ recent unread current chains from each origin, using recorded observation
 times, with file modification times as a fallback. An origin with no
 known time still gets a turn. This priority is
 about observed inputs and does not claim that a date range of sessions is
-complete. The ordinary traversal then catches up the remaining chains.
+complete. The daemon starts deriving the recent readings before its
+ordinary traversal catches up the remaining chains. A date-filtered
+listing can include those readings once their own activity times commit.
 A restart resumes at the committed parser positions. A daemon with a
 usable index can keep serving it during a private bulk rebuild.
 
