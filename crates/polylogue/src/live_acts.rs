@@ -539,11 +539,11 @@ impl Acts {
 
     /// Connects again to every recorded hosted session, after a daemon
     /// start; records whose host or thread is gone are removed. Returns
-    /// the sessions reattached.
-    pub(crate) fn reattach(&self) -> Vec<SessionId> {
+    /// the submitted deliveries the surviving hosts could identify.
+    pub(crate) fn reattach(&self) -> Vec<(SessionId, String)> {
         use polylogue_model::live::channel::HostProtocol;
         let (codex_program, codex_socket) = self.codex();
-        let mut attached = Vec::new();
+        let mut submitted = Vec::new();
         for item in crate::hosting::records(&self.hosts) {
             let (key, record) = match item {
                 Ok(item) => item,
@@ -574,13 +574,14 @@ impl Acts {
                     &codex_socket,
                     record.protocol_session.as_deref().unwrap_or_default(),
                 )
-                .map(Hosted::Codex),
-                _ => crate::hosting::HostedStdio::reattach(&record).map(Hosted::Stdio),
+                .map(|hosted| (Hosted::Codex(hosted), Vec::new())),
+                _ => crate::hosting::HostedStdio::reattach(&record)
+                    .map(|(hosted, deliveries)| (Hosted::Stdio(hosted), deliveries)),
             };
             match hosted {
-                Ok(hosted) => {
+                Ok((hosted, deliveries)) => {
                     self.hold(&session, hosted);
-                    attached.push(session);
+                    submitted.extend(deliveries.into_iter().map(|id| (session.clone(), id)));
                 }
                 // Only a host or thread that is gone loses its record; a
                 // Codex app-server not up yet keeps it for the next start.
@@ -597,7 +598,7 @@ impl Acts {
                 }
             }
         }
-        attached
+        submitted
     }
 
     /// The sessions Polylogue holds a connection to.

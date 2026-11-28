@@ -391,6 +391,50 @@ fn protocol_send(
     })
 }
 
+/// Records active ACP prompts the relay received before the daemon stopped.
+pub(super) fn recover_host_submissions(d: &Daemon) {
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "hosted",
+    ));
+    for (session, delivery) in d.acts.reattach() {
+        if let Err(error) = recover_host_submission(d, &invocation, &session, &delivery) {
+            d.acts.delivery_write_failed(&delivery, &error.message);
+        }
+    }
+}
+
+fn recover_host_submission(
+    d: &Daemon,
+    invocation: &Invocation,
+    session: &SessionId,
+    delivery: &str,
+) -> Result<(), Failure> {
+    let archive = writer(d)?.archive();
+    let Some(receipt) = archive.committed_for(delivery)? else {
+        return Ok(());
+    };
+    let UserWrite::Deliver(prepared) = receipt.request.write else {
+        return Ok(());
+    };
+    if prepared.sender == DeliverySender::Act
+        && prepared.event == DeliveryEvent::Message
+        && prepared.recipient_id.as_deref() == Some(session.to_string().as_str())
+        && archive.delivery_events(delivery)?.is_empty()
+    {
+        author(
+            d,
+            invocation,
+            polylogue_store::user_writes::new_request_id(),
+            UserWrite::DeliveryEvent {
+                delivery: delivery.to_owned(),
+                outcome: DeliveryOutcome::Delivered,
+                detail: Some("accepted by the hosted relay before reattachment".into()),
+            },
+        )?;
+    }
+    Ok(())
+}
+
 /// Repeats only the receipt. The record already chose the recipient and
 /// channel, even if the current connection or live state has changed.
 fn previous_send(

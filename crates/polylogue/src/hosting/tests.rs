@@ -469,15 +469,21 @@ fn record(hosting: &Hosting) -> Record {
 /// and none is sent twice.
 #[test]
 fn a_hosted_session_survives_its_daemon_connection() {
-    reattach_during_prompt(true);
+    finish_prompt(true, true);
 }
 
 #[test]
 fn a_reattached_hosted_session_accepts_the_next_prompt_after_an_error() {
-    reattach_during_prompt(false);
+    finish_prompt(false, true);
 }
 
-fn reattach_during_prompt(first_succeeds: bool) {
+#[test]
+fn an_attached_acp_session_accepts_the_next_prompt_after_a_result_or_error() {
+    finish_prompt(true, false);
+    finish_prompt(false, false);
+}
+
+fn finish_prompt(first_succeeds: bool, reattach: bool) {
     let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
     let first =
         HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, String::new()).unwrap();
@@ -489,11 +495,16 @@ fn reattach_during_prompt(first_succeeds: bool) {
         .unwrap();
     assert_eq!(created["sessionId"], "s1");
     first.state.0.locked().protocol_session = "s1".into();
-    first.send("first turn", None).unwrap();
+    first.send("first turn", Some("first-delivery")).unwrap();
     wait_until("the permission request", || first.request().is_some());
-    // The daemon stops before answering.
-    drop(first);
-    let second = HostedStdio::reattach(&record(&hosting)).unwrap();
+    let second = if reattach {
+        drop(first);
+        let (second, submitted) = HostedStdio::reattach(&record(&hosting)).unwrap();
+        assert_eq!(submitted, ["first-delivery"]);
+        second
+    } else {
+        first
+    };
     assert!(
         second.request().is_some(),
         "the handover includes the unanswered request"
@@ -718,6 +729,71 @@ fn claude_stream_json_steers_answers_and_interrupts() {
         assert_eq!(row["session_id"], id);
         assert_eq!(row["provider"], "claude-code");
     }
+}
+
+#[test]
+fn claude_reattachment_keeps_the_current_permission_after_an_earlier_result() {
+    let id = "0199a1b2-3c4d-7e8f-9012-345678901234";
+    let agent = r#"#!/bin/sh
+n=0
+while IFS= read -r line; do
+  case "$line" in
+    *polylogue_test/quit*) exit 0 ;;
+    *'"type":"user"'*)
+      n=$((n+1))
+      if [ "$n" -eq 2 ]; then
+        tries=0
+        while [ ! -f finish-first ]; do
+          tries=$((tries+1))
+          [ "$tries" -lt 1000 ] || exit 4
+          sleep 0.01
+        done
+        printf '{"type":"result","subtype":"success"}\n'
+      fi
+      printf '{"type":"control_request","request_id":"r%s","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}\n' "$n" ;;
+    *'"behavior":"allow"'*) echo "$line" >> "$1"; printf '{"type":"result","subtype":"success"}\n' ;;
+  esac
+done
+"#;
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        agent,
+        Some(id),
+    );
+    let first = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    first.send("first turn", None).unwrap();
+    wait_until("the earlier permission", || {
+        first.request().as_deref() == Some("r1")
+    });
+    first.send("second turn", None).unwrap();
+    drop(first);
+    std::fs::write(hosting.dir.path().join("finish-first"), "").unwrap();
+    wait_until("the current permission", || {
+        status_lines(&hosting.config.spool)
+            .iter()
+            .filter(|(_, word)| word.as_deref() == Some("blocked"))
+            .count()
+            == 2
+    });
+
+    let (second, submitted) = HostedStdio::reattach(&Record {
+        session: format!("claude-code:{id}"),
+        protocol: HostProtocol::ClaudeStreamJson,
+        socket: Some(hosting.config.socket.clone()),
+        protocol_session: None,
+    })
+    .unwrap();
+    assert!(submitted.is_empty());
+    assert_eq!(second.request().as_deref(), Some("r2"));
+    second.answer(true, None).unwrap();
+    wait_until("the current approval", || hosting.log().contains("r2"));
+    hosting.quit(&second);
 }
 
 /// The host's status follows the protocol: a turn is busy from its prompt

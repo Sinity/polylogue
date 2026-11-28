@@ -368,7 +368,7 @@ pub fn start(
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
     steps.next("reattaching hosted sessions");
-    daemon.acts.reattach();
+    acts::recover_host_submissions(&daemon);
     // Messages and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are closed.
     acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);

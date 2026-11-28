@@ -753,8 +753,11 @@ impl StdioState {
         json!(format!("{}-{}", self.nonce, self.next_id))
     }
 
-    fn prompt(&mut self, text: &str) -> std::io::Result<()> {
-        let id = self.id();
+    fn prompt(&mut self, text: &str, delivery: Option<&str>) -> std::io::Result<()> {
+        let id = match delivery {
+            Some(delivery) => json!(format!("{DELIVERY_PROMPT_PREFIX}{delivery}")),
+            None => self.id(),
+        };
         let message = json!({"jsonrpc": "2.0", "id": id, "method": "session/prompt", "params": {
             "sessionId": self.protocol_session,
             "prompt": [{"type": "text", "text": text}],
@@ -880,7 +883,7 @@ impl StdioState {
                         self.requests.clear();
                         if let Some((next, delivery)) = self.queued.pop_front() {
                             let sent = self
-                                .prompt(&next)
+                                .prompt(&next, delivery.as_deref())
                                 .map_err(|e| SendFailure::Unknown(e.to_string()));
                             self.report(delivery.as_deref(), sent);
                         }
@@ -893,25 +896,29 @@ impl StdioState {
     }
 }
 
+const DELIVERY_PROMPT_PREFIX: &str = "delivery:";
+
 /// The daemon's connection to a session a `polylogue internal host` holds.
 pub(crate) struct HostedStdio {
     state: Arc<(Mutex<StdioState>, std::sync::Condvar)>,
 }
 
 impl HostedStdio {
+    #[cfg(test)]
     fn connect(
         socket: &Path,
         protocol: HostProtocol,
         protocol_session: String,
     ) -> std::io::Result<Self> {
         Self::connected(crate::socket::connect(socket)?, protocol, protocol_session)
+            .map(|(hosted, _)| hosted)
     }
 
     fn connected(
         stream: UnixStream,
         protocol: HostProtocol,
         protocol_session: String,
-    ) -> std::io::Result<Self> {
+    ) -> std::io::Result<(Self, Vec<String>)> {
         let mut reader = BufReader::new(stream.try_clone()?);
         reader.get_ref().set_read_timeout(Some(HOST_WAIT))?;
         let mut first = String::new();
@@ -925,6 +932,11 @@ impl HostedStdio {
             HostProtocol::ClaudeStreamJson => (turns.len(), Vec::new()),
             _ => (0, turns.clone()),
         };
+        let submitted = prompts
+            .iter()
+            .filter_map(|id| id.as_str()?.strip_prefix(DELIVERY_PROMPT_PREFIX))
+            .map(str::to_owned)
+            .collect();
         reader.get_ref().set_read_timeout(None)?;
         let nonce = format!(
             "{:x}",
@@ -974,7 +986,7 @@ impl HostedStdio {
             state.close();
             shared.1.notify_all();
         })?;
-        Ok(Self { state })
+        Ok((Self { state }, submitted))
     }
 
     /// Sends a request and waits for its answer.
@@ -1058,7 +1070,7 @@ impl HostedStdio {
         stream: UnixStream,
         text: &str,
     ) -> std::io::Result<(Self, SessionId)> {
-        let hosted = Self::connected(stream, protocol, String::new())?;
+        let (hosted, _) = Self::connected(stream, protocol, String::new())?;
         let native = match protocol {
             HostProtocol::ClaudeStreamJson => claude_id.unwrap_or_default(),
             _ => {
@@ -1118,14 +1130,15 @@ impl HostedStdio {
         Ok((hosted, session))
     }
 
-    /// Connects again to a recorded session's host.
-    pub(crate) fn reattach(record: &Record) -> std::io::Result<Self> {
+    /// Connects to the host and returns delivery IDs accepted by the relay
+    /// whose ACP prompts were active at reattachment.
+    pub(crate) fn reattach(record: &Record) -> std::io::Result<(Self, Vec<String>)> {
         let socket = record
             .socket
             .as_deref()
             .ok_or_else(|| std::io::Error::other("the record names no host socket"))?;
-        Self::connect(
-            socket,
+        Self::connected(
+            crate::socket::connect(socket)?,
             record.protocol,
             record.protocol_session.clone().unwrap_or_default(),
         )
@@ -1175,7 +1188,7 @@ impl HostedStdio {
                     .push_back((text.to_owned(), delivery.map(str::to_owned)));
                 Ok(false)
             }
-            _ => state.prompt(text).map(|()| true),
+            _ => state.prompt(text, delivery).map(|()| true),
         };
         state.queue_changed();
         written.map_err(|error| SendFailure::Unknown(error.to_string()))
