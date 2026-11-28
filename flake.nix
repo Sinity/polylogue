@@ -32,14 +32,18 @@
       };
     in
     {
+      # The linker flags of the development shell and the hosted check, which
+      # reads them with `nix eval --raw .#lib.rustflags`.
+      lib.rustflags = import ./nix/rustflags.nix;
       packages.${system} = build.packages // {
         # The programs the hosted check's Rust jobs run beside the toolchain,
-        # at the versions the development shell has.
+        # at the versions the development shell has, with the linker it names.
         check-tools = pkgs.buildEnv {
           name = "polylogue-check-tools";
           paths = [
             pkgs.cargo-nextest
             pkgs.cargo-hakari
+            pkgs.mold
             pkgs.zsh
             pkgs.fish
             pkgs.zip
