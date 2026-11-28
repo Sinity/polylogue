@@ -117,8 +117,9 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | Change in the release | What happens | Reads meanwhile |
 |---|---|---|
 | no storage change | restart, resume from committed positions | down for the restart |
-| a parser module's parse version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read replies; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
-| a change to the index schema | a new index is built from stored bytes in a private file and installed when its build ends ([below](#replacing-an-index-from-another-schema)) | reads reply `index_building` with the build's progress until the new index is installed |
+| a parser module's parse version | its old readings become due for replay, with live arrivals still taking priority | committed readings stay readable, and read freshness and `status` report the pending replay |
+| a change to the index schema that keeps the old index usable | a private bulk rebuild replaces the index when ready ([index replacement](#replacing-an-index-from-another-schema)) | the old index serves until the replacement installs |
+| a change to the index schema that makes the old index unusable | the daemon installs the empty current schema at open and catches up in it ([index replacement](#replacing-an-index-from-another-schema)) | committed rows and search entries become available during catch-up, with incomplete coverage reported |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
 | the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](operations.md#storage-failure)) | down |

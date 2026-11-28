@@ -205,20 +205,18 @@ to WAL and renamed `ready.db`, and `ready.db` is renamed over `index.db`; the
 installed index stays `index.db` until that rename. A rebuild never changes
 the record or the stored bytes, so losing one costs the rebuild and nothing
 else: a start that finds a rebuild writing discards its files and rebuilds
-from the stored bytes for the reason on disk, a rebuild that fails in a
-running daemon is started again the same way, and a start that finds a ready
-rebuild installs it. An install that fails in a running daemon leaves the
-rebuild ready and the index writer without an index connection: index writes
+from the stored bytes for the reason on disk, and a rebuild that fails in a
+running daemon is started again the same way. A ready rebuild installs at
+start after its archive identity and position are checked. An install that
+fails in a running daemon leaves the rebuild ready and the index writer
+without an index connection. Index writes
 are refused with the install's error, `status` shows it, and the install is
 tried again when the writer next wakes for a commit or a message, and at the
-next start; nothing retries it on a timer. A new archive's first index is
-rebuilt the same way, from the files its first pass stores. While a rebuild
-runs, reads are served from the installed index when this build of Polylogue
-can read it, and otherwise reply `index_building` with the rebuild's reason
-and progress
-([installing.md](installing.md#replacing-an-index-from-another-schema)). A
-read that has not started when an install renames the file starts on the
-installed index; a read already started keeps the file it opened.
+next start; nothing retries it on a timer. A usable installed index serves
+while a private bulk rebuild runs. With no usable index, daemon startup
+installs the empty current schema for [incremental catch-up](#one-path).
+A read that has not started when an install renames the file starts on the
+installed index. A read already started keeps the file it opened.
 
 ## Pipeline
 
