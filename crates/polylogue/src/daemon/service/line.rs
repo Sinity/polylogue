@@ -177,6 +177,12 @@ fn query_selection(rows: &Rows) -> Option<&str> {
     }
 }
 
+fn parse_selection_reference(text: &str) -> Result<Reference, polylogue_model::ReferenceError> {
+    Reference::parse_with_origins(text.trim(), |kind| {
+        polylogue_sources::origin::by_name(kind).is_some()
+    })
+}
+
 /// A reference that names rows one by one: a session, message, block,
 /// annotation, alternate, attachment, page, role, tool call or kept result,
 /// or a provider conversation URL, which names its web-chat session whether
@@ -186,7 +192,7 @@ fn named(text: &str) -> Option<Reference> {
     if let Some(session) = polylogue_sources::origin::conversation_session(text) {
         return Some(Reference::Session(session));
     }
-    Reference::parse(text.trim()).ok().filter(|reference| {
+    parse_selection_reference(text).ok().filter(|reference| {
         polylogue_query::catalog::reference_unit(reference).is_some()
             || matches!(reference, Reference::Span { container, .. } if matches!(container.as_ref(), Reference::ToolCall(..)))
             || matches!(
@@ -229,7 +235,7 @@ fn given(rows: &Rows) -> Result<Given, Failure> {
         (None, []) => Ok(Given::None),
         (None, references) => references
             .iter()
-            .map(|text| Reference::parse(text.trim()).map_err(Failure::bad_value))
+            .map(|text| parse_selection_reference(text).map_err(Failure::bad_value))
             .collect::<Result<_, _>>()
             .map(Given::References),
         (Some(text), []) => Ok(match named(text) {

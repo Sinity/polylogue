@@ -239,13 +239,7 @@ fn read_on_terminal_shows_whole_session_through_pager() {
     );
     let after = cli(
         &env,
-        &[
-            "--json",
-            "session:claude-code:pager",
-            "read",
-            "--from",
-            "seen",
-        ],
+        &["--json", "claude-code:pager", "read", "--from", "seen"],
     );
     let page = read_page(json(&after));
     assert!(
