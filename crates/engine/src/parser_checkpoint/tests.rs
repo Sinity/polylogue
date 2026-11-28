@@ -209,7 +209,7 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
             completeness.parsing,
             polylogue_model::freshness::CompletenessDimension::Complete
         );
-        assert_eq!(completeness.raw_only_chains, 1);
+        assert_eq!(completeness.raw_only_chains, Some(1));
         assert!(completeness.caught_up());
     }
 }
@@ -228,8 +228,8 @@ fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versi
         .completeness(&contracts)
         .unwrap();
     assert_eq!(report.parsing, CompletenessDimension::Complete);
-    assert_eq!(report.raw_only_chains, 0);
-    assert_eq!(report.kept_chains, 0);
+    assert_eq!(report.raw_only_chains, Some(0));
+    assert_eq!(report.kept_chains, Some(0));
     for name in ["pi", "tool-context"] {
         assert!(matches!(
             contracts.iter().find(|contract| contract.origin() == name),

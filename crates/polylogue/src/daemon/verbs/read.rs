@@ -11,7 +11,9 @@ use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
 use crate::unbuilt;
 use command_surface::{Answer, Deadline, RunnableRequest};
-use polylogue_model::read::{Format, HeaderKind, ReadBudget, ReadFooter, ReadPage, ReadyCall};
+use polylogue_model::read::{
+    Format, HeaderKind, ReadBudget, ReadFooter, ReadPage, ReadyCall, View,
+};
 use polylogue_model::{Reason, Reference};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
@@ -216,13 +218,17 @@ pub(crate) fn page(
     } else {
         None
     };
+    polylogue_store::read::limit::ReadLimit::set_stage("read connection checkout");
     let reader = call.reader()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read context");
     let context = call.context()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read selection");
     polylogue_reading::resolve_start(&reader, &context, &mut request)
         .map_err(|error| failure(error, &request))?;
     let services = &LineReads {
         daemon: call.daemon,
         accepted: context.accepted_request(),
+        defer_parsing_census: request.options.view == View::Transcript,
     };
     let request = polylogue_reading::with_alternates(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
@@ -273,7 +279,9 @@ pub(crate) fn stream(
     services: &impl ReadServices,
 ) -> Result<Answer<ReadFooter>, Failure> {
     crate::daemon::service::accepting(call.daemon)?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read connection checkout");
     let reader = call.reader()?;
+    polylogue_store::read::limit::ReadLimit::set_stage("read selection");
     polylogue_reading::resolve_start(&reader, context, &mut request)
         .map_err(|error| failure(error, &request))?;
     let request = polylogue_reading::with_alternates(&reader, services, request.clone())
@@ -369,6 +377,7 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
 pub(crate) struct LineReads<'a> {
     pub daemon: &'a Daemon,
     pub accepted: Option<&'a RunnableRequest>,
+    pub defer_parsing_census: bool,
 }
 
 impl ReadServices for LineReads<'_> {
@@ -379,7 +388,11 @@ impl ReadServices for LineReads<'_> {
         &self,
         reader: &Reader<'_>,
     ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
-        ReadServices::freshness(self.daemon, reader)
+        if self.defer_parsing_census {
+            self.daemon.transcript_freshness(reader)
+        } else {
+            ReadServices::freshness(self.daemon, reader)
+        }
     }
     fn compiled<T>(
         &self,

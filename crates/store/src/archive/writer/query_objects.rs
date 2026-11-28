@@ -51,6 +51,7 @@ impl HistorySlot {
         run: QueryRun,
         outcome: QueryRunOutcome,
     ) -> Result<()> {
+        crate::read::limit::ReadLimit::set_stage("query history commit");
         let (reply, wait) = sync_channel(1);
         self.slot.push(UserMsg::History(
             Box::new(History {

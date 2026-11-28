@@ -170,10 +170,30 @@ impl Daemon {
         &self,
         reader: &polylogue_store::Reader<'_>,
     ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
+        self.freshness_for(reader, false)
+    }
+
+    pub(crate) fn transcript_freshness(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+    ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
+        self.freshness_for(reader, true)
+    }
+
+    fn freshness_for(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+        defer_parsing_census: bool,
+    ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
         // The filesystem can still hold not-yet-discovered inputs, which
         // a snapshot of the archive cannot count.
         let loop_status = self.status.get();
-        let local = reader.completeness(&polylogue_engine::reading_contracts())?;
+        let contracts = polylogue_engine::reading_contracts();
+        let local = if defer_parsing_census && loop_status.busy {
+            reader.completeness_during_catch_up(&contracts)?
+        } else {
+            reader.completeness(&contracts)?
+        };
         Ok(self.freshness_at(local, &loop_status))
     }
 

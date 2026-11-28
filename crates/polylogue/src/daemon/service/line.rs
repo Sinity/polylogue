@@ -765,6 +765,7 @@ impl Stream<'_> {
             &LineReads {
                 daemon: call.call.daemon,
                 accepted: self.context.accepted_request(),
+                defer_parsing_census: false,
             },
         )?;
         Ok(answer
