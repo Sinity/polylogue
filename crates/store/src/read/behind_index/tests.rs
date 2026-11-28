@@ -636,8 +636,8 @@ fn first_replay_round_represents_each_origin_and_skips_committed_readings() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('ddd-done');
-             INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to)
-             SELECT pk,1,'parsed','v',10 FROM input_ref WHERE id='ddd-done';",
+             INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+             SELECT pk,1,'parsed','v',10,0 FROM input_ref WHERE id='ddd-done';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();

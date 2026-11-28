@@ -674,9 +674,10 @@ fn first_replay_reads_recent_durable_bytes_before_backfill_and_resumes_after_reo
         let mut pass = Pass::default();
         let result = engine.reparse_behind(RevisionChains::Newest, &mut pass);
         fault::clear();
+        let error = result.unwrap_err().to_string();
         assert!(
-            result.is_err(),
-            "the ordinary backfill reaches the held page"
+            error.contains("injected fault at read.chains_behind_index"),
+            "{error}"
         );
         assert!(pass.errors.is_empty(), "{pass:?}");
         assert_eq!(home.texts(session), [session]);
