@@ -10,10 +10,10 @@ the command line, over MCP or in a web workbench. Agents are first-class users:
 they get the same powers as you, and every session can start with a brief
 drawn from the archive.
 
-Polylogue runs alone (standalone, on SQLite) or on
-[Sinex](https://github.com/Sinity/sinex) (primary mode), where Sinex stores the
-bytes and records and Polylogue keeps a local index. Everything you can do is
-the same in both modes.
+Polylogue runs locally in standalone mode, with SQLite and its own byte store.
+The planned [primary mode](docs/primary-mode.md) stores bytes through Sinex
+and ships Polylogue's record after local commit. Both designs build the local
+search index from that record.
 
 ## Install
 
@@ -38,9 +38,9 @@ With Cargo, from a checkout:
 cargo build --release -p polylogue
 ```
 
-That builds standalone mode. Primary mode (Sinex) is the Cargo feature
-`sinex`: `cargo build --release -p polylogue --features sinex`. The Nix
-package includes it.
+The Nix package also builds the Sinex event declarations. The
+[deployment guide](docs/installing.md#deployment) describes the modes
+available in this version.
 
 Polylogue reads each tool's data where the tool writes it, so a running daemon
 needs no configuration to start collecting. Exports you download (a ChatGPT or

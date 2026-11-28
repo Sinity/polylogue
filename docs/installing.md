@@ -151,7 +151,9 @@ its archive identity and position before installing it.
 
 Moving a whole archive aside is a deliberate operation. Original input
 bytes, authored records and paid vectors stay in the archive across an
-index replacement.
+index replacement. An incompatible archive or embeddings format is
+refused with exit status 78. Compatible embeddings schemas gain newly
+added tables ([archive evolution](archive.md#evolution)).
 
 ### Continuing an indexed cut of the same archive
 
@@ -163,7 +165,7 @@ For a one-time standalone cutover using the current archive and index formats, f
 
 Both cuts must belong to the same native archive. Between preparation and capture, only its native writer may change it. A restored, rewritten or independently converted source needs a new proof. This procedure depends on the native writer keeping committed segment ranges and captured record rows intact. Independent sealed copies use `reuse_archive_index <earlier> <later>` to check their complete common prefix before indexing the later one.
 
-Suffix planning uses extent commits as well as revision and observation commits. A read can finish in a later commit while keeping the same revision number. A bounded read of that chain uses the extents present at its requested cut.
+A read can finish in a later commit while keeping the same revision number. The prefix check accepts that growth when a later committed extent accounts for the new length. It checks the earlier extents and their bytes and rejects changes to the revision's identity or original commit. Suffix planning uses extent commits alongside revisions and observations, and a bounded read uses the extents present at its requested cut.
 
 ## Backup and restore
 
@@ -173,4 +175,4 @@ Suffix planning uses extent commits as well as revision and observation commits.
 - **Polylogue provides** the paths and sizes in `status`, and `status --verify` to check a restored copy ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)).
 - **Restore** is putting the files back and starting the daemon. Each store opens as at any start; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
 - **A restore drill** restores the latest backup into a scratch directory and, with `--archive` naming it on each line, runs `polylogue daemon --no-sources --until-idle`, then starts `polylogue daemon --no-sources` and runs `polylogue status --verify` against it. Someone runs it when they want the check, for example after changing the backup route.
-- **Primary mode:** Sinex is the store of record, and its backup covers Polylogue's materials and authored records. Losing the local directory means a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). The embeddings store stays local and is backed up, because recomputing it costs money.
+- **Primary mode:** Back up the local record, held bytes and paid embeddings together as described in [primary mode](primary-mode.md#local-state). Sinex backs up what it has received. Its confirmed stream can restore shipped records, while unshipped writes and paid embeddings need the local backup.

@@ -30,7 +30,7 @@ parser_modules! {
 pub mod database;
 
 use crate::lines::Record;
-use crate::origin::Root;
+use crate::origin::{RecordedId, Root};
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
@@ -119,7 +119,12 @@ fn local_references(
 /// (`codex:rollout:<session id>`), wherever Codex moves or compresses it.
 pub const ROLLOUT_ID: crate::origin::ProviderId = crate::origin::ProviderId {
     named: |path| matches!(File::from_path(path), Some(File::Rollout { .. })),
-    read: |reader| Ok(rollout_id(reader)?.map(|id| format!("codex:rollout:{id}"))),
+    read: |reader| {
+        Ok(match rollout_id(reader)? {
+            RecordedId::Named(id) => RecordedId::Named(format!("codex:rollout:{id}")),
+            other => other,
+        })
+    },
 };
 
 pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {

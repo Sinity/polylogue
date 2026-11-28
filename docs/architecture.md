@@ -276,7 +276,7 @@ store's module documentation, not of this page.
 - **A chain is in one of three states**: it has no reading; its reading is
   complete at a length under a parse version; or reading it failed at a
   version, with the reason
-  ([parse versions](archive.md#reading-versions)). A chain is read when
+  ([parse versions](archive.md#parse-versions)). A chain is read when
   its stored length or its parser's parse version differs from what its
   state names, and for no other cause. The state is one value in one row;
   every reader judges it, with what the archive says of the chain, through
