@@ -61,7 +61,7 @@ fn waiting_on_run_history_records_once_and_wakes_for_an_independent_run() {
         Author,
         authorship::{Authorship, Channel},
     };
-    use polylogue_store::read::limit::ReadLimit;
+    use polylogue_store::{read::limit::ReadLimit, selection::SelectionError};
     use std::time::{Duration, Instant};
 
     let mut d = test_daemon::start("waiting on query history");
@@ -70,14 +70,23 @@ fn waiting_on_run_history_records_once_and_wakes_for_an_independent_run() {
     let limits = std::array::from_fn::<_, 2, _>(|_| {
         ReadLimit::new(Duration::from_secs(20), Default::default())
     });
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(0, 0, 0, 0),
+    )
+    .unwrap();
+    let options = polylogue_query::Options::fixture(
+        polylogue_query::Clock::new(jiff::Timestamp::now(), day),
+        vec![],
+    );
+    let program = polylogue_store::query::compile("runs", &options).unwrap();
     let number_of_runs = || {
         let reader = daemon.reads.reader().unwrap();
-        let program = polylogue_store::query::compile("runs", &Default::default()).unwrap();
         let mut count = 0;
         reader
-            .visit_query_values(&program, None, |_| {
+            .visit_query_values::<SelectionError>(&program, None, |_| {
                 count += 1;
-                Ok::<_, polylogue_store::StoreError>(std::ops::ControlFlow::Continue(()))
+                Ok(std::ops::ControlFlow::Continue(()))
             })
             .unwrap();
         count

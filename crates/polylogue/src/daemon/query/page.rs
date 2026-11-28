@@ -39,8 +39,8 @@ pub(crate) fn read_positions(
 
 /// Whether the recorded read positions are still reachable from the current
 /// ones: same index instance and index file, counters not ahead.
-pub(crate) fn read_positions_unchanged(
-    context: &CursorContext,
+pub(crate) fn read_positions_unchanged<C>(
+    context: &CursorContext<C>,
     position: &ChangePosition,
     index_file: (u64, u64),
 ) -> bool {
