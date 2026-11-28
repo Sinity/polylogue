@@ -888,17 +888,17 @@ pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Fai
 /// The listing's page of rows, with the ranking the archive's settings
 /// allow, and whether an empty page should wait for another read. Only
 /// a terminal page hands over to the optional count.
-fn rows_page(
-    call: &Call<'_>,
+fn rows_page<'daemon>(
+    call: &Call<'daemon>,
     rows: &Rows,
     query: &str,
-    waiting: bool,
-) -> Result<(Answer<LineAnswer>, bool), Failure> {
+    waiting: Option<&mut Option<crate::daemon::query::history::StartedQuery<'daemon>>>,
+) -> Result<polylogue_reading::execution::Completed<(Answer<LineAnswer>, bool)>, Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
     let freshness = d.freshness(&reader)?;
-    Ok(crate::daemon::query::with_ranking(
+    crate::daemon::query::with_ranking(
         &reader,
         &d.warm,
         &d.config,
@@ -915,8 +915,9 @@ fn rows_page(
                 near: Some(near),
                 fields: &rows.fields,
             };
-            match crate::daemon::query::listing(&reader, ask, call, |prepared| {
-                let wait_again = waiting
+            let may_wait = waiting.is_some();
+            crate::daemon::query::listing(&reader, ask, call, waiting, |prepared| {
+                let wait_again = may_wait
                     && prepared.is_empty()
                     && (freshness.up_to_date() || freshness.catching_up());
                 let answer = if wait_again {
@@ -940,21 +941,18 @@ fn rows_page(
                     && freshness.up_to_date()
                     && answer.outcome != crate::daemon::query::Outcome::Incomplete;
                 Ok(polylogue_reading::execution::Completed {
-                    value: (answer, wait_again),
+                    value: (
+                        super::query_outcome(answer, &freshness)
+                            .map(|found| LineAnswer::Listing(Box::new(found))),
+                        wait_again,
+                    ),
                     count,
                     exact,
                     next,
                 })
-            }) {
-                Ok((answer, wait_again)) => (
-                    super::query_outcome(answer, &freshness)
-                        .map(|found| LineAnswer::Listing(Box::new(found))),
-                    wait_again,
-                ),
-                Err(failure) => (failure.answer(), false),
-            }
+            })
         },
-    ))
+    )
 }
 
 /// The selection alone: its rows, a page at a time.
@@ -970,7 +968,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let Some(wait) = rows.wait.as_deref() else {
         call.runs_query(&query);
         crate::daemon::query::prefetch_ranking(call, &query);
-        return rows_page(call, &rows, &query, false).map(|(answer, _)| answer);
+        return rows_page(call, &rows, &query, None).map(|completed| completed.value.0);
     };
     let mut duration = listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
@@ -978,18 +976,13 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
     }
     let until = Instant::now() + duration;
-    // The empty probe itself records a run. That history cannot cause the
-    // same waiting request to evaluate again without a change to its population.
-    let interests = polylogue_store::completion::Committed {
-        content: true,
-        authored: true,
-        query_records: false,
-    };
+    // Subscribe before starting the run. A recheck only reads, so even waits
+    // over the run history cannot generate further commits by waking each other.
     let commits = call
         .daemon
         .writes
         .as_ref()
-        .map(|writer| writer.completion_commits_with_wake(interests, || {}));
+        .map(|writer| writer.completion_commits());
     let _wake = match (&commits, &limit) {
         (Some(commits), Some(limit)) => {
             let wake = commits.wake_handle();
@@ -999,18 +992,23 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         }
         _ => None,
     };
-    loop {
+    let mut started = None;
+    let observed = (|| loop {
         super::accepting(call.daemon)?;
         if let Some(limit) = &limit {
             limit.check()?;
         }
-        let (answer, wait_again) = rows_page(call, &rows, &query, true)?;
-        if !wait_again {
-            return Ok(answer);
+        let mut completed = rows_page(call, &rows, &query, Some(&mut started))?;
+        if !completed.value.1 {
+            return Ok(completed);
         }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Ok(answer.with_next("wait again", repeated(&rows, call)?));
+            completed.value.0 = completed
+                .value
+                .0
+                .with_next("wait again", repeated(&rows, call)?);
+            return Ok(completed);
         }
         let left = limit
             .as_ref()
@@ -1023,7 +1021,12 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             }
             None => std::thread::sleep(left),
         }
-    }
+    })();
+    let completed = match started {
+        Some(started) => started.finish(observed)?,
+        None => observed?,
+    };
+    Ok(completed.value.0)
 }
 
 /// How the line is read and what each step would do; nothing resolves.

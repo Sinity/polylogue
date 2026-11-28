@@ -798,7 +798,7 @@ fn prepare<'read, 'pool>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
 ) -> Result<PreparedQuery<'read, 'pool>, Failure> {
-    prepare_with(reader, ask, None, |page| {
+    prepare_with(reader, ask, None, None, |page| {
         Ok(polylogue_reading::execution::Completed {
             value: page,
             count: None,
@@ -806,34 +806,41 @@ fn prepare<'read, 'pool>(
             next: None,
         })
     })
+    .map(|completed| completed.value)
 }
 
 /// Execute a public listing; continuations carry its initial execution identity.
-pub(super) fn listing<'read, 'pool, T>(
+pub(super) fn listing<'read, 'pool, 'daemon, T>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
-    call: &super::handler::Call<'_>,
+    call: &super::handler::Call<'daemon>,
+    waiting: Option<&mut Option<history::StartedQuery<'daemon>>>,
     finish: impl FnOnce(
         PreparedQuery<'read, 'pool>,
     ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
-) -> Result<T, Failure> {
-    prepare_with(reader, ask, Some(call), finish)
+) -> Result<polylogue_reading::execution::Completed<T>, Failure> {
+    prepare_with(reader, ask, Some(call), waiting, finish)
 }
 
-fn prepare_with<'read, 'pool, T>(
+fn prepare_with<'read, 'pool, 'daemon, T>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
-    call: Option<&super::handler::Call<'_>>,
+    call: Option<&super::handler::Call<'daemon>>,
+    waiting: Option<&mut Option<history::StartedQuery<'daemon>>>,
     finish: impl FnOnce(
         PreparedQuery<'read, 'pool>,
     ) -> Result<polylogue_reading::execution::Completed<T>, Failure>,
-) -> Result<T, Failure> {
+) -> Result<polylogue_reading::execution::Completed<T>, Failure> {
     polylogue_store::read::limit::ReadLimit::set_stage("query preparation");
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
     let index_file = reader.index_identity()?;
     let mut opts = execution_options(reader, &ask, 0)?;
     let mut original_count = None;
+    let waiting_run = waiting
+        .as_deref()
+        .and_then(Option::as_ref)
+        .map(history::StartedQuery::run);
     let plan = if let Some(cursor) = ask.cursor.filter(|_| call.is_some()) {
         let authenticated = polylogue_store::read::authenticate_cursor(
             &seal,
@@ -844,6 +851,10 @@ fn prepare_with<'read, 'pool, T>(
         let (plan, options, count) = history::replay(reader, &authenticated, &ask, &opts)
             .map_err(|failure| cursor_failure(failure, ask.text))?;
         original_count = count;
+        opts = options;
+        plan
+    } else if let Some(run) = waiting_run {
+        let (plan, options) = history::replay_inputs(run, &ask, &opts)?;
         opts = options;
         plan
     } else {
@@ -868,9 +879,25 @@ fn prepare_with<'read, 'pool, T>(
             blake3::hash(identity.as_bytes()).to_hex().to_string(),
         );
     }
-    if let Some(cursor) = &cursor {
+    let previous = if let Some(cursor) = &cursor {
+        Some(&cursor.context.versions)
+    } else if let Some(run) = waiting_run {
+        let binding = run
+            .binding
+            .original()
+            .expect("a listing begins an original run");
+        if !page::read_positions_unchanged(&binding.replay.context, &position, index_file) {
+            return Err(Failure::stale_cursor(
+                "the index changed while this listing was waiting",
+            ));
+        }
+        Some(&binding.replay.context.versions)
+    } else {
+        None
+    };
+    if let Some(previous) = previous {
         for key in ["operation_context", "catalog", "access", "ranking_identity"] {
-            if cursor.context.versions.get(key) != operation_versions.get(key) {
+            if previous.get(key) != operation_versions.get(key) {
                 return Err(cursor_failure(
                     Failure::stale_cursor("the settings or data used by this query changed"),
                     ask.text,
@@ -879,7 +906,11 @@ fn prepare_with<'read, 'pool, T>(
         }
     }
     let seed = cursor.as_ref().map_or_else(
-        || uuid::Uuid::now_v7().as_u128() as u64,
+        || {
+            opts.random_seed
+                .filter(|_| waiting_run.is_some())
+                .unwrap_or_else(|| uuid::Uuid::now_v7().as_u128() as u64)
+        },
         |cursor| cursor.context.random_seed,
     );
     if let Some(cursor) = &cursor {
@@ -905,15 +936,16 @@ fn prepare_with<'read, 'pool, T>(
     context.versions.extend(operation_versions);
     let evaluation = ask.context.replay_clock(program.clock.clone())?;
     let history = call
-        .filter(|_| ask.cursor.is_none())
+        .filter(|_| ask.cursor.is_none() && waiting_run.is_none())
         .map(|call| {
             history::RecordedQuery::new(call, &ask, &opts, &plan, &program, &context, position)
         })
         .transpose()?;
-    if let Some(history) = &history {
-        context
-            .versions
-            .insert("run".into(), history.id().to_string());
+    if let Some(id) = waiting_run
+        .map(|run| &run.id)
+        .or_else(|| history.as_ref().map(history::RecordedQuery::id))
+    {
+        context.versions.insert("run".into(), id.to_string());
     }
     let run = context
         .versions
@@ -974,10 +1006,15 @@ fn prepare_with<'read, 'pool, T>(
             similarity,
         })
     };
-    match history {
-        Some(history) => history.record(execute),
-        None => execute().map(|completed| completed.value),
+    if let Some(history) = history {
+        let started = history.start()?;
+        if let Some(waiting) = waiting {
+            *waiting = Some(started);
+        } else {
+            return started.finish(execute());
+        }
     }
+    execute()
 }
 
 /// Prepare one page after `after`, before its optional population count.

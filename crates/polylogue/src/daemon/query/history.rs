@@ -15,6 +15,32 @@ pub(in crate::daemon) struct RecordedQuery<'a> {
     run: QueryRun,
 }
 
+pub(in crate::daemon) struct StartedQuery<'a> {
+    daemon: &'a crate::daemon::service::Daemon,
+    run: QueryRun,
+    hash: polylogue_model::BlobHash,
+}
+
+impl StartedQuery<'_> {
+    pub(super) fn run(&self) -> &QueryRun {
+        &self.run
+    }
+
+    pub(in crate::daemon) fn finish<T>(
+        self,
+        result: Result<Completed<T>, Failure>,
+    ) -> Result<Completed<T>, Failure> {
+        execution::finish(
+            service::writer(self.daemon)?,
+            &self.run,
+            self.hash,
+            || self.daemon.config.requests.now(),
+            result.map_err(|failure| polylogue_reading::Error::Operation(failure.error)),
+        )
+        .map_err(Failure::from)
+    }
+}
+
 impl<'a> RecordedQuery<'a> {
     pub(super) fn new(
         call: &Call<'a>,
@@ -87,6 +113,12 @@ impl<'a> RecordedQuery<'a> {
         self,
         execute: impl FnOnce() -> Result<Completed<T>, Failure>,
     ) -> Result<T, Failure> {
+        self.start()?
+            .finish(execute())
+            .map(|completed| completed.value)
+    }
+
+    pub(super) fn start(self) -> Result<StartedQuery<'a>, Failure> {
         let writer = service::writer(self.daemon)?;
         let context = self.context;
         let hash = self.run.binding_hash().map_err(Failure::internal)?;
@@ -94,15 +126,14 @@ impl<'a> RecordedQuery<'a> {
         writer
             .archive()
             .query_object(self.object, context.parent_lifetime())?;
-        execution::record(
-            writer,
-            context.parent_lifetime(),
-            self.run,
+        writer
+            .archive()
+            .begin_query_run(self.run.clone(), context.parent_lifetime())?;
+        Ok(StartedQuery {
+            daemon: self.daemon,
+            run: self.run,
             hash,
-            || self.daemon.config.requests.now(),
-            || execute().map_err(|failure| polylogue_reading::Error::Operation(failure.error)),
-        )
-        .map_err(Failure::from)
+        })
     }
 }
 
@@ -126,6 +157,15 @@ pub(super) fn replay(
     let outcome = reader
         .query_run_outcome(&run.id)?
         .ok_or_else(|| Failure::stale_cursor("the original query run has no recorded outcome"))?;
+    let (plan, options) = replay_inputs(&run, ask, current_options)?;
+    Ok((plan, options, outcome.count))
+}
+
+pub(super) fn replay_inputs(
+    run: &QueryRun,
+    ask: &Ask<'_>,
+    current_options: &Options,
+) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
     let binding = run
         .binding
         .original()
@@ -165,6 +205,5 @@ pub(super) fn replay(
     Ok((
         polylogue_query::plan::replay_binding(&binding.replay)?,
         options,
-        outcome.count,
     ))
 }
