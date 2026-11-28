@@ -173,7 +173,12 @@ impl Daemon {
         // The filesystem can still hold not-yet-discovered inputs, which
         // a snapshot of the archive cannot count.
         let loop_status = self.status.get();
-        let local = reader.completeness(&polylogue_engine::reading_contracts())?;
+        let contracts = polylogue_engine::reading_contracts();
+        let local = if loop_status.busy {
+            reader.completeness_during_catch_up(&contracts)?
+        } else {
+            reader.completeness(&contracts)?
+        };
         Ok(self.freshness_at(local, &loop_status))
     }
 

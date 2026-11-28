@@ -230,6 +230,8 @@ pub(super) fn answer(
         Err(_) => {
             let mut local = polylogue_model::freshness::ReadCompleteness::empty();
             local.parsing = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
+            local.kept_chains = None;
+            local.raw_only_chains = None;
             local.derivation =
                 polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());
             local.search = polylogue_model::freshness::CompletenessDimension::Unknown(Vec::new());

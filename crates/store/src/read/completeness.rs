@@ -44,18 +44,46 @@ impl Reader<'_> {
         contracts: &[ReadingContract],
     ) -> Result<std::sync::Arc<ChainCensus>> {
         let position = self.change_position()?;
-        if let Some((at, of, census)) = self.pool.census.locked().as_ref()
-            && *at == position
-            && of.as_slice() == contracts
-        {
-            return Ok(census.clone());
+        if let Some(census) = self.cached_chain_census(&position, contracts) {
+            return Ok(census);
         }
         let census = std::sync::Arc::new(self.chain_census(contracts)?);
         *self.pool.census.locked() = Some((position, contracts.to_vec(), census.clone()));
         Ok(census)
     }
 
+    fn cached_chain_census(
+        &self,
+        position: &polylogue_model::ChangePosition,
+        contracts: &[ReadingContract],
+    ) -> Option<std::sync::Arc<ChainCensus>> {
+        self.pool
+            .census
+            .locked()
+            .as_ref()
+            .and_then(|(at, of, census)| {
+                (at == position && of.as_slice() == contracts).then(|| census.clone())
+            })
+    }
+
     pub fn completeness(&self, contracts: &[ReadingContract]) -> Result<ReadCompleteness> {
+        self.read_completeness(contracts, true)
+    }
+
+    /// While inputs are catching up, report parsing counts only when the
+    /// background reader has already measured this snapshot.
+    pub fn completeness_during_catch_up(
+        &self,
+        contracts: &[ReadingContract],
+    ) -> Result<ReadCompleteness> {
+        self.read_completeness(contracts, false)
+    }
+
+    fn read_completeness(
+        &self,
+        contracts: &[ReadingContract],
+        count: bool,
+    ) -> Result<ReadCompleteness> {
         let token = self.scope_token();
         let conn = self.conn()?;
         let mut declared = BTreeMap::new();
@@ -77,7 +105,11 @@ impl Reader<'_> {
         }
         // Every chain judged by the model's `status`, from its state and the
         // archive's facts; read once per read position.
-        let census = self.chain_census_at_position(contracts)?;
+        let census = if count {
+            Some(self.chain_census_at_position(contracts)?)
+        } else {
+            self.cached_chain_census(&self.change_position()?, contracts)
+        };
         // Chains by why they are behind and by origin; and those whose
         // parse failed or was refused, which waiting does not end and which
         // therefore leave parsing complete.
@@ -86,32 +118,34 @@ impl Reader<'_> {
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        for ((origin, status), n) in &census.chains {
-            use polylogue_model::chain::ChainStatusName as Status;
-            let n = *n;
-            let add = |into: &mut BTreeMap<_, u64>, reason, n| {
-                *into.entry((reason, origin.as_str())).or_default() += n;
-            };
-            match declared.get(origin.as_str()).copied() {
-                None => {
-                    unknown = true;
-                    add(&mut missing, CompletenessReason::MissingDeclaration, n);
-                }
-                Some(ReadingContract::Kept { .. }) => kept_chains += n,
-                // Bytes kept with no parser are as far as they can be: they
-                // are counted, and leave the index complete.
-                Some(ReadingContract::RawOnly { .. }) => raw_only_chains += n,
-                Some(ReadingContract::Expected { .. }) => match status {
-                    Status::Done | Status::Waiting | Status::Repeated => {}
-                    Status::NoParser => raw_only_chains += n,
-                    Status::Refused => add(&mut stopped, CompletenessReason::Refused, n),
-                    Status::Failed => add(&mut stopped, CompletenessReason::ParseFailed, n),
-                    Status::Parsing => {
-                        for (reason, n) in census.behind.get(origin).into_iter().flatten() {
-                            add(&mut missing, *reason, *n);
-                        }
+        if let Some(census) = &census {
+            for ((origin, status), n) in &census.chains {
+                use polylogue_model::chain::ChainStatusName as Status;
+                let n = *n;
+                let add = |into: &mut BTreeMap<_, u64>, reason, n| {
+                    *into.entry((reason, origin.as_str())).or_default() += n;
+                };
+                match declared.get(origin.as_str()).copied() {
+                    None => {
+                        unknown = true;
+                        add(&mut missing, CompletenessReason::MissingDeclaration, n);
                     }
-                },
+                    Some(ReadingContract::Kept { .. }) => kept_chains += n,
+                    // Bytes kept with no parser are as far as they can be: they
+                    // are counted, and leave the index complete.
+                    Some(ReadingContract::RawOnly { .. }) => raw_only_chains += n,
+                    Some(ReadingContract::Expected { .. }) => match status {
+                        Status::Done | Status::Waiting | Status::Repeated => {}
+                        Status::NoParser => raw_only_chains += n,
+                        Status::Refused => add(&mut stopped, CompletenessReason::Refused, n),
+                        Status::Failed => add(&mut stopped, CompletenessReason::ParseFailed, n),
+                        Status::Parsing => {
+                            for (reason, n) in census.behind.get(origin).into_iter().flatten() {
+                                add(&mut missing, *reason, *n);
+                            }
+                        }
+                    },
+                }
             }
         }
         let counted = |reasons: BTreeMap<(CompletenessReason, &str), u64>| -> Vec<CountedReason> {
@@ -120,7 +154,11 @@ impl Reader<'_> {
                 .map(|((reason, origin), n)| CountedReason::inputs(reason, origin, n))
                 .collect()
         };
-        let parsing = if missing.is_empty() {
+        let parsing = if census.is_none() {
+            CompletenessDimension::Unknown(vec![CountedReason::new(
+                CompletenessReason::ParsingCoveragePending,
+            )])
+        } else if missing.is_empty() {
             CompletenessDimension::Complete
         } else if unknown {
             CompletenessDimension::Unknown(counted(missing))
@@ -156,8 +194,8 @@ impl Reader<'_> {
             derivation,
             search,
             confirmed_stream: CompletenessDimension::NotApplicable,
-            kept_chains,
-            raw_only_chains,
+            kept_chains: census.as_ref().map(|_| kept_chains),
+            raw_only_chains: census.as_ref().map(|_| raw_only_chains),
             failed_parses: counted(stopped),
         })
     }
