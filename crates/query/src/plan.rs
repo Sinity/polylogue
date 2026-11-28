@@ -551,20 +551,14 @@ fn visit_extensions(
 }
 
 fn normalize_references(query: &mut Query, origins: &[String]) -> Result<(), QueryError> {
-    use polylogue_model::{Reference, SessionId};
-
     walk(query, &mut |_| Ok(()), &mut |condition| {
         let ConditionKind::Reference { reference: text } = &condition.kind else {
             return Ok(());
         };
-        let reference = Reference::parse(text).ok().or_else(|| {
-            let (origin, _) = text.split_once(':')?;
-            if origins.iter().any(|known| known == origin) {
-                SessionId::parse(text).ok().map(Reference::Session)
-            } else {
-                None
-            }
-        });
+        let reference = polylogue_model::Reference::parse_with_origins(text, |origin| {
+            origins.iter().any(|known| known == origin)
+        })
+        .ok();
         if let Some(reference) = reference.filter(|r| crate::catalog::reference_unit(r).is_some()) {
             condition.kind = ConditionKind::Reference {
                 reference: reference.to_string(),

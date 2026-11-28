@@ -338,6 +338,26 @@ impl Reference {
             _ => return Err(ReferenceError::UnknownKind(text.into())),
         })
     }
+    /// Parse a reference as written, including session shorthand for a declared origin.
+    pub fn parse_with_origins(
+        text: &str,
+        declared_origin: impl FnOnce(&str) -> bool,
+    ) -> Result<Self, ReferenceError> {
+        Self::parse(text).or_else(|error| {
+            if matches!(&error, ReferenceError::UnknownKind(_))
+                && text
+                    .split_once(':')
+                    .is_some_and(|(origin, _)| declared_origin(origin))
+            {
+                SessionId::parse(text)
+                    .map(Self::Session)
+                    .map_err(|error| ReferenceError::Id(text.into(), error))
+            } else {
+                Err(error)
+            }
+        })
+    }
+
     /// The direct container named by this address. Message/session membership
     /// and relationships requiring stored data are resolved by the store.
     pub fn container(&self) -> Option<Self> {
