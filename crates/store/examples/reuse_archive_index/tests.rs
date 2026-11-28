@@ -275,6 +275,74 @@ fn refuses_different_catalog_rows_or_segment_bytes_before_installing() {
 }
 
 #[test]
+fn reuses_a_cut_after_the_writer_continues_its_last_revision() {
+    use polylogue_store::staging::PreparedBatch;
+    use polylogue_store::{Batch, Change, InputKey};
+
+    let mut home = ClaudeHome::new();
+    home.append("kept.jsonl", &claude_user("one", "kept", "prior horizon"));
+    read_sources(&home, true);
+    let earlier = fork(&mut home, "later");
+    let (input, length): (String, u64) = open_read(&earlier.join("archive.db"))
+        .unwrap()
+        .query_row("SELECT input,length FROM revision", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    let suffix = claude_assistant("two", "kept", "later marsh");
+    let final_length = length + suffix.len() as u64;
+    {
+        let (engine, _lock) = home.engine(1 << 20);
+        let (blob, file) = engine.archive.prepare_blob(suffix.as_bytes()).unwrap();
+        let batch = Batch {
+            input: InputKey {
+                id: input,
+                format: "claude-code".into(),
+                route: polylogue_model::Route::Live,
+            },
+            change: Change::Appended { from: length },
+            observation: None,
+            continues: true,
+            new_blob: Some(blob),
+            blobs: vec![],
+            length: final_length,
+            parse: vec![],
+            release: Default::default(),
+            capture_read: None,
+        };
+        let replies = engine
+            .writer()
+            .store_group(vec![PreparedBatch {
+                batch,
+                files: file.into_iter().collect(),
+            }])
+            .unwrap();
+        assert_eq!(
+            replies.into_iter().next().unwrap().unwrap().length,
+            final_length
+        );
+    }
+    prepare_later(&home, "1234567890abcdef1234567890abcdef");
+    let conn = Connection::open(home.root.join("archive.db")).unwrap();
+    conn.execute("UPDATE revision SET length=length+1", [])
+        .unwrap();
+    assert!(
+        reuse(&earlier, &home.root)
+            .unwrap_err()
+            .to_string()
+            .contains("revision")
+    );
+    conn.execute("UPDATE revision SET length=length-1", [])
+        .unwrap();
+    drop(conn);
+
+    let (from, through) = reuse(&earlier, &home.root).unwrap();
+    assert!(through > from);
+    assert!(home.index_db().exists());
+    assert_ne!(original_bytes(&earlier), original_bytes(&home.root));
+}
+
+#[test]
 fn continues_one_native_source_after_preparing_the_checked_cut() {
     let mut home = ClaudeHome::new();
     home.append("prior.jsonl", &claude_user("one", "prior", "checked cedar"));
