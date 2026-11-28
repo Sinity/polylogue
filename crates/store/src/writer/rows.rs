@@ -97,8 +97,28 @@ pub(crate) fn write_step(
         p,
     )?;
     crate::parse_state::write(tx, input_pk, chain, &next)?;
+    let mut attachment_faults = std::collections::BTreeMap::new();
+    for failure in p
+        .output
+        .messages
+        .iter()
+        .flat_map(|row| &row.message.blocks)
+        .chain(
+            p.output
+                .documents
+                .iter()
+                .flat_map(|row| &row.document.blocks),
+        )
+        .flat_map(polylogue_model::Block::attachments)
+        .filter_map(|attachment| attachment.failure)
+    {
+        *attachment_faults
+            .entry(failure.describe().to_owned())
+            .or_default() += 1;
+    }
     let a = &p.counts;
     let groups = [
+        ("fault:attachment: ", &attachment_faults, 0),
         ("skipped:", &a.skipped, 1),
         ("unreadable:", &a.unreadable, 0),
         ("field:", &a.unread_fields, 0),

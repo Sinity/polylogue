@@ -265,8 +265,9 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT item AS name, sum(count) AS n FROM unused GROUP BY item
-            ORDER BY n DESC, item LIMIT 20";
+        const CAPTURE = "SELECT item AS name, sum(count) AS n FROM unused
+            WHERE item GLOB 'field:*' OR item GLOB 'unreadable:*' OR item GLOB 'fault:*'
+            GROUP BY item HAVING sum(count) > 0 ORDER BY n DESC, item";
     }
 }
 
@@ -333,9 +334,9 @@ pub struct ReadPool {
     counts: Mutex<crate::query::execute::CountCache>,
     /// The chain census of the last read position it was computed at.
     census: Mutex<Option<CensusAt>>,
-    /// The unused-record figures of the last read position they were read at:
+    /// Capture counts from the last read position they were read at:
     /// they change only when a chain is parsed.
-    unused: Mutex<Option<(polylogue_model::ChangePosition, Arc<Unused>)>>,
+    capture_counts: Mutex<Option<(polylogue_model::ChangePosition, Arc<CaptureCounts>)>>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     /// A pipeline pool closes its idle connections before a build file is
@@ -481,11 +482,39 @@ fn search_pending(conn: &Connection, bound: u64) -> Result<(u64, bool)> {
     Ok((found.min(bound), found > bound))
 }
 
-/// The record kinds and fields parsers did not read, as status shows them.
+/// The capture counts as status shows them.
 #[derive(Debug, Default)]
-struct Unused {
+struct CaptureCounts {
     top: Vec<(String, u64)>,
     fields: u64,
+    faults: Vec<CaptureFault>,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureFaultCategory {
+    UnreadableRecord,
+    FieldFault,
+}
+
+/// Faults by record or field kind, with the most frequent reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CaptureFault {
+    pub category: CaptureFaultCategory,
+    pub kind: String,
+    pub count: u64,
+    pub most_common_reason: String,
 }
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
@@ -514,10 +543,13 @@ pub struct Status {
     /// `parsing`, `repeated`, `no_parser`, `done`, `waiting`, `refused`,
     /// `failed`).
     pub parse_states: BTreeMap<String, u64>,
-    /// The 20 record kinds and fields parsers did not read most often.
+    /// The 20 most frequent unread fields.
     pub unused: Vec<(String, u64)>,
-    /// How many record kinds and fields parsers did not read, all of them.
+    /// The number of distinct unread fields.
     pub unused_fields: u64,
+    /// Unreadable record and field faults in the indexed readings.
+    #[serde(default)]
+    pub capture_faults: Vec<CaptureFault>,
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer. Counted up to [`SEARCH_PENDING_BOUND`].
     pub search_pending: u64,
@@ -605,7 +637,7 @@ impl ReadPool {
             cache_kib,
             counts: Mutex::default(),
             census: Mutex::default(),
-            unused: Mutex::default(),
+            capture_counts: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -1600,28 +1632,58 @@ impl Reader<'_> {
         })
     }
 
-    /// The unused-record figures, read once for each read position.
-    fn unused_at_position(&self) -> Result<Arc<Unused>> {
+    /// Capture counts, read once for each read position.
+    fn capture_counts_at_position(&self) -> Result<Arc<CaptureCounts>> {
         let position = self.change_position()?;
-        if let Some((at, unused)) = self.pool.unused.locked().as_ref()
+        if let Some((at, counts)) = self.pool.capture_counts.locked().as_ref()
             && *at == position
         {
-            return Ok(unused.clone());
+            return Ok(counts.clone());
         }
-        let c = self.conn()?;
-        let unused = Arc::new(Unused {
-            top: c
-                .all(&NamedCount::UNUSED, [])?
-                .into_iter()
-                .map(|count| (count.name, count.n))
-                .collect(),
-            fields: c.scalar::<u64>(
-                "SELECT count(*) FROM (SELECT item FROM unused GROUP BY item HAVING sum(count) > 0)",
-                [],
-            )?,
-        });
-        *self.pool.unused.locked() = Some((position, unused.clone()));
-        Ok(unused)
+        let mut counts = CaptureCounts::default();
+        let mut faults = BTreeMap::new();
+        let _ = self.conn()?.each(&NamedCount::CAPTURE, [], |row| {
+            use std::ops::ControlFlow::Continue;
+
+            let Some((category, item)) = row.name.split_once(':') else {
+                return Ok(Continue(()));
+            };
+            let category = match category {
+                "field" => {
+                    counts.fields += 1;
+                    if counts.top.len() < 20 {
+                        counts.top.push((row.name, row.n));
+                    }
+                    return Ok(Continue(()));
+                }
+                "fault" => CaptureFaultCategory::FieldFault,
+                "unreadable" => CaptureFaultCategory::UnreadableRecord,
+                _ => return Ok(Continue(())),
+            };
+            if let Some((kind, reason)) = item.split_once(": ") {
+                // The query orders by descending count, then name, so the
+                // first reason for this kind is its most frequent one.
+                faults
+                    .entry((category, kind.to_owned()))
+                    .or_insert_with(|| (0, reason.to_owned()))
+                    .0 += row.n;
+            }
+            Ok(Continue(()))
+        })?;
+        counts.faults = faults
+            .into_iter()
+            .map(
+                |((category, kind), (count, most_common_reason))| CaptureFault {
+                    category,
+                    kind,
+                    count,
+                    most_common_reason,
+                },
+            )
+            .collect();
+        let counts = Arc::new(counts);
+        *self.pool.capture_counts.locked() = Some((position, counts.clone()));
+        Ok(counts)
     }
 
     /// Totals for `status`, with every chain shown as the model judges it
@@ -1649,7 +1711,7 @@ impl Reader<'_> {
                 )
             ))
         };
-        let unused = self.unused_at_position()?;
+        let capture = self.capture_counts_at_position()?;
         let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
             // Sessions (as the `sessions` unit lists them) and documents are
@@ -1665,8 +1727,9 @@ impl Reader<'_> {
             revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
-            unused: unused.top.clone(),
-            unused_fields: unused.fields,
+            unused: capture.top.clone(),
+            unused_fields: capture.fields,
+            capture_faults: capture.faults.clone(),
             search_pending,
             search_pending_is_minimum,
             summaries_due: count("SELECT count(*) FROM main.summary_due")?,

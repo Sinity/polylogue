@@ -22,7 +22,7 @@ pub struct Drift {
 pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
     let mut stmt = reader.conn()?.prepare(
         "SELECT origin, item, sum(count), count(DISTINCT input_pk), max(counted_only)
-         FROM unused GROUP BY origin, item
+         FROM unused WHERE item NOT GLOB 'fault:*' GROUP BY origin, item
          ORDER BY max(counted_only), sum(count) DESC, origin, item",
     )?;
     let rows = stmt.query_map([], |r| {

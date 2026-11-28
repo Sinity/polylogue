@@ -922,6 +922,78 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert!(changed() > before);
 }
 
+#[test]
+fn status_lists_capture_faults_by_kind() {
+    use crate::{CaptureFault, CaptureFaultCategory};
+    use polylogue_model::{Attachment, AttachmentFailure, RecordOutcome};
+
+    let w = test_archive();
+    let mut message = text_message("attachment", "main", Role::User, "readable", None);
+    let image = |failure| {
+        Block::Image(Attachment {
+            failure,
+            ..Attachment::default()
+        })
+    };
+    message.blocks.extend([
+        image(Some(AttachmentFailure::InvalidBase64)),
+        image(Some(AttachmentFailure::InvalidBase64)),
+        image(Some(AttachmentFailure::InvalidBlobHash)),
+        image(None),
+    ]);
+    let mut input = batch("faults", Route::Live, 0, vec![row(10, message)], &["main"]);
+    let counts = &mut input.parse[0].counts;
+    for reason in ["invalid JSON", "invalid JSON", "invalid timestamp"] {
+        counts.records += 1;
+        counts.add("hook", &RecordOutcome::unreadable(reason));
+    }
+    counts.unread("hook", "extra");
+    write(&w, [input.clone()]);
+
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let status = || {
+        pool.reader()
+            .unwrap()
+            .status(&crate::fixture::synthetic_contracts())
+            .unwrap()
+    };
+    let initial = status();
+    assert_eq!(initial.unused_fields, 1);
+    assert_eq!(initial.unused, [("field:hook.extra".to_owned(), 1)]);
+    assert_eq!(
+        initial.capture_faults,
+        [
+            CaptureFault {
+                category: CaptureFaultCategory::UnreadableRecord,
+                kind: "hook".into(),
+                count: 3,
+                most_common_reason: "invalid JSON".into(),
+            },
+            CaptureFault {
+                category: CaptureFaultCategory::FieldFault,
+                kind: "attachment".into(),
+                count: 3,
+                most_common_reason: "invalid inline base64".into(),
+            },
+        ],
+    );
+
+    let mut reading = Replacement::new().unwrap();
+    reading
+        .push(&mut ParsePart::new(
+            Output::default(),
+            RecordCounts::default(),
+            0..100,
+            true,
+        ))
+        .unwrap();
+    w.writer
+        .replace_chain(input.input, 1, 100, reading)
+        .unwrap();
+    assert!(status().capture_faults.is_empty());
+    assert_eq!(status().unused_fields, 0);
+}
+
 /// The totals `status` reads, counted again from the rows once the
 /// session summaries, which message and tool call totals are summed from,
 /// have caught up.
@@ -960,8 +1032,8 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         .collect();
     let unused: Vec<(String, u64)> = r
         .query(
-            "SELECT item, sum(count) AS n FROM unused GROUP BY item
-             ORDER BY n DESC, item LIMIT 20",
+            "SELECT item, sum(count) AS n FROM unused WHERE item GLOB 'field:*'
+             GROUP BY item HAVING sum(count) > 0 ORDER BY n DESC, item LIMIT 20",
             &[],
         )
         .unwrap()
