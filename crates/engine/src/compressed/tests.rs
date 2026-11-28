@@ -359,7 +359,7 @@ fn an_unrecognized_rollout_header_keeps_bytes_and_a_refusal_after_rebuild() {
     let encoded = zstd::stream::encode_all(&body[..], 1).unwrap();
     std::fs::write(&plain, &body).unwrap();
     std::fs::write(&compressed, &encoded).unwrap();
-    let ids = [plain, decoded_path]
+    let ids = [&plain, &decoded_path]
         .map(|path| format!("codex:unidentified-rollout:{}", e.location_id(&path)));
     let verify = |e: &Engine| {
         for id in &ids {
@@ -392,6 +392,8 @@ fn an_unrecognized_rollout_header_keeps_bytes_and_a_refusal_after_rebuild() {
 
     drop(e);
     drop(lock);
+    std::fs::remove_file(&plain).unwrap();
+    std::fs::remove_file(&compressed).unwrap();
     std::fs::remove_file(w.root.join("index.db")).unwrap();
     let (mut e, _lock) = engine(&w, 64);
     e.run_pass().unwrap();
