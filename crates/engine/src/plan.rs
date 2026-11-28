@@ -121,7 +121,6 @@ pub(crate) struct Plan {
     pub(crate) parser_state: Option<Json>,
     /// The chain the parse continues, kept across jobs.
     pub(crate) parser_chain: Option<i64>,
-    pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
     pub(crate) priority: Priority,
@@ -141,6 +140,8 @@ pub(crate) struct Plan {
     pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
+    /// A private view of the sampled bytes, acquired after concurrent growth.
+    pub(crate) frozen_file: Option<crate::read::FrozenFile>,
     /// The end of the last range parsed: once it reaches a copy's stop, the
     /// parse has read every complete record the shared bytes hold.
     pub(crate) read_to: u64,
@@ -185,7 +186,6 @@ impl Plan {
             storing_only: false,
             parser_state: None,
             parser_chain,
-            tail: None,
             chunk,
             priority: Priority::Bulk,
             tracked,
@@ -196,6 +196,7 @@ impl Plan {
             waiting: false,
             input_finished: false,
             source,
+            frozen_file: None,
             read_to: parse_pos,
         }
     }
@@ -245,10 +246,7 @@ impl Plan {
         };
         Job {
             source_read: None,
-            proven_tail: self.tail.clone().map(|bytes| crate::read::ProvenTail {
-                end: self.stored_upto,
-                bytes,
-            }),
+            frozen_file: self.frozen_file.clone(),
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -270,18 +268,18 @@ impl Plan {
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        if let Some(file) = d.frozen_file {
+            self.frozen_file = Some(file);
+        }
         if let Some(chain) = d.chain {
             self.parser_chain = Some(chain);
         }
         // Parsing can fail after new source bytes were sent to the writer.
         // Its rejected writes reload their checkpoints through the existing
         // write report; a parse failure must still remember the stored prefix.
-        if d.error.is_none() || d.stored > 0 {
-            if d.end > self.stored_upto {
-                self.stored_upto = d.end;
-                self.storing_started = true;
-            }
-            self.tail = Some(d.tail);
+        if (d.error.is_none() || d.stored > 0) && d.end > self.stored_upto {
+            self.stored_upto = d.end;
+            self.storing_started = true;
         }
         if d.restart {
             // Without the reading it continues, the chain is read again

@@ -130,8 +130,7 @@ impl polylogue_model::Caused for EngineError {
 }
 
 impl EngineError {
-    /// The source file changed since its read was planned in a way the read
-    /// cannot take as growth ([`read::read_source_range`]).
+    /// The source file changed since its read was planned.
     pub(crate) fn source_changed(&self) -> bool {
         let store = match self {
             Self::Store(error) => Some(error),

@@ -296,7 +296,14 @@ proptest! {
         w.append(name, &lines[k..].concat());
         let pass = e.run_pass().unwrap();
         prop_assert!(pass.errors.is_empty());
-        prop_assert_eq!(pass.bytes_read, lines[k..].concat().len() as u64);
+        let checked = if k < lines.len() {
+            lines.iter().map(String::len).sum::<usize>() as u64
+        } else {
+            0
+        };
+        let added = lines[k..].iter().map(String::len).sum::<usize>() as u64;
+        prop_assert_eq!(pass.bytes_read, checked);
+        prop_assert_eq!(pass.bytes_stored, added);
         prop_assert_eq!(&view(&w), &whole);
         drop((e, _lock));
         prop_assert_eq!(search_index(&w), whole_search);

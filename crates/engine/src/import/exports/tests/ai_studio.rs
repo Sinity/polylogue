@@ -224,7 +224,7 @@ fn checked_export_append_stores_only_the_delta() {
     let full =
         serde_json::to_vec(&json!({"chunkedPrompt":{"chunks":[{"role":"user","text":text}]}}))
             .unwrap();
-    assert!(full.len() > 2 * read::TAIL);
+    assert!(full.len() > 2 * 4096);
     fs::write(&path, &full[..full.len() - 1]).unwrap();
     let (mut e, _lock) = engine(&w, 8);
     let first = e.run_pass().unwrap();
@@ -239,8 +239,7 @@ fn checked_export_append_stores_only_the_delta() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, 1);
-    // One archived full scan plus the provider prefix and delta. The
-    // cached tail alone is too short to satisfy this independent IO bound.
+    // One archived full scan plus the provider prefix and delta.
     assert!(pass.bytes_read >= 2 * full.len() as u64, "{pass:?}");
     let (_, chain, length) = watched_input(&e, &path);
     assert_eq!(chain, old_chain);
@@ -271,8 +270,8 @@ fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
     current[at..at + 3].copy_from_slice(b"new");
     let incomplete = &original[..original.len() - 1];
     assert_eq!(
-        &current[current.len() - 1 - read::TAIL..current.len() - 1],
-        &incomplete[incomplete.len() - read::TAIL..]
+        &current[current.len() - 1 - 4096..current.len() - 1],
+        &incomplete[incomplete.len() - 4096..]
     );
     fs::write(&path, incomplete).unwrap();
     let (mut e, _lock) = engine(&w, 8);
@@ -329,25 +328,10 @@ fn missing_stored_export_prefix_captures_a_full_rewrite() {
     fs::write(&path, full).unwrap();
     let facts = FileFacts::of(&fs::metadata(&path).unwrap());
     let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-    let mut plan = Plan::stored(
-        path.clone(),
-        origin,
-        InputKey {
-            id: input.clone(),
-            format: origin.name.into(),
-            route: origin.route,
-        },
-        Change::Appended { from: old_length },
-        Some(facts),
-        full.len() as u64,
-        0,
-        pool::Bytes::File,
-        8,
-        true,
-    );
-    plan.stored_upto = old_length;
-    plan.observation = Some(e.observation(&path, Some(facts)));
     fs::rename(&segment, &held).unwrap();
+    let mut bytes_read = 0;
+    let mut plan = e.plan(&path, facts, &mut bytes_read).unwrap().unwrap();
+    assert_eq!(plan.change, Change::Rewritten);
     let mut pass = Pass::default();
     let result = e.store_plan(&mut plan, &mut pass);
     // Restore the synthetic segment's name before decoding either stored body.
@@ -381,7 +365,7 @@ fn replacement_during_prefix_comparison_is_refused() {
     let mut file = fs::File::open(&path).unwrap();
     let expected = FileFacts::of(&file.metadata().unwrap());
     let mut moved = false;
-    let result = prefix_matches(
+    let result = read::prefix_matches(
         &mut file,
         &path,
         expected,

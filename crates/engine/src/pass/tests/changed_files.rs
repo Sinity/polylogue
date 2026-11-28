@@ -104,10 +104,8 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
     );
 }
 
-/// A live transcript appended to while its planned range is being read
-/// stores and reads that range in the same pass, with no error; the bytes
-/// appended during the read are read by the next pass (docs/capture.md, one
-/// file never fails a pass).
+/// A live transcript that grows while its range is being read stores the
+/// planned range after comparing the committed prefix with the newer file.
 #[test]
 fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     fault::clear();
@@ -117,8 +115,9 @@ fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     engine.config.workers = 1;
     let first = engine.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{:?}", first.errors);
+    let path = home.file("grows.jsonl");
     home.append("grows.jsonl", &claude_user("g2", "grows", "second record"));
-    let planned = std::fs::metadata(home.file("grows.jsonl")).unwrap().len();
+    let planned = std::fs::metadata(&path).unwrap().len();
     fault::arm("read.source_range", "grows.jsonl", Action::Hold, 0, 1);
     let pass = std::thread::scope(|scope| {
         let running = scope.spawn(|| engine.run_pass());
@@ -137,7 +136,6 @@ fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     let pass = pass.unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(home.texts("grows"), ["first record", "second record"]);
-    let path = home.file("grows.jsonl");
     assert_eq!(engine.inputs[&path].stored, planned);
     let next = engine.run_pass().unwrap();
     assert!(next.errors.is_empty(), "{:?}", next.errors);
@@ -145,4 +143,100 @@ fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
         home.texts("grows"),
         ["first record", "second record", "written while read"]
     );
+}
+
+/// A growing file that also edited the already captured prefix cannot
+/// continue the old chain from the concurrent range.
+#[test]
+fn early_edit_and_growth_during_a_read_leave_the_committed_chain_intact() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    let path = home.file("edited-during-read.jsonl");
+    let first = claude_user("u1", "edited", "old word")
+        + &claude_user("u2", "edited", &"same suffix ".repeat(450));
+    home.append("edited-during-read.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    engine.config.workers = 1;
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let later = claude_user("u3", "edited", "planned append");
+    home.append("edited-during-read.jsonl", &later);
+    let replacement = first.replacen("old word", "new word", 1)
+        + &later
+        + &claude_user("u4", "edited", "new suffix");
+    fault::arm(
+        "read.source_range",
+        "edited-during-read.jsonl",
+        Action::Hold,
+        0,
+        1,
+    );
+    let pass = std::thread::scope(|scope| {
+        let running = scope.spawn(|| engine.run_pass());
+        assert!(fault::wait_held_within(Duration::from_secs(60)));
+        std::fs::write(&path, &replacement).unwrap();
+        fault::release();
+        running.join().unwrap().unwrap()
+    });
+    fault::clear();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(pass.capture_pending);
+    assert_eq!(pass.bytes_stored, 0);
+    let input = engine.location_id(&path);
+    let committed = engine
+        .reads
+        .reader()
+        .unwrap()
+        .latest_chain(&input)
+        .unwrap()
+        .unwrap();
+    assert_eq!((committed.chain, committed.stored), (1, first.len() as u64));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let rewritten = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(rewritten.chain, 2);
+    assert_eq!(
+        reader
+            .stored_range(&input, 1, 0, first.len() as u64, &engine.blobs)
+            .unwrap(),
+        first.as_bytes()
+    );
+    assert_eq!(
+        reader
+            .stored_range(&input, 2, 0, replacement.len() as u64, &engine.blobs)
+            .unwrap(),
+        replacement.as_bytes()
+    );
+}
+
+#[test]
+fn a_device_number_change_reuses_only_compared_bytes() {
+    let home = ClaudeHome::new();
+    let first = claude_user("u1", "remount", "before remount");
+    let second = claude_user("u2", "remount", "after remount");
+    let path = home.file("remount.jsonl");
+    home.append("remount.jsonl", &first);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+
+    let change_device = |engine: &mut Engine| {
+        let state = engine.inputs.get_mut(&path).unwrap();
+        state.facts.as_mut().unwrap().device ^= 1;
+    };
+    change_device(&mut engine);
+    let same = engine.run_pass().unwrap();
+    assert!(same.errors.is_empty(), "{same:?}");
+    assert_eq!(
+        (same.bytes_read, same.bytes_stored),
+        (first.len() as u64, 0)
+    );
+    assert_eq!(engine.inputs[&path].chain, Some(1));
+
+    change_device(&mut engine);
+    home.append("remount.jsonl", &second);
+    let appended = engine.run_pass().unwrap();
+    assert!(appended.errors.is_empty(), "{appended:?}");
+    assert_eq!(appended.bytes_stored, second.len() as u64);
+    assert_eq!(engine.inputs[&path].chain, Some(1));
+    assert_eq!(home.texts("remount"), ["before remount", "after remount"]);
 }

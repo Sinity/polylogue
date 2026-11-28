@@ -12,8 +12,8 @@ pub(crate) struct SourceReadContext {
     pub source: SourceSelector,
     pub route: ReadRoute,
     pub clock: polylogue_model::WallClock,
-    /// The file's facts when the plan was made; the read refuses a file that
-    /// changed since in any way other than growing.
+    /// The facts of the file version the plan chose. Growth during capture
+    /// needs a fresh proof of the archive prefix.
     pub facts: Option<FileFacts>,
 }
 impl SourceReadContext {
@@ -70,10 +70,20 @@ impl SourceReadContext {
         hash: polylogue_model::BlobHash,
         generation: polylogue_store::capture_read::ObservedState,
     ) -> CaptureRead {
+        use polylogue_store::capture_read::{ObservedState, RawStream, RawStreamRole};
         let window = generation.window();
+        let complete = range.end == window.end
+            && !matches!(
+                &generation,
+                ObservedState::File {
+                    stream: RawStream { role: RawStreamRole::ProviderBytes, .. },
+                    observed,
+                    ..
+                } if range.end < observed.size
+            );
         let mut record = self.finish(range, hash);
         record.generation = Some(generation);
-        record.raw_total = (range.end == window.end).then_some(window.end);
+        record.raw_total = complete.then_some(window.end);
         record
     }
 }
@@ -92,7 +102,10 @@ impl Engine {
     /// that changed, or cannot be read, is that file's condition, never the
     /// pass's.
     pub(crate) fn check_planned_file(&self, plan: &crate::plan::Plan) -> PlannedFile {
-        if !plan.tracked || !matches!(plan.source, crate::pool::Bytes::File) {
+        if !plan.tracked
+            || plan.frozen_file.is_some()
+            || !matches!(plan.source, crate::pool::Bytes::File)
+        {
             return PlannedFile::Ready;
         }
         let Some(facts) = plan.facts else {

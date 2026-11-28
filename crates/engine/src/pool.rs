@@ -41,9 +41,7 @@ pub struct Job {
     pub change: Change,
     pub observation: Option<Observation>,
     pub(crate) source_read: Option<crate::capture_read::SourceReadContext>,
-    /// Bytes of the file this plan already holds, ending where its stored
-    /// bytes end: a file that grows while it is read must still hold them.
-    pub(crate) proven_tail: Option<read::ProvenTail>,
+    pub(crate) frozen_file: Option<read::FrozenFile>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -108,8 +106,8 @@ pub struct Done {
     /// input starts here.
     pub parsed_upto: u64,
     pub parser_state: Option<Json>,
-    /// The last bytes read, kept to check the next growth.
-    pub tail: Vec<u8>,
+    pub(crate) frozen_file: Option<read::FrozenFile>,
+    pub(crate) extra_source_read: u64,
     /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
     pub error: Option<EngineError>,
@@ -570,7 +568,6 @@ fn work(
                 plan.source = Bytes::File;
                 if !plan.tracked {
                     plan.parser_state = None;
-                    plan.tail = None;
                 }
                 // A replacement that is not ended is dropped: nothing of it
                 // reaches the index.
@@ -1019,6 +1016,58 @@ fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool)
     failed
 }
 
+fn native_range(
+    job: &Job,
+    expected: Option<polylogue_store::FileFacts>,
+    archive: &Archive,
+    store: &Arc<polylogue_store::blobs::Blobs>,
+    done: &mut Done,
+) -> Result<(Vec<u8>, polylogue_store::capture_read::FileSnapshot), EngineError> {
+    if let Some(file) = &job.frozen_file {
+        return Ok((file.read(job.start, job.end)?, file.observed.clone()));
+    }
+    let first =
+        read::read_source_range(&job.path, job.start, job.end, expected).map_err(EngineError::from);
+    match (first, expected) {
+        (Err(error), Some(facts)) if error.source_changed() => {
+            let committed = job.store_from.unwrap_or(job.length);
+            let loaded = || {
+                let chain = job.parser_chain.ok_or_else(|| {
+                    std::io::Error::other(polylogue_store::StoreError::invalid(
+                        "a continued range has no committed chain",
+                    ))
+                })?;
+                let reads =
+                    ReadPool::with_budget(archive, 1, 4 << 20).map_err(std::io::Error::other)?;
+                let reader = reads.reader().map_err(std::io::Error::other)?;
+                let chain = reader
+                    .stored_chain(&job.input.id, chain, committed)
+                    .map_err(std::io::Error::other)?;
+                Ok(chain.reader(Arc::clone(store)))
+            };
+            if committed > 0 && job.parser_chain.is_none() {
+                return Err(error);
+            }
+            match read::read_after_growth(
+                &job.path,
+                facts,
+                job.start..job.end,
+                committed,
+                loaded,
+                &archive.staging_dir(),
+                &mut done.extra_source_read,
+            )? {
+                Some(range) => {
+                    done.frozen_file = range.snapshot;
+                    Ok((range.data, range.observed))
+                }
+                None => Err(error),
+            }
+        }
+        (first, _) => first,
+    }
+}
+
 /// Reads, stores and parses one job. The archive's stop request ends it
 /// between steps and inside each read; a stopped job keeps only the original
 /// bytes it already prepared and makes no parser progress.
@@ -1027,7 +1076,7 @@ fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool)
 pub(crate) fn run(
     mut job: Job,
     archive: &polylogue_store::Archive,
-    store: &polylogue_store::blobs::Blobs,
+    store: &Arc<polylogue_store::blobs::Blobs>,
     prepare: bool,
     names: Option<&mut crate::chain_names::Names>,
 ) -> (Option<PreparedBatch>, Done) {
@@ -1040,7 +1089,8 @@ pub(crate) fn run(
         end: job.end,
         parsed_upto: job.start,
         parser_state: job.parser_state.take(),
-        tail: Vec::new(),
+        frozen_file: None,
+        extra_source_read: 0,
         stored: 0,
         error: None,
         cancelled: false,
@@ -1061,21 +1111,15 @@ pub(crate) fn run(
             .read_range(job.start, job.end)
             .map_err(EngineError::from),
         Bytes::Stored(chain) => chain
-            .read_range(store, job.start, job.end)
+            .read_range(store.as_ref(), job.start, job.end)
             .map_err(EngineError::from),
         Bytes::File => match &job.source_read {
-            Some(context) => read::read_source_range(
-                &job.path,
-                job.start,
-                job.end,
-                context.facts,
-                job.proven_tail.as_ref(),
-            )
-            .map(|(bytes, observed)| {
-                file_snapshot = Some(observed);
-                bytes
-            })
-            .map_err(EngineError::from),
+            Some(context) => native_range(&job, context.facts, archive, store, &mut out).map(
+                |(bytes, observed)| {
+                    file_snapshot = Some(observed);
+                    bytes
+                },
+            ),
             None => read::read_range(&job.path, job.start, job.end).map_err(EngineError::from),
         },
         Bytes::Unloaded { .. } => Err(EngineError::internal(
@@ -1094,7 +1138,6 @@ pub(crate) fn run(
             return (None, out);
         }
     };
-    out.tail = read::tail_of(&bytes);
     let mut files = Vec::new();
     // A document its source saves whole is stored as content-defined chunks,
     // so a revision that changes one place stores only the chunks around it.
@@ -1148,7 +1191,7 @@ pub(crate) fn run(
                             Change::Appended { from } => from,
                             _ => 0,
                         },
-                        end: observed.size,
+                        end: context.facts.map_or(observed.size, |facts| facts.size),
                     },
                 ),
                 None => context.finish(range, blob.hash),

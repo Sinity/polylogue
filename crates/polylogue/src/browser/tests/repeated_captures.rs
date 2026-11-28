@@ -58,11 +58,10 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     assert_eq!(store_capture(&host, &reversion).status, 200);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(
-        pass.bytes_read,
-        reversion.len() as u64 + polylogue_model::capture_log::HEADER_LEN as u64,
-        "append reads only new frame bytes"
-    );
+    let new_frame = (reversion.len() + polylogue_model::capture_log::HEADER_LEN) as u64;
+    assert_eq!(pass.bytes_read, before.len() as u64 + new_frame);
+    assert_eq!(pass.bytes_stored, new_frame);
+    assert_eq!(pass.messages_written, 1);
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(

@@ -81,7 +81,7 @@ fn waiting_tail_retries_after_the_source_changes() {
 }
 
 #[test]
-fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
+fn appends_verify_the_prefix_and_a_partial_line_waits() {
     let w = ClaudeHome::new();
     let first = user("u1", "s1", "one");
     w.append("s1.jsonl", &first);
@@ -91,15 +91,17 @@ fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
     let (head, rest) = second.split_at(10);
     w.append("s1.jsonl", head);
     let pass = e.run_pass().unwrap();
-    assert_eq!(pass.bytes_read, 10, "only the appended bytes are read");
+    assert_eq!(pass.bytes_read, (first.len() + head.len()) as u64);
+    assert_eq!(pass.bytes_stored, head.len() as u64);
     assert_eq!(w.texts("s1"), ["one"]);
     w.append("s1.jsonl", rest);
     let pass = e.run_pass().unwrap();
     assert_eq!(
         pass.bytes_read,
-        second.len() as u64,
-        "the waiting line and its rest"
+        (first.len() + head.len() + second.len()) as u64,
+        "the verified prefix, then the complete waiting line"
     );
+    assert_eq!(pass.bytes_stored, rest.len() as u64);
     assert_eq!(w.texts("s1"), ["one", "two"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 3);
     assert_eq!(
@@ -159,8 +161,8 @@ fn after_restart_only_the_changed_input_resumes() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(
         pass.bytes_read,
-        line.len() as u64,
-        "only the new parser range is read"
+        (first.len() + line.len()) as u64,
+        "one prefix comparison and one new parser range"
     );
     assert_eq!(pass.bytes_stored, line.len() as u64);
     let after_changed = checkpoint(&e, &w.file("s1.jsonl"));

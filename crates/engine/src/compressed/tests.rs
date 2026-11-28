@@ -497,13 +497,11 @@ fn texts(e: &Engine, session: &str) -> Vec<String> {
         .collect()
 }
 
-/// An append to a stored rollout is proven by the stored bytes before its
-/// old end and costs its new bytes: the pass reads the appended records
-/// (and that tail), stores only them, writes rows only for them, and leaves
-/// the index a reading of the whole file in one pass gives
+/// Compare the stored prefix once, then store and parse only the new
+/// records. The resulting index agrees with reading the whole file
 /// (docs/architecture.md, the index is a function of the record).
 #[test]
-fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
+fn an_append_to_a_stored_rollout_checks_its_prefix_and_parses_only_new_bytes() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -525,7 +523,7 @@ fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
     assert_eq!(pass.bytes_stored, appended.len() as u64);
     assert_eq!(pass.messages_written, 2);
     assert!(
-        pass.bytes_read <= 2 * appended.len() as u64 + read::TAIL as u64,
+        (first.len() as u64..=(first.len() + 2 * appended.len()) as u64).contains(&pass.bytes_read),
         "read {} bytes for an append of {} to a file of {}",
         pass.bytes_read,
         appended.len(),
@@ -552,27 +550,56 @@ fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
 /// as an append: it starts a chain of its own.
 #[test]
 fn a_rollout_rewritten_in_place_and_grown_is_not_an_append() {
+    rewritten_rollout(false);
+}
+
+#[test]
+fn a_longer_rollout_copy_with_an_early_edit_is_not_an_append() {
+    rewritten_rollout(true);
+}
+
+fn rewritten_rollout(moved: bool) {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-00000000000b.jsonl");
-    let first = long_rollout("rewrite-tail", 40);
+    let first = long_rollout("rewrite-prefix", 80);
     std::fs::write(&path, &first).unwrap();
     let (mut e, _lock) = engine(&w, 1 << 20);
     let stored = e.run_pass().unwrap();
     assert!(stored.errors.is_empty(), "{stored:?}");
-    let rewritten = first.replace("answer 39", "ANSWER 39") + &answer("late", "written later");
-    std::fs::write(&path, &rewritten).unwrap();
+    let rewritten = first.replacen("answer 0", "ANSWER 0", 1) + &answer("late", "written later");
+    assert_eq!(
+        &first[first.len() - 4096..],
+        &rewritten[first.len() - 4096..first.len()]
+    );
+    let input = "codex:rollout:rewrite-prefix@test-machine";
+    assert_eq!(captured(&e, input), first.as_bytes());
+    if moved {
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(dir.join("rollout-copy.jsonl"), &rewritten).unwrap();
+    } else {
+        std::fs::write(&path, &rewritten).unwrap();
+    }
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(
-        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:rewrite-tail@test-machine'"),
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:rewrite-prefix@test-machine'"),
         2
     );
-    let texts = texts(&e, "codex:rewrite-tail");
-    assert_eq!(texts.len(), 42);
-    assert!(texts.iter().any(|text| text == "ANSWER 39"), "{texts:?}");
-    assert!(!texts.iter().any(|text| text == "answer 39"), "{texts:?}");
+    let reader = e.reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .stored_range(input, 1, 0, first.len() as u64, &e.blobs)
+            .unwrap(),
+        first.as_bytes()
+    );
+    drop(reader);
+    assert_eq!(captured(&e, input), rewritten.as_bytes());
+    let texts = texts(&e, "codex:rewrite-prefix");
+    assert_eq!(texts.len(), 82);
+    assert_eq!(texts[1], "ANSWER 0");
+    assert_eq!(texts[81], "written later");
 }
 
 /// No two machines write chains of one input: every origin names its inputs
@@ -766,5 +793,76 @@ fn an_empty_compressed_copy_stores_nothing() {
     assert_eq!(
         session_texts(&e, "empty-native"),
         ["independent payload", "second turn", "third turn"]
+    );
+}
+
+#[test]
+fn a_moving_rollout_retries_after_other_queued_rollouts() {
+    let home = ClaudeHome::new();
+    let dir = home.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let origin = polylogue_sources::origin::by_name("codex").unwrap();
+    let moving = collect::Found {
+        path: dir.join("rollout-moving.jsonl"),
+        origin,
+    };
+    let other = collect::Found {
+        path: dir.join("rollout-other.jsonl"),
+        origin,
+    };
+    let moving_bytes = rollout("moving");
+    let stable_bytes = moving_bytes.replace("independent payload", "replacement payload");
+    let other_bytes = rollout("other");
+    std::fs::write(&moving.path, &moving_bytes).unwrap();
+    std::fs::write(&other.path, &other_bytes).unwrap();
+    let (mut engine, _lock) = engine(&home, 1 << 20);
+    let mut plan = |found: &collect::Found| {
+        let facts = FileFacts::of(&std::fs::metadata(&found.path).unwrap());
+        let RolloutStep::Capture(capture) = engine
+            .rollout_step(found, facts, pool::Priority::Bulk)
+            .unwrap()
+        else {
+            panic!("new rollout needs capture");
+        };
+        *capture
+    };
+    let first = plan(&moving);
+    let other_capture = plan(&other);
+    engine.rollout_captures.push_back(other_capture);
+    // Invalidate the planned sample without a size increase. The changed
+    // file needs a new sample, and the queue may store the other one first.
+    std::fs::write(&moving.path, &stable_bytes).unwrap();
+    let mut pass = Pass::default();
+    let mut first = first.run(
+        &engine.archive,
+        &engine.blobs,
+        &engine.writer.sender(),
+        engine.config.reader_memory_per_connection().unwrap(),
+    );
+    first.answered();
+    assert!(engine.captured_rollout(first, &mut pass).unwrap().is_none());
+    let paths = engine
+        .rollout_captures
+        .iter()
+        .map(|capture| &capture.path)
+        .collect::<Vec<_>>();
+    assert_eq!(paths, [&other.path, &moving.path]);
+    // Invalidate the retry again before running the queue.
+    std::fs::write(&moving.path, &moving_bytes).unwrap();
+    engine.execute(vec![], &mut pass).unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        captured(&engine, "codex:rollout:other@test-machine"),
+        other_bytes.as_bytes()
+    );
+    assert_eq!(
+        captured(&engine, "codex:rollout:moving@test-machine"),
+        moving_bytes.as_bytes()
+    );
+    assert_eq!(
+        home.count(
+            "SELECT count(*) AS n FROM a.revision WHERE input='codex:rollout:moving@test-machine'"
+        ),
+        1
     );
 }
