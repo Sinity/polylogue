@@ -81,9 +81,33 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let census = reader
+        .chain_census(&[
+            ReadingContract::Expected {
+                origin: "codex-rollout".into(),
+                version: "v".into(),
+            },
+            ReadingContract::Kept {
+                origin: "export-file".into(),
+            },
+        ])
+        .unwrap();
+    let total = |origin: &str| {
+        census
+            .chains
+            .iter()
+            .filter(|((format, _), _)| format == origin)
+            .map(|(_, count)| *count)
+            .sum::<u64>()
+    };
+    assert_eq!(total("codex-rollout"), 5);
+    assert_eq!(total("export-file"), 1);
+    assert_eq!(total("fallback"), 1);
+    assert_eq!(total("native"), 1);
+    assert_eq!(census.chains.values().sum::<u64>(), 8);
     assert_eq!(
-        pool.reader()
-            .unwrap()
+        reader
             .chains_behind_index(
                 &versions(&["codex-rollout", "native", "fallback", "export-file"]),
                 crate::RevisionChains::All,

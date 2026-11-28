@@ -39,6 +39,57 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
     assert_eq!(stored_bytes(&w), b"abcdefghi");
 }
 
+#[test]
+fn catch_up_finds_a_continued_read_and_keeps_the_earlier_cut() {
+    use crate::archive::writer::Position;
+
+    let w = test_archive();
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let first = store(&w, bytes(&w.archive, 0, b"abc")).unwrap();
+    let before = reads.reader().unwrap().change_position().unwrap().archive;
+    let cut = Position(before.try_into().unwrap());
+    let mut continuation = bytes(&w.archive, 3, b"def");
+    continuation.batch.continues = true;
+    continuation.batch.observation = None;
+    let continued = store(&w, continuation).unwrap();
+    assert_eq!(first.chain, continued.chain);
+    assert_eq!(stored_bytes(&w), b"abcdef");
+
+    let reader = reads.reader().unwrap();
+    let through = Position(
+        reader
+            .change_position()
+            .unwrap()
+            .archive
+            .try_into()
+            .unwrap(),
+    );
+    let conn = rusqlite::Connection::open(w.archive.archive_db()).unwrap();
+    let counts: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM revision), (SELECT count(*) FROM observation)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (1, 1));
+    let changed = reader.changed_input_ids(cut, through, None, 8).unwrap();
+    assert_eq!(changed, ["input"]);
+    let versions = [("claude-code".to_owned(), "synthetic=1".to_owned())];
+    for (at, length) in [(cut, 3), (through, 6)] {
+        let chains = reader
+            .chains_behind_index_at(
+                &versions,
+                crate::RevisionChains::All,
+                Some(&changed),
+                Some(at),
+            )
+            .unwrap();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].stored, length);
+    }
+}
+
 /// The input's latest revision read back from its stored extents.
 fn stored_bytes(w: &TestArchive) -> Vec<u8> {
     let reads = ReadPool::open(&w.archive).unwrap();

@@ -71,6 +71,8 @@ Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secre
 | `attachments/**`, `shell_snapshots/**`, `ambient-suggestions/**` | attachments, context documents |
 | files named by `local_images` in a rollout line | attachment bytes, read when the line is observed; the opened descriptor must be a regular file, and a nonregular source is reported unreadable without waiting for a pipe writer ([sessions.md](sessions.md#attachments)) |
 
+A rollout whose first complete record does not state a session ID is kept under its location and reported as refused. Its bytes and the refusal remain available after the source disappears. An incomplete first record waits for another read when the file grows.
+
 Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a derived copy of the rollouts); `sqlite/codex-dev.db` (developer database); `worktrees/`, `packages/`, `plugins/`, `vendor_imports/`, `skills/`, `cache/`, `tmp/`, lock directories; `auth.json`; configuration files; backup tarballs left in the tree (importable by hand).
 
 **Gemini CLI** (root `~/.gemini`): `tmp/*/chats/session-*.json` and `.jsonl`; subagent `chats/<id>/*.json`; `tool-outputs/session-*/*` (overflow sidecars, whose full text replaces the truncated inline text); `logs.json` (prompt log); `history/*` checkpoints kept as git refs and objects, so a checkpoint ID in a transcript resolves, with checkpoint commits as events. Ignored: credential files, `skills/`, settings, `*.partial`. The `antigravity*` subtrees belong to Antigravity.

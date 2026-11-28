@@ -134,6 +134,7 @@ fn prove_record_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
     // a commit position cannot first appear on the wrong side of the cut.
     // The later archive supplies mutable authored state itself, including
     // completed requests, query runs, revision state, and signals.
+    prove_revision_prefix(conn, from)?;
     for (table, suffix) in [
         ("machine", ""),
         ("input", ""),
@@ -159,7 +160,6 @@ fn prove_record_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
             "alternate_part",
             "new.alternate IN (SELECT id FROM later.alternate WHERE commit_seq <= ?1)",
         ),
-        ("revision", "new.commit_seq <= ?1"),
         ("chain", "new.commit_seq <= ?1"),
         ("extent", "new.commit_seq <= ?1"),
         ("observation", "new.commit_seq <= ?1"),
@@ -171,6 +171,51 @@ fn prove_record_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
         ),
     ] {
         compare_rows(conn, table, suffix, from)?;
+    }
+    Ok(())
+}
+
+fn prove_revision_prefix(conn: &Connection, from: u64) -> Result<(), Error> {
+    // The native writer can continue the last revision of a chain without
+    // replacing its original commit. The earlier extents are still proved
+    // byte for byte. A later extent has to explain the new length.
+    let different: bool = conn.query_row(
+        "SELECT EXISTS (
+           SELECT 1 FROM main.revision old
+           LEFT JOIN later.revision new USING (input,number)
+           WHERE new.number IS NULL OR new.produced IS NOT old.produced
+             OR new.chain IS NOT old.chain OR new.seen_at IS NOT old.seen_at
+             OR new.commit_seq IS NOT old.commit_seq
+             OR NOT (
+                 (new.length = old.length AND new.mtime_ns IS old.mtime_ns
+                    AND new.ctime_ns IS old.ctime_ns)
+                 OR (new.length > old.length
+                    AND NOT EXISTS (
+                        SELECT 1 FROM main.revision r
+                        WHERE r.input=old.input AND r.chain=old.chain AND r.number>old.number)
+                    AND old.length = coalesce((
+                        SELECT max(e.offset+e.length) FROM main.extent e
+                        WHERE e.input=old.input AND e.chain=old.chain),0)
+                    AND EXISTS (
+                        SELECT 1 FROM later.extent e
+                        WHERE e.input=new.input AND e.chain=new.chain
+                          AND e.offset>=old.length AND e.offset+e.length=new.length
+                          AND e.commit_seq>?1
+                          AND NOT EXISTS (
+                              SELECT 1 FROM later.revision r WHERE r.input=new.input
+                                AND r.chain=new.chain AND r.number>new.number
+                                AND r.commit_seq<=e.commit_seq))))
+         ) OR EXISTS (
+           SELECT 1 FROM later.revision new WHERE new.commit_seq<=?1
+             AND NOT EXISTS (
+                 SELECT 1 FROM main.revision old
+                 WHERE old.input=new.input AND old.number=new.number)
+         )",
+        [from],
+        |row| row.get(0),
+    )?;
+    if different {
+        return Err("archives differ in revision at the earlier cut".into());
     }
     Ok(())
 }

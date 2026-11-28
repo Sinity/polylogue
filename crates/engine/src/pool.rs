@@ -835,6 +835,9 @@ pub(crate) fn read_chain<S: polylogue_store::parse::ParseSink>(
     sink: &mut S,
     mut keep: impl FnMut(&mut S, PreparedBatch) -> polylogue_store::Result<()>,
 ) -> Result<bool, EngineError> {
+    if let Some(reason) = crate::compressed::rollout_refusal(&plan.input) {
+        return Err(polylogue_model::ChainFailure::refused(reason).into());
+    }
     let stop = archive.stop();
     let yielding = &settings.yielding;
     if yielding.load(std::sync::atomic::Ordering::Acquire) {

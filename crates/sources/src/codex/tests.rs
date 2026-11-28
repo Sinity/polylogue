@@ -1162,16 +1162,31 @@ fn unknown_retained_and_realtime_payloads_name_what_could_not_be_read() {
 fn a_rollout_is_named_by_its_header_in_either_shape() {
     let bare = format!(r#"{{"id":"{THREAD}","timestamp":"2025-08-11T16:59:28.000Z"}}"#);
     assert_eq!(
-        rollout_id(bare.as_bytes()).unwrap().as_deref(),
-        Some(THREAD)
+        rollout_id(bare.as_bytes()).unwrap(),
+        RecordedId::Named(THREAD.into())
     );
     let meta = format!(r#"{{"type":"session_meta","payload":{{"id":"{THREAD}"}}}}"#);
     assert_eq!(
-        rollout_id(meta.as_bytes()).unwrap().as_deref(),
-        Some(THREAD)
+        rollout_id(meta.as_bytes()).unwrap(),
+        RecordedId::Named(THREAD.into())
     );
-    let item = r#"{"type":"message","id":"m1","role":"user"}"#;
-    assert_eq!(rollout_id(item.as_bytes()).unwrap(), None);
+    let item = b"{\"type\":\"message\",\"id\":\"m1\",\"role\":\"user\"}\n";
+    assert_eq!(
+        rollout_id(item.as_slice()).unwrap(),
+        RecordedId::Unrecognized
+    );
+    assert_eq!(
+        rollout_id(&item[..item.len() - 1]).unwrap(),
+        RecordedId::Unrecognized
+    );
+    assert_eq!(
+        rollout_id(&b"{\"type\":\"session_meta\""[..]).unwrap(),
+        RecordedId::Incomplete
+    );
+    assert_eq!(
+        rollout_id(&b"not json\n"[..]).unwrap(),
+        RecordedId::Unrecognized
+    );
 }
 
 #[test]

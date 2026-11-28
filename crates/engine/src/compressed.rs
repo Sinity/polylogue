@@ -2,6 +2,7 @@
 //! streams into compressed preparation; no plaintext transcript is staged.
 use crate::plan::{InputState, Plan};
 use crate::*;
+use polylogue_sources::origin::{InputIdentity, RecordedId};
 use polylogue_store::staging::{PreparedBatch, PreparedBytes};
 use std::io::{BufRead, BufReader, Read, Seek};
 
@@ -21,6 +22,17 @@ pub(crate) fn provider_id(found: &collect::Found) -> Option<polylogue_sources::o
 
 pub(crate) fn is_rollout(found: &collect::Found) -> bool {
     provider_id(found).is_some()
+}
+
+const UNIDENTIFIED_ROLLOUT: &str = "codex:unidentified-rollout:";
+
+/// The stored input name records that the provider did not identify it.
+/// It still means the same thing when a rebuild reads the chain alone.
+pub(crate) fn rollout_refusal(input: &InputKey) -> Option<&'static str> {
+    input
+        .id
+        .starts_with(UNIDENTIFIED_ROLLOUT)
+        .then_some("first complete Codex rollout record does not name a session")
 }
 
 fn is_compressed(found: &collect::Found) -> bool {
@@ -119,7 +131,7 @@ type GroupReply = Receiver<Vec<polylogue_store::Result<polylogue_store::staging:
 /// ([`RolloutCapture::run`]).
 pub(crate) struct RolloutCapture {
     pub(crate) path: PathBuf,
-    /// The input the rollout's first record names.
+    /// The input named by the rollout or, when it names none, by its location.
     pub(crate) input: String,
     priority: pool::Priority,
     found_origin: &'static OriginSpec,
@@ -516,20 +528,25 @@ impl Engine {
             }
             return Ok(RolloutStep::Planned(self.stored_plan(path)?.map(Box::new)));
         }
-        // A rollout is named by its session ID, which its first record
-        // states. Until that record is complete there is nothing to name the
-        // input by, so nothing is stored; the file is read again when it grows.
+        // A rollout with an incomplete first record is tried again when it
+        // grows. Keep complete files without a provider ID at their location.
         let source = std::fs::File::open(path)?;
         let read_id = provider_id(found).expect("a rollout states its ID").read;
-        let Some(input) = read_id(&mut decoded(&source, compressed)?)? else {
-            return Ok(RolloutStep::Planned(None));
+        let input = match read_id(&mut decoded(&source, compressed)?)? {
+            RecordedId::Named(id) => InputIdentity::provider_named(&id, &self.config.machine),
+            RecordedId::Incomplete => return Ok(RolloutStep::Planned(None)),
+            RecordedId::Unrecognized => {
+                let location = if compressed {
+                    self.location_id(&path.with_extension(""))
+                } else {
+                    self.location_id(path)
+                };
+                format!("{UNIDENTIFIED_ROLLOUT}{location}")
+            }
         };
         Ok(RolloutStep::Capture(Box::new(RolloutCapture {
             path: path.clone(),
-            input: polylogue_sources::origin::InputIdentity::provider_named(
-                &input,
-                &self.config.machine,
-            ),
+            input,
             priority,
             found_origin: found.origin,
             facts,

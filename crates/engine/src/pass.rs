@@ -2112,7 +2112,9 @@ impl Engine {
             return Ok(None);
         };
         if matches!(plan.change, Change::Reparse { .. })
-            && let Some(reason) = unread_path(plan.origin, &plan.path)
+            && let Some(reason) = compressed::rollout_refusal(&plan.input)
+                .map(str::to_owned)
+                .or_else(|| unread_path(plan.origin, &plan.path))
         {
             // Stored bytes at a path this build's parser does not read
             // (an earlier build captured it): refused with the reason,
