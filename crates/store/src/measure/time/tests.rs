@@ -110,7 +110,8 @@ fn span_and_parties_match_a_hand_computed_session() {
             // 3: a stored prefix ends at a session order of the message.
             // 4: folded from the session summary's stored state.
             // 5: a stored prefix holds the session order as bytes.
-            5,
+            // 6: a compound shell call has one timing key.
+            6,
             serde_json::json!({
                 "first_at":0,"last_at":4500000,"time_source":"messages","wall_ms":4500000,"clustered_ms":3720000,"tool_sum_ms":3434000,"tool_union_ms":1704000,"tool_overlap_ms":1730000,
                 "tool_untimed":0,"tool_no_result":0,"tool_same_timestamp":0,"tool_reversed":0,"timed_messages":18,"untimed_messages":0,"unordered_gaps":0,"first_failure_at":2262000,"prompts_to_failure":1,"prompted":true,"ends_with":"model_text","ends_with_message":"m17","last_stop_reason":"end_turn"
@@ -448,6 +449,35 @@ fn index(w: &WriterArchive) -> rusqlite::Connection {
     rusqlite::Connection::open(w.archive.index_db()).unwrap()
 }
 
+#[test]
+fn a_failed_compound_shell_call_keeps_its_whole_duration() {
+    let mut archive = WriterArchive::new();
+    let command = "cargo build && cargo test";
+    let mut compound = bash("s", 1, 1_000, command, false, "build failed");
+    compound[1].at = Timestamp::from_unix_ms(5_000);
+    archive.write("s", compound);
+    let mut standalone = bash("s", 2, 6_000, "cargo test --lib", true, "ok");
+    standalone[1].at = Timestamp::from_unix_ms(8_000);
+    archive.write("s", standalone);
+
+    let (stored, computed) = stored_and_computed(&index(&archive), "s");
+    assert_eq!(stored, computed);
+    let tool_times: Vec<_> = stored[1]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["party"] == "tool")
+        .cloned()
+        .collect();
+    assert_eq!(
+        tool_times,
+        [
+            json!({"party": "tool", "key": command, "ms": 4_000}),
+            json!({"party": "tool", "key": "cargo test", "ms": 2_000}),
+        ]
+    );
+}
+
 fn answer(n: u32, at: i64) -> polylogue_model::Message {
     let mut answer = message(
         &format!("a{n}"),
@@ -688,7 +718,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
             serde_json::to_value(&prefix).unwrap()
         ),
         (
-            5,
+            6,
             json!({
                 "end":[[[49,111,114,100,101,114],"m"],3],"first":4,"last":5,"timed":6,"untimed":7,
                 "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,

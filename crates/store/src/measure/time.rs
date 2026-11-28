@@ -131,6 +131,28 @@ pub(crate) struct Rows {
     pub result_keys: Vec<Option<OrderKey>>,
 }
 
+/// Attribute the call as one interval even when its command contains several stages.
+pub(crate) fn tool_time_key(
+    action: Option<&str>,
+    tool: &str,
+    command: Option<&str>,
+    normalized: Option<&str>,
+) -> String {
+    if action == Some("shell") {
+        if let Some(command) = command
+            && normalized != Some(command)
+            && matches!(
+                polylogue_model::command::parse(command),
+                polylogue_model::command::Line::Stages(stages) if stages.len() > 1
+            )
+        {
+            return command.to_owned();
+        }
+        return normalized.unwrap_or(tool).to_owned();
+    }
+    action.unwrap_or(tool).to_owned()
+}
+
 /// The rows after `after` in session order, or all of them.
 fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
     let own = session_sql::own_messages("m", Some("=?1"));
@@ -170,9 +192,9 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
         .map(|(i, m)| (m.id.as_str(), i))
         .collect();
     // From the messages: a tail reads only the calls of the messages in it.
-    let mut statement=conn.prepare_cached(&format!("SELECT CASE WHEN t.action='shell' THEN coalesce(t.command_norm,t.tool) ELSE coalesce(t.action,t.tool) END,
+    let mut statement=conn.prepare_cached(&format!("SELECT t.tool,
         coalesce(t.at,m.at),CASE WHEN rm.duplicate_of IS NULL AND coalesce(rm.on_active_path,1)=1 THEN rm.at END,t.result_message_id IS NOT NULL,t.outcome='error',m.id,
-        rm.session_order,rm.id
+        rm.session_order,rm.id,t.action,t.command,t.command_norm
         FROM message m CROSS JOIN block b ON b.message_pk=m.pk CROSS JOIN tool_call t ON t.call_block_pk=b.pk
         LEFT JOIN message rm ON rm.id=t.result_message_id LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.position=t.result_position
         WHERE {own}{tail} AND {}
@@ -185,7 +207,12 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
             message_index: *positions
                 .get(r.get::<_, String>(5)?.as_str())
                 .ok_or(rusqlite::Error::InvalidQuery)?,
-            key: r.get(0)?,
+            key: tool_time_key(
+                r.get::<_, Option<String>>(8)?.as_deref(),
+                &r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(9)?.as_deref(),
+                r.get::<_, Option<String>>(10)?.as_deref(),
+            ),
             start: r.get(1)?,
             end: r.get(2)?,
             paired: r.get(3)?,

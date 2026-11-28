@@ -54,6 +54,7 @@ pub const SESSION_SPAN: Construct = Construct {
         "tool_call.at",
         "tool_call.result_message_id",
         "tool_call.outcome",
+        "tool_call.command",
         "tool_call.command_norm",
         "tool_call.action",
         "tool_call.tool",
@@ -88,6 +89,7 @@ pub const SESSION_TIME: Construct = Construct {
         "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
         "party_times_sum_to_wall_for_overlapping_intervals",
+        "a_failed_compound_shell_call_keeps_its_whole_duration",
     ],
     figures: SESSION_SPAN.figures,
 };
