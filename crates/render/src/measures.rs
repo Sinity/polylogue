@@ -328,34 +328,6 @@ fn responses_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
     out
 }
 
-/// Drift by format: what each parser did not know, most frequent first.
-pub fn drift(data: &Value) -> String {
-    crate::terminal::escape(&drift_text(data))
-}
-
-fn drift_text(data: &Value) -> String {
-    let items = data.as_array().map_or(&[][..], Vec::as_slice);
-    if items.is_empty() {
-        return "every record and field was recognized\n".into();
-    }
-    let mut out = String::new();
-    for d in items {
-        let note = if d["by_design"].as_bool() == Some(true) {
-            " (kept as a count by design)"
-        } else {
-            ""
-        };
-        out.push_str(&format!(
-            "{}  {}  {} in {} input(s){note}\n",
-            d["format"].as_str().unwrap_or("?"),
-            d["what"].as_str().unwrap_or("?"),
-            d["count"],
-            d["inputs"],
-        ));
-    }
-    out
-}
-
 fn number(value: &Value) -> String {
     if value.is_null() {
         "unknown".into()

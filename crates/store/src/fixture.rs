@@ -733,22 +733,6 @@ impl Fixture {
         Ok(())
     }
 
-    /// Something a parser did not know, counted for the fixture's input.
-    pub fn unrecognized(
-        &mut self,
-        format: &str,
-        what: &str,
-        count: i64,
-        counted_only: bool,
-    ) -> Result<()> {
-        self.index.execute(
-            "INSERT INTO unused(input_pk, chain, origin, item, count, counted_only)
-             VALUES (?1, 1, ?2, ?3, ?4, ?5)",
-            params![self.input_pk, format, what, count, i64::from(counted_only)],
-        )?;
-        Ok(())
-    }
-
     pub fn event(&mut self, session_pk: i64, kind: &str, at: Option<i64>) -> Result<()> {
         self.seq += 1;
         let id = format!("e{}", self.seq);

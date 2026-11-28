@@ -126,20 +126,3 @@ fn partial_money_and_token_counts_state_what_is_missing() {
         "900 known + unknown response usage"
     );
 }
-
-#[test]
-fn drift_names_each_format_or_says_everything_was_recognized() {
-    assert_eq!(drift(&json!([])), "every record and field was recognized\n");
-    assert_eq!(
-        drift_text(
-            &json!([{"format":"sample","what":"unknown_field","count":2,"inputs":3,"by_design":true}])
-        ),
-        "sample  unknown_field  2 in 3 input(s) (kept as a count by design)\n"
-    );
-    assert_eq!(
-        drift_text(
-            &json!([{"format":"sample","what":"unknown_field","count":2,"inputs":3,"by_design":false}])
-        ),
-        "sample  unknown_field  2 in 3 input(s)\n"
-    );
-}
