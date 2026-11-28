@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn initial_database_capture_takes_one_snapshot_per_origin_before_the_next() {
+    use polylogue_store::fault::{self, Action};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::test_config();
+    config.home = dir.path().join("home");
+    let samples = [
+        (
+            config.home.join(".codex/state_5.sqlite"),
+            "first_codex_snapshot",
+        ),
+        (config.home.join(".hermes/state.db"), "hermes_snapshot"),
+        (
+            config.home.join(".codex/state_6.sqlite"),
+            "second_codex_snapshot",
+        ),
+    ];
+    for (path, table) in &samples {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TABLE {table}(id INTEGER PRIMARY KEY); INSERT INTO {table} VALUES(1)"
+            ))
+            .unwrap();
+    }
+    let start = config.clock.now().as_millisecond();
+    let millis = std::sync::atomic::AtomicI64::new(start + 1);
+    config.clock = polylogue_model::WallClock::new(move || {
+        let next = if std::thread::current().name() == Some("polylogue-databases") {
+            millis.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        } else {
+            start
+        };
+        jiff::Timestamp::from_millisecond(next).unwrap()
+    });
+    let machine = config.machine.clone();
+    let (archive, _lock) = Archive::open_for_serving(&dir.path().join("archive")).unwrap();
+    fault::clear();
+    fault::arm("database.after_row", "snapshot", Action::Record, 0, 3);
+    let mut engine = Engine::new(config, archive.clone()).unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(
+        fault::recorded("database.after_row")
+            .iter()
+            .map(|(table, _)| table.as_str())
+            .collect::<Vec<_>>(),
+        samples.each_ref().map(|(_, table)| *table),
+    );
+    let reads = ReadPool::open(&archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let blobs = archive.blobs().unwrap();
+    let mut previous = start;
+    for (path, table) in &samples {
+        let input = reader
+            .known_input_at(&machine, path.as_os_str().as_encoded_bytes())
+            .unwrap()
+            .unwrap();
+        let bytes = reader
+            .stored_chain(&input.input_id, input.chain.unwrap(), input.stored)
+            .unwrap()
+            .read_range(&blobs, 0, input.stored)
+            .unwrap();
+        let mut records = bytes.split(|&b| b == b'\n');
+        let header: serde_json::Value = serde_json::from_slice(records.next().unwrap()).unwrap();
+        let row: serde_json::Value = serde_json::from_slice(records.next().unwrap()).unwrap();
+        let observed = header["at_ms"].as_i64().unwrap();
+        assert!(observed > previous, "{header:?}");
+        previous = observed;
+        assert_eq!(header["source"]["path"], path.to_str().unwrap());
+        assert_eq!(row["t"], *table);
+        assert_eq!(row["r"]["id"], 1);
+    }
+    fault::clear();
+}
+
+#[test]
 fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("state_5.sqlite");
