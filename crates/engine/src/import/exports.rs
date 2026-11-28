@@ -173,11 +173,12 @@ impl Engine {
         let prepared = self
             .archive
             .prepare_bytes((&mut file).take(plan.size - plan.stored_upto))?;
-        pass.bytes_read += prepared.len();
+        let bytes = prepared.len();
+        pass.bytes_read += bytes;
         if let (None, Some(expected)) = (&plan.frozen_file, plan.facts) {
             read::check_source(&file, &plan.path, expected)?;
         }
-        if prepared.len() != plan.size - plan.stored_upto {
+        if bytes != plan.size - plan.stored_upto {
             return Err(polylogue_store::StoreError::SourceChanged(
                 "source ended during export capture",
             )
