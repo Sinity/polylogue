@@ -497,6 +497,7 @@ pub(crate) fn restart_full_log(
     if size <= limit.saturating_mul(page) as u64 {
         return Ok(false);
     }
+    let _doing = crate::activity::doing("checkpointing the SQLite log");
     conn.busy_timeout(wait)?;
     let busy = conn.scalar::<i64>(&format!("PRAGMA {schema}.wal_checkpoint(TRUNCATE)"), []);
     conn.busy_timeout(BUSY_TIMEOUT)?;
