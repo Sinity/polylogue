@@ -122,3 +122,31 @@ fn href(html: &str, label: &str) -> String {
     let (link, _) = start.split_once('"').expect("quoted URL");
     link.replace("&amp;", "&")
 }
+
+#[test]
+fn html_and_json_report_the_failed_step_and_keep_a_completed_read() {
+    let seed = "Content retained from the completed read.";
+    let daemon = crate::test_daemon::start(seed);
+    let router = super::super::router(Arc::new(Web {
+        daemon: Arc::clone(&daemon.daemon),
+        key: "synthetic".into(),
+        token: "synthetic".into(),
+        port: 8765,
+    }));
+    let arguments = serde_json::json!({
+        "selection": "session:claude-code:s1",
+        "steps": [{"verb": "read"}, {"verb": "read", "show": ["unknown-kind"]}]
+    });
+    let tail = format!(
+        "/rows?arguments={}",
+        polylogue_render::html::encode_path_segment(&arguments.to_string())
+    );
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for path in [tail.clone(), format!("/api/v1{tail}")] {
+            let (status, body) = get(&router, &path).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+            assert!(body.contains("unknown-kind"), "{path}: {body}");
+            assert!(body.contains(seed), "{path}: {body}");
+        }
+    });
+}

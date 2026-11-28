@@ -33,8 +33,8 @@ async fn render(
         Err(failure) => return failed_with(&failure),
     };
     let caller = lifetime.caller(&Default::default());
-    let answer = match super::api::execute(web, request.clone(), caller).await {
-        super::api::HttpReply::Answer(answer) => answer.0,
+    let (answer, step_status) = match super::api::execute(web, request.clone(), caller).await {
+        super::api::HttpReply::Answer(answer, step_status) => (*answer, step_status),
         super::api::HttpReply::Stream(response) => return response,
     };
     let declarations = crate::commands::declarations();
@@ -79,14 +79,20 @@ async fn render(
     }
     let rendered = declarations.render_text(row.name, &answer, command_surface::TextStyle::Plain);
     match rendered {
-        Ok(text) => answer_page(&[(&answer, &cli)], || {
-            pages::layout(
-                "Polylogue",
-                "",
-                &cli,
-                &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
-            )
-        }),
+        Ok(text) => {
+            let mut response = answer_page(&[(&answer, &cli)], || {
+                pages::layout(
+                    "Polylogue",
+                    "",
+                    &cli,
+                    &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
+                )
+            });
+            if let Some(status) = step_status {
+                *response.status_mut() = status;
+            }
+            response
+        }
         Err(failure) => {
             answer.outcome = command_surface::Outcome::Error(failure);
             answer_page(&[(&answer, &cli)], String::new)

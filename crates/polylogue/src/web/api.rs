@@ -301,7 +301,7 @@ fn step_query_declarations(row: &Command) -> &'static command_surface::Operation
 enum Piece {
     Bytes(Vec<u8>),
     /// A reply with no events, and the failure its reply carries inside it.
-    Answer(Box<(Answer<Value>, Option<command_surface::FailureKind>)>),
+    Answer(Box<Answer<Value>>, Option<StatusCode>),
 }
 
 /// The response side of a reply as a [`Sink`].
@@ -349,8 +349,11 @@ impl Output for Reply {
             spill.finish().map(drop)
         } else {
             let Channel(sender) = spill.finish()?;
+            let step_status = inside
+                .and_then(FailureKind::http_status)
+                .and_then(|status| StatusCode::from_u16(status).ok());
             sender
-                .blocking_send(Piece::Answer(Box::new((answer, inside))))
+                .blocking_send(Piece::Answer(Box::new(answer), step_status))
                 .map_err(|_| gone())
         }
     }
@@ -358,7 +361,7 @@ impl Output for Reply {
 
 /// A complete answer or the stream already in progress.
 pub(super) enum HttpReply {
-    Answer(Box<(Answer<Value>, Option<command_surface::FailureKind>)>),
+    Answer(Box<Answer<Value>>, Option<StatusCode>),
     Stream(HttpResponse),
 }
 
@@ -381,10 +384,10 @@ pub(super) async fn execute(
         crate::daemon::handler::answer(&daemon, &request, &caller, &mut reply);
     });
     match pieces.recv().await {
-        Some(Piece::Answer(answer)) => {
+        Some(Piece::Answer(answer, step_status)) => {
             let mut cancel = cancel;
             cancel.disarm();
-            HttpReply::Answer(answer)
+            HttpReply::Answer(answer, step_status)
         }
         Some(Piece::Bytes(first)) => HttpReply::Stream(
             (
@@ -401,10 +404,12 @@ pub(super) async fn execute(
             )
                 .into_response(),
         ),
-        None => HttpReply::Answer(Box::new((
-            crate::daemon::Failure::internal("the request ended without an answer").answer(),
+        None => HttpReply::Answer(
+            Box::new(
+                crate::daemon::Failure::internal("the request ended without an answer").answer(),
+            ),
             None,
-        ))),
+        ),
     }
 }
 
@@ -414,15 +419,14 @@ pub(super) async fn respond(
     caller: crate::operation::Caller,
 ) -> HttpResponse {
     match execute(web, request, caller).await {
-        HttpReply::Answer(answer) => {
-            let (answer, inside) = *answer;
-            let (status, bytes) = super::prepare_json_answer(web, answer);
-            // A line whose step failed answers with that failure's status.
-            let status = inside
-                .and_then(|kind| kind.http_status())
-                .and_then(|status| StatusCode::from_u16(status).ok())
-                .unwrap_or(status);
-            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
+        HttpReply::Answer(answer, step_status) => {
+            let (status, bytes) = super::prepare_json_answer(web, *answer);
+            (
+                step_status.unwrap_or(status),
+                [(header::CONTENT_TYPE, "application/json")],
+                bytes,
+            )
+                .into_response()
         }
         HttpReply::Stream(response) => response,
     }
@@ -459,7 +463,7 @@ impl tokio::io::AsyncRead for EventBody {
                     this.pending = bytes;
                     this.offset = 0;
                 }
-                Some(Piece::Answer(_)) | None => return std::task::Poll::Ready(Ok(())),
+                Some(Piece::Answer(..)) | None => return std::task::Poll::Ready(Ok(())),
             }
         }
     }
