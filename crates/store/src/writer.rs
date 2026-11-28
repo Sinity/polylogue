@@ -93,6 +93,7 @@ enum Msg {
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
     DeriveInBackground(SyncSender<Result<bool>>),
+    DeriveCommittedSummaries,
     /// One wave of derived values from the derive thread, answered with
     /// which sessions it applied.
     DeriveWrite(Box<crate::summary::Write>, SyncSender<Result<Vec<bool>>>),
@@ -544,6 +545,14 @@ impl WriterSender {
         self.0.ask(Msg::DeriveInBackground)
     }
 
+    /// Fold summaries already marked due by committed readings while
+    /// parsing and full-text indexing continue on their own workers.
+    pub fn derive_committed_summaries(&self) -> Result<()> {
+        self.0
+            .send(Msg::DeriveCommittedSummaries)
+            .map_err(|_| StoreError::WriterGone)
+    }
+
     /// Installs export associations derived from committed source observations.
     pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
         self.0.ask(|reply| Msg::Assets(Box::new(staged), reply))
@@ -641,6 +650,7 @@ impl Inner {
             let _doing = crate::activity::doing("writing");
             self.retry_lost_index();
             let mut stopping = false;
+            let mut derive_committed = false;
             let mut group = Vec::new();
             let mut rows = 0;
             let mut bytes = 0;
@@ -698,6 +708,10 @@ impl Inner {
                     background_derives.push(reply);
                     false
                 }
+                Msg::DeriveCommittedSummaries => {
+                    derive_committed = true;
+                    false
+                }
                 Msg::DeriveWrite(write, reply) => {
                     derive_writes.push((write, reply));
                     false
@@ -721,6 +735,9 @@ impl Inner {
             }
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
+            }
+            if derive_committed && self.serves() {
+                self.derive.request(derive_thread::Waiting::Nobody);
             }
             for (write, reply) in derive_writes.drain(..) {
                 // Computed from the installed index: with none, nothing of

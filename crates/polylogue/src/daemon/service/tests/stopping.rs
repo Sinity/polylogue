@@ -168,7 +168,7 @@ fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
             let reply = test_daemon::call(
                 &runtime.daemon,
                 "rows",
-                json!({"selection": "sessions where needle"}),
+                json!({"selection": "sessions where needle since:2026-03-01"}),
             );
             if let Some(data) = reply.value()
                 && data["reply"]["rows"]
@@ -182,7 +182,7 @@ fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
         }
         assert!(
             Instant::now() < deadline,
-            "committed rows were not readable and searchable: {visible:?}"
+            "committed rows did not appear in the date-filtered search: {visible:?}"
         );
         std::thread::yield_now();
     };

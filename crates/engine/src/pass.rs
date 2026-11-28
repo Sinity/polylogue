@@ -1638,7 +1638,14 @@ impl Engine {
                     through,
                     self.config.workers.max(1),
                 )?;
-                self.reparse_chains(recent, pass, true)?;
+                if !recent.is_empty() {
+                    self.reparse_chains(recent, pass, true)?;
+                    // Date-filtered listings use the derived activity time.
+                    // Start those summaries before walking the remaining chains.
+                    if !self.archive.stop().is_cancelled() {
+                        self.writer.derive_committed_summaries()?;
+                    }
+                }
             }
             // Unfinished plans remain due. Catch-up visits them through its
             // ordinary finite scan even if a new request interrupted the seed.
