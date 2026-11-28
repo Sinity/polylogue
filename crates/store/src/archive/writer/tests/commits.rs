@@ -156,6 +156,12 @@ fn a_repeated_request_id_answers_the_first_commit_and_writes_nothing() {
         .archive()
         .submit(setting("repeated", "on"), None)
         .unwrap();
+    let intervening = archive
+        .writer
+        .archive()
+        .submit(setting("intervening", "off"), None)
+        .unwrap();
+    assert!(first.position < intervening.position);
     let counter = write_counter(&archive.archive);
     let again = archive
         .writer
