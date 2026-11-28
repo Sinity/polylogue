@@ -55,7 +55,11 @@ impl GrowingFile {
         let observed = file_snapshot(&metadata)?;
         let copy = reflink(&source_file, staging, expected.size);
         if copy.is_some() {
-            let at_path = FileFacts::of(&std::fs::metadata(path)?);
+            let at_path = match std::fs::metadata(path) {
+                Ok(metadata) => FileFacts::of(&metadata),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
             if at_path.device != source.device || at_path.inode != source.inode {
                 return Ok(None);
             }
