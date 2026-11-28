@@ -47,13 +47,11 @@ fn note(d: &test_daemon::TestDaemon, id: &str) {
         0
     );
 }
-fn count(d: &test_daemon::TestDaemon, selection: &str) -> u64 {
+fn count(d: &test_daemon::TestDaemon, selection: &str, expected: u64) {
     let answer = call("count-annotations", json!({"selection":selection})).answer(&d.daemon);
-    assert!(
-        matches!(
-            &answer.outcome,
-            command_surface::Outcome::Ok(_) | command_surface::Outcome::Empty(_)
-        ),
+    assert_eq!(
+        answer.exit_code(),
+        if expected == 0 { 1 } else { 0 },
         "{answer:?}"
     );
     let LineAnswer::Listing(listing) =
@@ -61,9 +59,7 @@ fn count(d: &test_daemon::TestDaemon, selection: &str) -> u64 {
     else {
         panic!("expected listing")
     };
-    serde_json::to_value(listing).unwrap()["count"]
-        .as_u64()
-        .unwrap()
+    assert_eq!(serde_json::to_value(listing).unwrap()["count"], expected);
 }
 fn request(d: &test_daemon::TestDaemon, id: &str) -> polylogue_model::authored::PreparedRequest {
     let reader = d.daemon.reads.reader().unwrap();
@@ -184,7 +180,7 @@ fn withdraw_saved_query_by_name_pins_the_family_and_undo_restores_its_watch() {
             .watch
             .is_none()
     );
-    assert_eq!(count(&d, "annotations where kind:note"), 2);
+    count(&d, "annotations where kind:note", 2);
     // A retry sends the same request: the command line's spelling of it.
     let repeated = command(
         &d,
@@ -282,7 +278,7 @@ fn a_saved_query_expression_withdraws_results_instead_of_the_definition() {
         assert!(
             matches!(&original.request.write, UserWrite::WithdrawAnnotations { targets, .. } if targets == &vec![note])
         );
-        assert_eq!(count(&d, "annotations where kind:note"), 0);
+        count(&d, "annotations where kind:note", 0);
         assert_eq!(
             d.daemon
                 .reads
@@ -394,7 +390,7 @@ fn the_withdrawal_correction_quotes_opaque_addresses_and_keeps_other_notes() {
             })
             .answer(&d.daemon),
     );
-    assert_eq!(count(&d, "annotations where kind:note"), 1);
+    count(&d, "annotations where kind:note", 1);
     let remaining = request(&d, &format!("{}-1", next.request_id));
     assert!(
         matches!(&remaining.request.write, UserWrite::WithdrawAnnotations { targets, .. }
@@ -493,6 +489,6 @@ fn withdrawing_an_existing_literal_saved_key_does_not_run_its_results() {
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(count(&d, "annotations where kind:note"), 1);
+        count(&d, "annotations where kind:note", 1);
     }
 }

@@ -98,6 +98,7 @@ fn source_controls_are_escaped_and_html_remains_inert() {
             assert!(terminal.status.success(), "{terminal:?}");
             assert!(!terminal.stdout.contains(&0x1b) && !terminal.stdout.contains(&7));
             let path = directory.join("reading.html");
+            wait_caught_up(fixture);
             let html = cli(
                 fixture,
                 &[
@@ -111,7 +112,7 @@ fn source_controls_are_escaped_and_html_remains_inert() {
                     path.to_str().unwrap(),
                 ],
             );
-            assert!(matches!(html.status.code(), Some(0 | 5)), "{html:?}");
+            assert_eq!(html.status.code(), Some(0), "{html:?}");
             let html = std::fs::read_to_string(path).unwrap();
             assert!(!html.contains("<script>alert('synthetic')</script>"));
             assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-later-value"));

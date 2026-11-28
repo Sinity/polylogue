@@ -120,7 +120,10 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
     let mut failed = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
     let staging = failed.staging().to_owned();
     failed.push(session("new")).unwrap();
-    assert!(failed.finish(complete(2)).is_err());
+    assert_eq!(
+        failed.finish(complete(2)).unwrap_err().message,
+        "final read counts differ from received records"
+    );
     assert!(staging.exists());
     let kept = ExportItems::in_directory(&staging.join("_staging")).unwrap();
     let recovered: ReadRecord = serde_json::from_reader(
@@ -211,7 +214,7 @@ fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
     let destination = root.path().join("bundle");
     let mut sink = Bundle::new(&destination, begin(), Format::Json, true).unwrap();
     let hash = BlobHash::of(b"correct");
-    sink.blob_chunk(hash, 0, b"wrong").unwrap();
+    sink.blob_chunk(hash, 0, b"altered").unwrap();
     sink.push(ReadRecord::Original {
         record: Box::new(Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
@@ -224,7 +227,7 @@ fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
         parts: vec![],
     })
     .unwrap();
-    assert!(
+    assert_eq!(
         sink.finish(ReadFooter {
             counts: Counts {
                 blobs: 1,
@@ -232,11 +235,18 @@ fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
             },
             ..Default::default()
         })
-        .is_err()
+        .unwrap_err()
+        .message,
+        "blob bytes do not match descriptor"
     );
     assert!(!destination.exists());
     let mut sink = Bundle::new(&destination, begin(), Format::Json, true).unwrap();
-    assert!(sink.blob_chunk(hash, 1, b"a").is_err());
+    sink.blob_chunk(hash, 0, b"c").unwrap();
+    sink.blob_chunk(hash, 1, b"orrect").unwrap();
+    assert_eq!(
+        sink.blob_chunk(hash, 8, b"!").unwrap_err().message,
+        "noncontiguous blob chunk"
+    );
 }
 #[test]
 fn duplicate_frames_deduplicate_content_and_conflicts_poison_delivery() {
@@ -255,8 +265,14 @@ fn duplicate_frames_deduplicate_content_and_conflicts_poison_delivery() {
     {
         record.commit = 2;
     }
-    assert!(sink.push(changed).is_err());
-    assert!(sink.finish(complete(2)).is_err());
+    assert_eq!(
+        sink.push(changed).unwrap_err().message,
+        "conflicting duplicate bundle reference"
+    );
+    assert_eq!(
+        sink.finish(complete(2)).unwrap_err().message,
+        "bundle delivery already failed"
+    );
 }
 #[test]
 fn long_opaque_names_have_bounded_distinct_components() {
@@ -353,7 +369,10 @@ fn blob_chunks_are_pinned_and_unclaimed_bytes_are_refused() {
     );
     let mut sink = Bundle::new(&destination, begin(), Format::Jsonl, true).unwrap();
     sink.blob_chunk(hash, 0, b"unclaimed").unwrap();
-    assert!(sink.finish(complete(0)).is_err());
+    assert_eq!(
+        sink.finish(complete(0)).unwrap_err().message,
+        "blob bytes have no stored descriptor"
+    );
     assert_eq!(manifest(&destination).counts.blobs, 1);
 }
 

@@ -68,6 +68,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
             .contains("synthetic-secret-tail")
     );
     let html_path = dir.path().join("document.html");
+    wait_caught_up(&env);
     let html = cli(
         &env,
         &[
@@ -80,7 +81,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
             html_path.to_str().unwrap(),
         ],
     );
-    assert!(matches!(html.status.code(), Some(0 | 5)), "{html:?}");
+    assert_eq!(html.status.code(), Some(0), "{html:?}");
     let html = std::fs::read_to_string(html_path).unwrap();
     assert!(!html.contains("<script>alert('synthetic')</script>"));
     assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));

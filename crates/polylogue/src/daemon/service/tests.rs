@@ -262,10 +262,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
     assert!(
         matches!(crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
-    assert!(
-        Archive::open_or_create(&root).is_ok(),
-        "runtime still holds its writer lock"
-    );
+    Archive::open_or_create(&root).expect("runtime still holds its writer lock");
 }
 
 #[test]
@@ -279,23 +276,25 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
-        assert!(crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)).is_err());
+        let Err(error) = crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)) else {
+            panic!("the server replaced a directory with its listening socket");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::IsADirectory);
     }
     assert!(weak.upgrade().is_none());
-    assert!(Archive::open_or_create(&root).is_ok());
+    Archive::open_or_create(&root).unwrap();
 }
 
 #[test]
 fn a_panicking_test_drops_its_in_process_daemon_workers() {
     let (sent, received) = sync_channel(1);
-    assert!(
-        std::panic::catch_unwind(|| {
-            let daemon = test_daemon::start("panic fixture");
-            sent.send(Arc::downgrade(&daemon.daemon)).unwrap();
-            panic!("synthetic test panic");
-        })
-        .is_err()
-    );
+    let panic = std::panic::catch_unwind(|| {
+        let daemon = test_daemon::start("panic fixture");
+        sent.send(Arc::downgrade(&daemon.daemon)).unwrap();
+        panic!("synthetic test panic");
+    })
+    .unwrap_err();
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"synthetic test panic"));
     assert!(received.recv().unwrap().upgrade().is_none());
 }
 
@@ -317,14 +316,11 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
     let check_empty_status = |daemon: &Daemon| {
-        let answer = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(daemon);
-        assert!(
-            matches!(
-                &answer.outcome,
-                command_surface::Outcome::Ok(_) | command_surface::Outcome::Degraded { .. }
-            ),
-            "{answer:?}"
-        );
+        let mut request =
+            crate::test_daemon::Call::new("status", serde_json::json!({"wait": "30s"}));
+        request.deadline = command_surface::Deadline::None;
+        let answer = request.answer(daemon);
+        assert_eq!(answer.exit_code(), 0, "{answer:?}");
         assert_eq!(answer.value().unwrap()["store"]["sessions"], 0);
     };
     check_empty_status(&old);
@@ -451,7 +447,7 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
             panic!("{workers} workers with {memory} bytes started");
         };
         assert!(error.to_string().contains(refusal), "{error}");
-        assert!(Archive::open_or_create(&root).is_ok());
+        Archive::open_or_create(&root).unwrap();
     }
 }
 

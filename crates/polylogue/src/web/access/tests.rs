@@ -106,7 +106,6 @@ fn rewriting_access_files_restricts_existing_files_and_ignores_stale_temporary_p
 #[test]
 fn reader_location_uses_the_written_port_and_requires_a_live_own_listener() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(reader_url_in(dir.path()).is_err());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     write_access_files(dir.path(), "synthetic-reader-token", port).unwrap();
@@ -114,8 +113,16 @@ fn reader_location_uses_the_written_port_and_requires_a_live_own_listener() {
         reader_url_in(dir.path()).unwrap(),
         format!("http://127.0.0.1:{port}/auth#synthetic-reader-token")
     );
-    drop(listener);
-    assert!(reader_url_in(dir.path()).is_err());
+    std::fs::remove_file(dir.path().join("token")).unwrap();
+    assert_eq!(
+        reader_url_in(dir.path()).unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    write_access_files(dir.path(), "synthetic-reader-token", 0).unwrap();
+    assert_eq!(
+        reader_url_in(dir.path()).unwrap_err().to_string(),
+        "no reader listens on the recorded port"
+    );
 }
 
 #[test]

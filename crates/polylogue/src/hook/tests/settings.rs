@@ -4,27 +4,66 @@ use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permissions() {
-    for text in [
-        "not json",
-        "null",
-        "[]",
-        "42",
-        r#"{"hooks":null}"#,
-        r#"{"hooks":[]}"#,
-        r#"{"hooks":{"Stop":{}}}"#,
-        r#"{"hooks":{"Stop":[null]}}"#,
-        r#"{"hooks":{"Stop":[{}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":{}}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[null]}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":42}]}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command"}]}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"type":1}]}]}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo example"}]}]}}"#,
-        r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
-        r#"{"hooks":{"Stop":[],"Stop":[]}}"#,
-        r#"{"future":{"keep":1,"keep":2},"hooks":{}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep","command":"polylogue internal hook Stop"}]}]}}"#,
-        r#"{"hooks":{},"\u0068ooks":{"Stop":[]}}"#,
+    for (text, expected) in [
+        ("not json", "expected ident at line 2 column 2"),
+        ("null", "settings: expected an object"),
+        ("[]", "settings: expected an object"),
+        ("42", "settings: expected an object"),
+        (r#"{"hooks":null}"#, "hooks: expected an object"),
+        (r#"{"hooks":[]}"#, "hooks: expected an object"),
+        (r#"{"hooks":{"Stop":{}}}"#, "hooks.Stop: expected an array"),
+        (
+            r#"{"hooks":{"Stop":[null]}}"#,
+            "hooks.Stop[0]: expected an object",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{}]}}"#,
+            "hooks.Stop[0].hooks: expected an array",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":{}}]}}"#,
+            "hooks.Stop[0].hooks: expected an array",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[null]}]}}"#,
+            "hooks.Stop[0].hooks[0]: expected an object",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":42}]}]}}"#,
+            "hooks.Stop[0].hooks[0].command: expected a string",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command"}]}]}}"#,
+            "hooks.Stop[0].hooks[0].command: expected a string",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":1}]}]}}"#,
+            "hooks.Stop[0].hooks[0].type: expected a string",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo example"}]}]}}"#,
+            "hooks.Stop[0].hooks[0].type: expected a string",
+        ),
+        (
+            r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
+            "duplicate settings key \"hooks\" at line 2 column 19",
+        ),
+        (
+            r#"{"hooks":{"Stop":[],"Stop":[]}}"#,
+            "duplicate settings key \"Stop\" at line 2 column 26",
+        ),
+        (
+            r#"{"future":{"keep":1,"keep":2},"hooks":{}}"#,
+            "duplicate settings key \"keep\" at line 2 column 26",
+        ),
+        (
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep","command":"polylogue internal hook Stop"}]}]}}"#,
+            "duplicate settings key \"command\" at line 2 column 77",
+        ),
+        (
+            r#"{"hooks":{},"\u0068ooks":{"Stop":[]}}"#,
+            "duplicate settings key \"hooks\" at line 2 column 24",
+        ),
     ] {
         for on in [true, false] {
             let dir = tempfile::tempdir().unwrap();
@@ -38,7 +77,11 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
                 || panic!("malformed settings must be refused before probing the harness"),
                 on,
             );
-            assert!(result.is_err(), "on={on}, input={text}, result={result:?}");
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                expected,
+                "on={on}, input={text}"
+            );
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
             assert_eq!(
                 std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,

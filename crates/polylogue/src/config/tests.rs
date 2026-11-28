@@ -60,8 +60,19 @@ fn explicit_configuration_selects_its_auxiliary_files_without_changing_xdg_paths
     let command = &startup.config.signals.action_commands["refresh"];
     assert_eq!(command.program, selected.join("bin/refresh"));
     assert_eq!(command.arguments, ["two words"]);
-    std::fs::write(selected.join("signals.toml"), "invalid = [").unwrap();
-    assert!(loaded(&process, options()).is_err());
+    let signals = selected.join("signals.toml");
+    std::fs::write(&signals, "[notifications]\ndeadline_ms==100").unwrap();
+    match loaded(&process, options()) {
+        Err(Error::Invalid(message)) => assert_eq!(
+            message,
+            format!(
+                "{}: TOML parse error at line 2, column 13\n  |\n2 | deadline_ms==100\n  |             ^\nextra `=`, expected nothing\n",
+                signals.display()
+            )
+        ),
+        Err(error) => panic!("expected invalid signals configuration, got {error:?}"),
+        Ok(_) => panic!("accepted an extra equals sign in signals configuration"),
+    }
 }
 
 /// The day's zone and start when the deployment names no zone, loaded in a
@@ -181,7 +192,14 @@ fn remote_listen_requires_a_loaded_token_and_never_reads_it_again() {
         listen: Some("0.0.0.0:8765".parse().unwrap()),
         ..Overrides::default()
     };
-    assert!(loaded(&process, overrides()).is_err());
+    match loaded(&process, overrides()) {
+        Err(Error::Invalid(message)) => assert_eq!(
+            message,
+            "a non-loopback listen address requires an authentication token file"
+        ),
+        Err(error) => panic!("expected an invalid listen address, got {error:?}"),
+        Ok(_) => panic!("accepted a non-loopback listen address without a token"),
+    }
     let token = root.path().join("token");
     std::fs::write(&token, "synthetic-token\n").unwrap();
     let mut options = overrides();
@@ -265,13 +283,33 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
         SignalDeployment::read(&path).unwrap().identity().unwrap(),
         before
     );
-    // The route function decides where a notice goes; no route is configured.
     std::fs::write(&path, "[notifications]\nroute='command'\n").unwrap();
-    assert!(SignalDeployment::read(&path).is_err());
-    std::fs::write(&path, "[notifications]\naway_command={program=' '}\n").unwrap();
-    assert!(SignalDeployment::read(&path).is_err());
-    std::fs::write(&path, "[value_targets.answer]\npath=''\n").unwrap();
-    assert!(SignalDeployment::read(&path).is_err());
+    match SignalDeployment::read(&path).unwrap_err() {
+        Error::Invalid(message) => assert_eq!(
+            message,
+            format!(
+                "{}: TOML parse error at line 2, column 1\n  |\n2 | route='command'\n  | ^^^^^\nunknown field `route`, expected `away_command` or `deadline_ms`\n",
+                path.display()
+            )
+        ),
+        error => panic!("expected an unknown notification field, got {error:?}"),
+    }
+    for (text, expected) in [
+        (
+            "[notifications]\naway_command={program=' '}\n",
+            "configured command program cannot be blank",
+        ),
+        (
+            "[value_targets.answer]\npath=''\n",
+            "value target path cannot be blank",
+        ),
+    ] {
+        std::fs::write(&path, text).unwrap();
+        match SignalDeployment::read(&path).unwrap_err() {
+            Error::Invalid(message) => assert_eq!(message, expected),
+            error => panic!("expected invalid signals configuration, got {error:?}"),
+        }
+    }
 }
 #[test]
 fn unreadable_primary_deployment_stays_blocked_without_local_day() {
@@ -284,7 +322,10 @@ fn unreadable_primary_deployment_stays_blocked_without_local_day() {
         startup.mode,
         crate::daemon::service::ArchiveMode::Blocked { .. }
     ));
-    assert!(startup.config.standalone_day().is_err());
+    assert!(matches!(
+        startup.config.standalone_day(),
+        Err(Error::SinexDay)
+    ));
 }
 
 #[test]
@@ -410,12 +451,16 @@ fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
     assert_eq!(separate.standalone_day().unwrap(), &day);
     assert!(separate.notification_bus_address.is_none());
     assert!(separate.signals.action_commands.is_empty());
-    assert!(
-        startup
-            .config
-            .standalone_for_archive("relative".into(), day)
-            .is_err()
-    );
+    match startup
+        .config
+        .standalone_for_archive("relative".into(), day)
+    {
+        Err(Error::Invalid(message)) => {
+            assert_eq!(message, "the standalone archive path must be absolute")
+        }
+        Err(error) => panic!("expected an invalid standalone archive path, got {error:?}"),
+        Ok(_) => panic!("accepted a relative standalone archive path"),
+    }
     assert_ne!(startup.config.archive, separate.archive);
 }
 
@@ -470,7 +515,10 @@ fn archive_override_selects_its_own_mode_configuration() {
     };
     assert_eq!(path, first.join("sinex.toml"));
     assert!(!error.is_empty());
-    assert!(broken.config.standalone_day().is_err());
+    assert!(matches!(
+        broken.config.standalone_day(),
+        Err(Error::SinexDay)
+    ));
     assert!(matches!(
         load(second).mode,
         crate::daemon::service::ArchiveMode::Standalone

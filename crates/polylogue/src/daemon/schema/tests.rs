@@ -319,14 +319,15 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         scope.spawn(move || {
             limit.scope(|| {
                 started.send(()).unwrap();
-                let result = gate.background();
-                done.send(result.is_ok()).unwrap();
+                done.send(gate.background().map(drop)).unwrap();
             })
         });
         waiting.recv().unwrap();
-        assert!(finished.recv_timeout(Duration::from_millis(40)).is_err());
         cancellation.cancel();
-        assert!(!finished.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(matches!(
+            finished.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Err(StoreError::ReadCancelled)
+        ));
     });
     drop(foreground);
     let _turn = gate.background().unwrap();
@@ -374,7 +375,10 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         stored.put("c", "claude-code", false, "/c.jsonl", 1, b"mnopqr");
         let foreground = gate.foreground();
         next.send(()).unwrap();
-        assert!(finished.recv_timeout(Duration::from_millis(40)).is_err());
+        assert_eq!(
+            finished.recv_timeout(Duration::from_millis(40)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
         // The read waiting for foreground work holds no read transaction.
         assert_eq!(
             checkpoint(),

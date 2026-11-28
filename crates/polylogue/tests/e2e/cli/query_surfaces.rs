@@ -362,7 +362,9 @@ fn every_surface_preserves_query_words_unit_corrections_and_closed_sets() {
                 panic!("missing typed correction: {failure:?}");
             };
             same_question(corrected, expected);
-            assert!(answer(&env, &archive, &mut mcp, surface, corrected).is_ok());
+            let found = surface_answer(&env, &archive, &mut mcp, surface, corrected);
+            assert_eq!(found.exit_code(), 1, "{surface} {corrected}: {found:?}");
+            assert_eq!(listing(found.value().unwrap().clone())["count"], 0);
         }
         let catalog = polylogue_query::catalog::catalog(&[]);
         for (text, unit, field, rejected) in [

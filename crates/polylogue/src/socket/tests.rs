@@ -95,7 +95,10 @@ fn waiting(path: &std::path::Path) -> std::sync::mpsc::Receiver<io::Result<()>> 
         let _ = done.send(crate::client::wait_for_socket(&path, None));
     });
     assert!(
-        result.recv_timeout(Duration::from_millis(50)).is_err(),
+        matches!(
+            result.recv_timeout(Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
         "the wait ended before anything happened"
     );
     result

@@ -21,18 +21,18 @@ fn signal_schema_uses_common_closed_rule_and_delivery_contract() {
         json!({"name":"test","query":"sessions","fires":{"on_change":{"what":"membership"}}}),
     )
     .unwrap();
-    assert!(
-        rule.validate(&shared_signals::Configuration {
-            value_targets: Default::default(),
-            action_commands: Default::default()
-        })
-        .is_ok()
-    );
-    assert!(
+    rule.validate(&shared_signals::Configuration {
+        value_targets: Default::default(),
+        action_commands: Default::default(),
+    })
+    .unwrap();
+    assert_eq!(
         serde_json::from_value::<shared_signals::Rule>(
             json!({"name":"forged","query":"sessions","operator":true})
         )
-        .is_err()
+        .unwrap_err()
+        .to_string(),
+        "unknown field `operator`, expected one of `name`, `query`, `fires`, `for`, `min_change`, `deliver`, `target`, `command`, `interrupt`, `quiet_hours`, `rate_limit`, `scope`, `to`, `enabled`"
     );
 }
 
@@ -94,14 +94,46 @@ fn signal_definition_uses_typed_fact_and_deployment_validation() {
         }
     );
     candidate.fact.key = Some("different-name".into());
-    assert!(rules::definition(&candidate, &config).is_err());
+    assert_eq!(
+        rules::definition(&candidate, &config).unwrap_err(),
+        "invalid/signal: signal name must match its annotation key"
+    );
     candidate.fact.key = Some("waiting".into());
     candidate.fact.value = Some(
         json!({"name":"waiting","query":"sessions","deliver":"action","command":"unconfigured"}),
     );
-    assert!(rules::definition(&candidate, &config).is_err());
+    assert_eq!(
+        rules::definition(&candidate, &config).unwrap_err(),
+        "action command is not configured"
+    );
+    let mut with_command = config.clone();
+    with_command.action_commands.insert("unconfigured".into());
+    assert_eq!(
+        rules::definition(&candidate, &with_command)
+            .unwrap()
+            .rule
+            .command
+            .as_deref(),
+        Some("unconfigured")
+    );
+    let mut candidate = annotation(polylogue_model::Author::Operator);
     candidate.fact.kind = polylogue_model::annotation::AnnotationKind::Note;
-    assert!(rules::definition(&candidate, &config).is_err());
+    candidate.fact.key = None;
+    candidate.fact.value = Some(json!("ordinary note"));
+    candidate
+        .fact
+        .links
+        .push(polylogue_model::annotation::AnnotationLink {
+            role: polylogue_model::annotation::LinkRole::About,
+            reference: polylogue_model::Reference::parse("session:claude-code:s1").unwrap(),
+            seen_hash: None,
+            quote: None,
+        });
+    candidate.fact.validate().unwrap();
+    assert_eq!(
+        rules::definition(&candidate, &config).unwrap_err(),
+        "annotation is not a signal"
+    );
 }
 
 #[test]

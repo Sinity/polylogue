@@ -26,7 +26,9 @@ fn continuation_refuses_the_pre_logical_session_compiler() {
     let mut current = ask(text);
     current.page_size = Some(1);
     current.cursor = first["next"].as_str();
-    assert!(run_q(&w, current).is_ok());
+    let continued = run_q(&w, current).unwrap();
+    assert_eq!(continued["outcome"], "rows");
+    assert_eq!(continued["rows"].as_array().unwrap().len(), 1);
 
     // This is an authentic predecessor cursor, not an invalid signature.
     cursor
@@ -793,7 +795,9 @@ fn continuation_refuses_changed_captured_ranking_inputs() {
     same.page_size = Some(1);
     same.cursor = Some(cursor);
     same.ranking_identity = Some("synthetic-provider:vectors-a".into());
-    assert!(run_q(&w, same).is_ok());
+    let continued = run_q(&w, same).unwrap();
+    assert_eq!(continued["outcome"], "rows");
+    assert_eq!(continued["rows"].as_array().unwrap().len(), 1);
     let mut changed = ask("messages | sort by id");
     changed.page_size = Some(1);
     changed.cursor = Some(cursor);

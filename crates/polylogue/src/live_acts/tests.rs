@@ -236,8 +236,11 @@ fn one_session_adapter_block_does_not_delay_another() {
 #[test]
 fn a_delivery_is_released_even_when_the_flag_cannot_be_raised() {
     let (reports, _received) = std::sync::mpsc::channel();
+    let dir = tempfile::tempdir().unwrap();
+    let mail = dir.path().join("mail");
+    std::fs::write(&mail, b"not a directory").unwrap();
     let acts = Acts::new(
-        PathBuf::from("/nonexistent"),
+        mail.clone(),
         PathBuf::new(),
         PathBuf::new(),
         PathBuf::new(),
@@ -247,8 +250,14 @@ fn a_delivery_is_released_even_when_the_flag_cannot_be_raised() {
     let session = SessionId::parse("claude-code:s1").unwrap();
     acts.take(vec![("ping".to_owned(), ())]);
     assert!(acts.handed_out("ping"));
-    assert!(acts.hand_to_hook("ping", &session).is_err());
+    assert_eq!(
+        acts.hand_to_hook("ping", &session).unwrap_err().kind(),
+        std::io::ErrorKind::NotADirectory
+    );
     assert!(!acts.handed_out("ping"));
+    std::fs::remove_file(&mail).unwrap();
+    acts.hand_to_hook("ping", &session).unwrap();
+    assert!(crate::mailbox::raised(&mail, &session));
 }
 
 /// A Codex answer that the app-server could not be sent leaves the request
@@ -271,14 +280,20 @@ fn a_failed_codex_answer_keeps_the_request_pending() {
     ));
     // The first request is a kind Polylogue does not answer: nothing is
     // sent and both requests remain, oldest first.
-    assert!(hosted.answer(true, None).is_err());
+    assert_eq!(
+        hosted.answer(true, None).unwrap_err().to_string(),
+        "unsupported: Polylogue does not answer item/permissions/requestApproval requests"
+    );
     assert_eq!(hosted.requests.len(), 2);
     assert_eq!(hosted.requests.front().unwrap().0, json!(7));
     // A closed connection fails the send and keeps the request as well.
     hosted.requests.pop_front();
     let _ = hosted.connection.child.kill();
     let _ = hosted.connection.child.wait();
-    assert!(hosted.answer(true, None).is_err());
+    assert_eq!(
+        hosted.answer(true, None).unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
     assert_eq!(hosted.requests.len(), 1);
     assert!(!hosted.connection.is_running());
 }
