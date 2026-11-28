@@ -1,16 +1,14 @@
 //! Rebuilding `index.db` in a private file, and which index file each reader
-//! opens. Every standalone rebuild, a first one or one replacing an index
-//! this build cannot use, writes `index-rebuild/build.db` with no
+//! opens. A bulk rebuild writes `index-rebuild/build.db` with no
 //! transaction syncs, through its own connection ([`crate::index::rebuild`]).
 //! Besides the rebuild, only the rebuild pipeline's reads open the build
 //! file: the engine's planning reads and tool-database catalog reads. When
 //! the rebuild ends the file is synced, closed, switched to WAL and renamed
 //! `ready.db` ([`ready`]), and the index writer, stopped for it, renames it
 //! over `index.db` ([`install`]); serving readers then open the new file. Path selection and both renames share the state lock, so
-//! each selected path still names its file. A new archive's index is
-//! rebuilt the same way: its first pass stores the files its sources find
-//! and the rebuild reads them; with nothing to read, the empty rebuild
-//! installs at the end of that pass.
+//! each selected path still names its file. A serving daemon with no
+//! usable index installs an empty ordinary schema at open. Ordinary
+//! capture and replay fill it as they commit.
 //!
 //! The files and their states are [`crate::index::file`]'s. This module
 //! keeps, per archive and process, the files' state as the archive's holder
@@ -432,20 +430,40 @@ impl Archive {
 
 /// Opens the standalone index at archive open. The caller holds the archive
 /// lock, and nothing else in this process has an index file open. A finished
-/// rebuild is installed; an unfinished one starts again for its reason; an
-/// installed index this build cannot use, or none, starts a rebuild.
-pub(crate) fn prepare(archive: &Archive) -> Result<()> {
+/// rebuild is installed only if it belongs to this record. With no usable
+/// index, a serving daemon installs the ordinary schema for catch-up.
+pub(crate) fn prepare(archive: &Archive, install_for_catch_up: bool) -> Result<()> {
     let root = &archive.root;
     let paths = Paths::of(root);
     let (id, position) =
         file::archive_identity(&crate::archive::open_read(&archive.archive_db())?)?;
     let mut files = IndexFiles::at(root, &id, position)?;
     match files.rebuilding {
-        Rebuilding::Ready => files.step(root, Transition::Install)?,
+        Rebuilding::Ready if file::installed(&paths.ready, Some((&id, position)))?.is_current() => {
+            files.step(root, Transition::Install)?;
+        }
+        Rebuilding::Ready => files.step(root, Transition::Discard)?,
         // A directory with no reason is left from a crash before a
         // rebuild's reason was written, or after its install.
         Rebuilding::No if paths.dir.exists() => files.step(root, Transition::Discard)?,
         Rebuilding::No | Rebuilding::Writing { .. } => {}
+    }
+    if install_for_catch_up && !files.serves() {
+        let record = IndexRebuild::new(
+            files.reason().unwrap_or(RebuildReason::NoIndex),
+            crate::archive::open_read(&paths.index)
+                .and_then(|index| crate::schema::index_identity(&index))
+                .ok(),
+        )?;
+        files.step(root, Transition::Start(record.clone()))?;
+        {
+            let index = open_setup(&paths.build)?;
+            archive.ensure_index(&index, false)?;
+            file::record_start(&index, &record, &id)?;
+        }
+        to_wal(&paths.build)?;
+        files.step(root, Transition::Ready)?;
+        files.step(root, Transition::Install)?;
     }
     let record = match (&files.installed, &files.rebuilding) {
         (_, Rebuilding::Writing { .. }) => file::rebuild_record(root)?

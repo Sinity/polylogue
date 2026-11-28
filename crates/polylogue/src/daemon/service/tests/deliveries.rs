@@ -766,6 +766,7 @@ fn a_delivery_sent_while_the_writer_is_busy_is_committed_and_read_by_the_next_br
             .unwrap()
             .contains("Nothing changed.")
     );
+    d.wait_for(|_| true);
     let status = crate::test_answers::ok(
         crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
     );

@@ -96,9 +96,20 @@ fn import_formats(observations: &str) -> String {
     )
 }
 
-fn chain_rows() -> String {
+fn chain_rows(recent: bool) -> String {
     let formats = import_formats("observations");
     let state = crate::parse_state::PLANNED_COLUMNS;
+    // A revision carries the observation clock for an in-place append too.
+    // A recorded file mtime is only a scheduling proxy when the observation
+    // clock is unavailable. Unknown times sort last; no time is invented.
+    let observed = if recent {
+        ", coalesce(l.seen_at,
+            (SELECT max(seen_at) FROM observations
+             WHERE input = c.input AND (revision = l.number OR chain = c.chain)),
+            l.mtime_ns / 1000000) AS observed_at"
+    } else {
+        ""
+    };
     format!(
         r#"first_paths AS MATERIALIZED (
                 SELECT input, min(id) AS observation
@@ -108,7 +119,7 @@ fn chain_rows() -> String {
                 s.imported,
                 COALESCE(f.format, i.origin) AS format,
                 COALESCE(f.path_bytes, o.path_bytes),
-                {state}
+                {state}{observed}
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
@@ -125,12 +136,12 @@ fn chain_rows() -> String {
 fn planning_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
     format!(
         "{} ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC",
-        behind_sql(selected, chains, at_cut)
+        behind_sql(selected, chains, at_cut, false)
     )
 }
 
 /// The chains of the selected inputs with their parse states, in no order.
-fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
+fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool, recent: bool) -> String {
     // Restrict histories before aggregating them. All-input planning
     // keeps its existing source-view access.
     let (revisions, observations) = if selected {
@@ -191,7 +202,7 @@ fn behind_sql(selected: bool, chains: RevisionChains, at_cut: bool) -> String {
             chain_lengths.into(),
         )
     };
-    let chain_rows = chain_rows();
+    let chain_rows = chain_rows(recent);
     format!(
         "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?1)),
          revisions AS NOT MATERIALIZED ({revisions}),
@@ -319,7 +330,7 @@ impl Reader<'_> {
         cut: Option<Position>,
     ) -> Result<(u64, u64)> {
         let (mut chains, mut bytes) = (0, 0);
-        self.visit_chain_rows(None, RevisionChains::All, cut, &mut |row| {
+        self.visit_chain_rows(None, RevisionChains::All, cut, None, &mut |row| {
             if row.input.as_str() <= through
                 && parser(versions, &row.source.format).is_some()
                 && row.due(versions) != Due::No
@@ -353,23 +364,42 @@ impl Reader<'_> {
         cut: Option<Position>,
     ) -> Result<Vec<BehindChain>> {
         let mut found = Vec::new();
-        self.visit_chain_rows(selected, chains, cut, &mut |row| {
-            let due = row.due(versions);
-            if due != Due::No {
-                found.push(BehindChain {
-                    input: row.input,
-                    current: row.current,
-                    source: row.source,
-                    chain: row.chain,
-                    imported: row.imported,
-                    stored: row.stored,
-                    state: row.state,
-                    due,
-                });
-            }
+        self.visit_chain_rows(selected, chains, cut, None, &mut |row| {
+            found.extend(row.into_behind(versions));
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
         Ok(found)
+    }
+
+    /// Select a bounded head start for current chains with no checkpoint.
+    /// Entries compete by observation time within a parser origin. Take
+    /// each origin's first entry before any origin's second entry.
+    /// Normal catch-up still reads every due chain, including partial reads.
+    pub fn recent_unread_chains(
+        &self,
+        versions: &[(String, String)],
+        through: &str,
+        per_origin: usize,
+    ) -> Result<Vec<BehindChain>> {
+        let mut counts = BTreeMap::new();
+        let mut rounds: Vec<Vec<BehindChain>> = (0..per_origin).map(|_| Vec::new()).collect();
+        self.visit_chain_rows(
+            None,
+            RevisionChains::Newest,
+            None,
+            Some(through),
+            &mut |row| {
+                let round = counts.entry(row.source.format.clone()).or_insert(0);
+                if let Some(batch) = rounds.get_mut(*round)
+                    && let Some(chain) = row.into_behind(versions)
+                {
+                    batch.push(chain);
+                    *round += 1;
+                }
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )?;
+        Ok(rounds.into_iter().flatten().collect())
     }
 
     /// Every chain of the archive counted by origin and status, judged
@@ -443,24 +473,36 @@ impl Reader<'_> {
         selected: Option<&[String]>,
         chains: RevisionChains,
         cut: Option<Position>,
+        recent_through: Option<&str>,
         visit: &mut dyn FnMut(ChainRow) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         let selected_json = selected.map(serde_json::to_string).transpose()?;
         #[cfg(feature = "faults")]
-        crate::fault::check(
-            "read.chains_behind_index",
-            &format!(
-                "{chains:?}:{}",
-                selected_json.as_deref().unwrap_or("all inputs")
-            ),
-        )?;
+        if recent_through.is_none() {
+            crate::fault::check(
+                "read.chains_behind_index",
+                &format!(
+                    "{chains:?}:{}",
+                    selected_json.as_deref().unwrap_or("all inputs")
+                ),
+            )?;
+        }
         let connection = self.conn()?;
-        let sql = planning_sql(selected.is_some(), chains, cut.is_some());
+        let sql = if recent_through.is_some() {
+            format!(
+                "{} AND p.input_pk IS NULL AND c.input <= ?2
+                    ORDER BY observed_at DESC, c.input",
+                behind_sql(false, RevisionChains::Newest, false, true)
+            )
+        } else {
+            planning_sql(selected.is_some(), chains, cut.is_some())
+        };
         let mut statement = connection.prepare(&sql)?;
-        let mut rows = match cut {
-            Some(cut) => statement.query(params![selected_json, cut.0])?,
-            None => statement.query(params![selected_json])?,
+        let mut rows = match (cut, recent_through) {
+            (_, Some(through)) => statement.query(params![selected_json, through])?,
+            (Some(cut), None) => statement.query(params![selected_json, cut.0])?,
+            (None, None) => statement.query(params![selected_json])?,
         };
         while let Some(row) = rows.next()? {
             token.check()?;
@@ -500,6 +542,20 @@ struct ChainRow {
 }
 
 impl ChainRow {
+    fn into_behind(self, versions: &[(String, String)]) -> Option<BehindChain> {
+        let due = self.due(versions);
+        (due != Due::No).then_some(BehindChain {
+            input: self.input,
+            current: self.current,
+            source: self.source,
+            chain: self.chain,
+            imported: self.imported,
+            stored: self.stored,
+            state: self.state,
+            due,
+        })
+    }
+
     fn due(&self, versions: &[(String, String)]) -> Due {
         due(
             &self.state,

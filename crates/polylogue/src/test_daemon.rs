@@ -35,8 +35,7 @@ pub(crate) fn start_runtime(
     start_with_deployment(deployment, engine, mode)
 }
 
-/// Starts a fixture runtime and waits for its initial index build and the
-/// status snapshot read after it before status reads.
+/// Starts a fixture runtime and waits for a snapshot from the index it serves.
 fn start_with_deployment(
     deployment: Arc<crate::config::Config>,
     engine: Config,
@@ -49,10 +48,9 @@ fn start_with_deployment(
         polylogue_engine::Lifetime::UntilStopped,
         &Default::default(),
     )?;
-    // Reads answer `index_building` until the loop's first pass installs the
-    // index (docs/operations.md, Replacing an index from another schema).
-    // Status then answers from the snapshot read after the install, which
-    // counts as a status change.
+    // A fixture over a privately rebuilding index waits for its final
+    // generation before using the status snapshot. An ordinary installed
+    // index can serve its first snapshot during catch-up.
     let until = std::time::Instant::now() + Duration::from_secs(60);
     let mut seen = runtime.daemon.status.changes();
     while runtime.runs_loop()
@@ -98,8 +96,7 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
 
 /// Starts with `workers` loop and request workers over a home where `seed`
 /// has also written sources holding `messages` more messages, so the
-/// daemon's first pass reads them all as one first build, as it reads an
-/// existing home.
+/// daemon's initial catch-up reads them as it reads an existing home.
 pub(crate) fn start_with_sources_and_workers(
     text: &str,
     seed: &dyn Fn(&Path),

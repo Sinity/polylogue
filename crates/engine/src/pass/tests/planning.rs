@@ -638,3 +638,55 @@ fn a_later_rebuild_page_does_not_include_an_append_after_the_cut() {
         ["before the cut", "arrived while rebuilding"]
     );
 }
+
+#[test]
+fn first_replay_reads_recent_durable_bytes_before_backfill_and_resumes_after_reopen() {
+    let home = ClaudeHome::new();
+    {
+        let (engine, _lock) = crate::import::tests::engine(&home, 4096);
+        for (input, seen_at_ms) in [("aaa-old", 10), ("xxx-middle", 20), ("zzz-new", 30)] {
+            let path = home.file(&format!("{input}.jsonl"));
+            let mut raw = polylogue_store::fixture::writer::step(
+                input,
+                "claude-code",
+                path.to_str().unwrap(),
+                Default::default(),
+                0,
+                0,
+            );
+            let bytes = claude_user(&format!("u-{input}"), input, input);
+            raw.parse.clear();
+            raw.observation.as_mut().unwrap().seen_at_ms = seen_at_ms;
+            raw.length = bytes.len() as u64;
+            engine
+                .writer
+                .store_bytes(engine.archive.prepare_bytes(bytes.as_bytes()).unwrap(), raw)
+                .unwrap();
+            assert!(!path.exists(), "only the archive holds the source");
+        }
+    }
+
+    for session in ["zzz-new", "xxx-middle"] {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        engine.config.workers = 1;
+        engine.load().unwrap();
+        fault::arm("read.chains_behind_index", "aaa-old", Action::Fail, 0, 1);
+        let mut pass = Pass::default();
+        let result = engine.reparse_behind(RevisionChains::Newest, &mut pass);
+        fault::clear();
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("injected fault at read.chains_behind_index"),
+            "{error}"
+        );
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert_eq!(home.texts(session), [session]);
+        assert!(home.texts("aaa-old").is_empty());
+    }
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    for session in ["zzz-new", "xxx-middle", "aaa-old"] {
+        assert_eq!(home.texts(session), [session]);
+    }
+}

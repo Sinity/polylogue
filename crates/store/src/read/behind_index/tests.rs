@@ -608,3 +608,49 @@ fn a_cut_excludes_later_bytes_and_observations_on_every_input_page() {
         ["c"]
     );
 }
+
+#[test]
+fn first_replay_round_represents_each_origin_and_skips_committed_readings() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive
+        .execute_batch(
+            "INSERT INTO input VALUES
+                ('aaa-old','claude-code'),('bbb-proxy','claude-code'),
+                ('ccc-new','claude-code'),('ddd-done','claude-code'),
+                ('eee-unknown','codex'),('fff-observed','codex');
+             INSERT INTO revision(input,number,produced,chain,length,seen_at,mtime_ns,commit_seq)
+             VALUES
+                ('aaa-old',1,'first',1,10,10,100000000,1),
+                ('bbb-proxy',1,'first',1,10,NULL,20000000,2),
+                ('ccc-new',1,'first',1,10,30,1000000,3),
+                ('ddd-done',1,'first',1,10,100,NULL,4),
+                ('eee-unknown',1,'first',1,10,NULL,NULL,5),
+                ('fff-observed',1,'first',1,10,NULL,NULL,6);
+             INSERT INTO observation(id,input,machine,class,revision,path_bytes,polylogue_version,seen_at)
+             VALUES ('obs','fff-observed','m','first',1,X'61','test',5);",
+        )
+        .unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO input_ref(id) VALUES ('ddd-done');
+             INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+             SELECT pk,1,'parsed','v',10,0 FROM input_ref WHERE id='ddd-done';",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let recent = reader
+        .recent_unread_chains(&versions(&["claude-code", "codex"]), "z", 2)
+        .unwrap();
+    assert_eq!(
+        recent
+            .iter()
+            .map(|chain| chain.input.as_str())
+            .collect::<Vec<_>>(),
+        ["ccc-new", "fff-observed", "bbb-proxy", "eee-unknown"]
+    );
+    assert!(recent.iter().all(|chain| chain.current));
+}

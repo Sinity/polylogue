@@ -662,6 +662,7 @@ pub struct Engine {
     watched_loaded: bool,
     readings_pending: bool,
     stored_planning: Option<pass::StoredPlanning>,
+    recent_replay_pending: bool,
     captures: Databases,
     /// Rollout captures waiting for a parse worker, the live ones first
     /// ([`compressed::RolloutCapture`]).
@@ -726,6 +727,7 @@ impl Engine {
             watched_loaded: false,
             readings_pending: false,
             stored_planning: None,
+            recent_replay_pending: true,
             captures: Databases::default(),
             rollout_captures: Default::default(),
             build_step: None,

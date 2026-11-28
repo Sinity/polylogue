@@ -91,6 +91,7 @@ fn kept_rows_retry_after_membership_changes() {
     let repeated = report(save("kept", Some("before"), "annotations").answer(&d.daemon));
     assert!(repeated.repeat);
     assert_eq!(repeated.saved_rows, first.saved_rows);
+    d.wait_for(|_| true);
     let rows = crate::test_answers::empty(query(&d, &first.saved_rows.result));
     assert_eq!(rows["count"], 0);
     for request in [

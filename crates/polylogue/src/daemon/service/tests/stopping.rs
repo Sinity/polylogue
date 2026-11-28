@@ -108,6 +108,112 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
     }
 }
 
+/// The daemon can read a committed part of a populated archive while
+/// other recorded chains are due, and retains that part across a stop.
+#[test]
+fn missing_index_serves_committed_rows_during_replay_and_resumes_them() {
+    use crate::test_daemon;
+    use polylogue_model::freshness::CompletenessReason;
+    use serde_json::json;
+
+    let mut original = test_daemon::start_with_sources_and_workers(
+        "first needle",
+        &|home| {
+            std::fs::write(
+                home.join(".claude/projects/-p/second.jsonl"),
+                polylogue_testkit::claude_user("second-message", "second", "second needle"),
+            )
+            .unwrap();
+        },
+        1,
+        1,
+    );
+    original.stop().unwrap();
+    let root = original._dir.path().join("archive");
+    polylogue_testkit::delete_index(&root);
+    let mut config = original.config.clone();
+    config.reads_sources = false;
+
+    fault::clear();
+    fault::arm("parse", "", Action::Hold, 1, 1);
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&config, &root),
+        config.clone(),
+        crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilStopped,
+        &Default::default(),
+    )
+    .unwrap();
+    let _release = runtime.daemon.archive.stop().on_cancel(fault::release);
+    assert!(fault::wait_held_within(Duration::from_secs(30)));
+    let ids = ["claude-code:s1", "claude-code:second"].map(|id| SessionId::parse(id).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (instance, visible) = loop {
+        let reader = runtime.daemon.reads.reader().unwrap();
+        let visible: Vec<_> = ids
+            .iter()
+            .filter(|id| !reader.messages(id, false).unwrap().is_empty())
+            .collect();
+        if let [visible] = visible.as_slice() {
+            let freshness = runtime.daemon.freshness(&reader).unwrap();
+            assert!(
+                freshness.local.parsing.reasons().iter().any(|reason| {
+                    reason.reason == CompletenessReason::MissingCheckpoint
+                        && reason.origin.as_deref() == Some("claude-code")
+                        && reason.count == Some(1)
+                }),
+                "{freshness:?}"
+            );
+            drop(reader);
+            let reply = test_daemon::call(
+                &runtime.daemon,
+                "rows",
+                json!({"selection": "sessions where needle"}),
+            );
+            if let Some(data) = reply.value()
+                && data["reply"]["rows"]
+                    .as_array()
+                    .is_some_and(|rows| rows.len() == 1)
+            {
+                assert_eq!(reply.exit_code(), 5, "{reply:?}");
+                let reader = runtime.daemon.reads.reader().unwrap();
+                break (reader.change_position().unwrap().index_instance, *visible);
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "committed rows were not readable and searchable: {visible:?}"
+        );
+        std::thread::yield_now();
+    };
+    runtime.shutdown().unwrap();
+    fault::clear();
+    let mut resumed = test_daemon::start_runtime(
+        &root,
+        config,
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reader = resumed.daemon.reads.reader().unwrap();
+        assert_eq!(reader.change_position().unwrap().index_instance, instance);
+        assert_eq!(reader.messages(visible, false).unwrap().len(), 1);
+        if ids
+            .iter()
+            .all(|id| reader.messages(id, false).unwrap().len() == 1)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the remaining reading did not resume"
+        );
+        std::thread::yield_now();
+    }
+    resumed.shutdown().unwrap();
+}
+
 fn stop_at_rebuild_stage(point: &str) {
     let records: String = (0..48)
         .map(|n| {
@@ -124,7 +230,13 @@ fn stop_at_rebuild_stage(point: &str) {
     );
     original.stop().unwrap();
     let root = original._dir.path().join("archive");
-    polylogue_testkit::delete_index(&root);
+    // An extra read index keeps this file usable and makes the daemon
+    // rebuild it privately. With no usable index the daemon catches up
+    // incrementally instead.
+    polylogue_store::archive::open_write(&root.join("index.db"), 8)
+        .unwrap()
+        .execute_batch("CREATE INDEX test_rebuild_extra ON message(pk)")
+        .unwrap();
     let mut config = original.config.clone();
     config.reads_sources = false;
     fault::clear();
@@ -162,24 +274,12 @@ fn stop_at_rebuild_stage(point: &str) {
     .unwrap();
     let started = Instant::now();
     loop {
-        // Reads answer `index_building` until the rebuilt index is installed
-        // (docs/operations.md, Replacing an index from another schema).
-        let reader = match runtime.daemon.reads.reader() {
-            Err(polylogue_store::StoreError::IndexBuilding(_)) => {
-                assert!(
-                    started.elapsed() < Duration::from_secs(30),
-                    "restart did not install the rebuilt index"
-                );
-                std::thread::yield_now();
-                continue;
-            }
-            reader => reader.unwrap(),
-        };
+        let reader = runtime.daemon.reads.reader().unwrap();
         let messages = reader
             .messages(&SessionId::parse("claude-code:rebuild").unwrap(), false)
             .unwrap();
         drop(reader);
-        if messages.len() == 48 {
+        if runtime.daemon.archive.index_build().is_none() && messages.len() == 48 {
             assert!(
                 messages
                     .iter()
@@ -378,7 +478,15 @@ fn status_reports_a_source_walk_and_the_finished_pass() {
             .clone()
     };
     let held = read_status();
+    let partial = test_daemon::call(&runtime.daemon, "rows", json!({"selection": "sessions"}));
     fault::release();
+    assert_eq!(partial.exit_code(), 5, "{partial:?}");
+    assert_eq!(
+        partial.value().unwrap()["reply"]["read_position"]["freshness"]["local"]["parsing"],
+        json!({"state": "incomplete", "reasons": [
+            {"reason": "capture_pending", "waiting_ends": true}
+        ]})
+    );
     let threads: Vec<polylogue_store::activity::Thread> =
         serde_json::from_value(held["threads"].clone()).unwrap();
     let walking = threads

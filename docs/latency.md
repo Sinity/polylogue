@@ -38,7 +38,7 @@ A stopped read names the stage that ran out. A page or similarity stage suggests
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive replies keep their budgets on the reserved read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error, each with its count and origin. Inputs that can be read no further (an origin with no parser, a file of no bytes, a failed or refused parse) do not make a reply degraded ([interfaces.md](interfaces.md#exit-codes)) |
+| busy with initial catch-up or re-parse | interactive replies keep their budgets on the reserved read connection; replies over incomplete data are `degraded` (exit 5) and name what is missing on standard error. Pending recorded inputs have counts by origin. Capture can be pending before the archive knows how many inputs remain. Inputs that can be read no further (an origin with no parser, a file of no bytes, a failed or refused parse) do not make a reply degraded ([interfaces.md](interfaces.md#exit-codes)) |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
 | down | the local class works, and completion offers the grammar alone; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |
