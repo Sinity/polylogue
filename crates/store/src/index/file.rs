@@ -246,11 +246,23 @@ impl IndexFiles {
     /// The index files under `root`, beside the archive `archive` at record
     /// `position`.
     pub fn at(root: &Path, archive: &ArchiveId, position: Position) -> Result<Self> {
+        Self::inspect(root, archive, position).map(|(files, _)| files)
+    }
+
+    /// Inspects the installed file and keeps its SQLite log open while
+    /// the writer opens its own connection.
+    pub(crate) fn inspect(
+        root: &Path,
+        archive: &ArchiveId,
+        position: Position,
+    ) -> Result<(Self, Option<Connection>)> {
         let paths = Paths::of(root);
-        Ok(Self {
+        let index = open_installed(&paths.index)?;
+        let files = Self {
             rebuilding: rebuilding(&paths)?,
-            installed: installed(&paths.index, Some((archive, position)))?,
-        })
+            installed: installed_in(index.as_ref(), Some((archive, position)))?,
+        };
+        Ok((files, index))
     }
 
     /// [`Self::at`] for a process that does not hold the archive: the
@@ -405,22 +417,34 @@ pub(crate) fn installed(
     index: &Path,
     archive: Option<(&ArchiveId, Position)>,
 ) -> Result<Installed> {
-    if !index.exists() {
+    installed_in(open_installed(index)?.as_ref(), archive)
+}
+
+fn open_installed(path: &Path) -> Result<Option<Connection>> {
+    path.exists()
+        .then(|| crate::archive::open_read(path))
+        .transpose()
+}
+
+fn installed_in(
+    index: Option<&Connection>,
+    archive: Option<(&ArchiveId, Position)>,
+) -> Result<Installed> {
+    let Some(conn) = index else {
         return Ok(Installed::None);
-    }
-    let conn = crate::archive::open_read(index)?;
-    if let Err(error) = schema::check_standalone_index(&conn) {
+    };
+    if let Err(error) = schema::check_standalone_index(conn) {
         let Some(why) = RebuildReason::of(&error) else {
             return Err(error);
         };
         // An index that differs only in its indexes is this build's tables:
         // it is read as it is until a rebuild replaces it.
         let readable = why == RebuildReason::SchemaDiffers
-            && schema::index_identity(&conn)? == schema::build_index_identity()?;
+            && schema::index_identity(conn)? == schema::build_index_identity()?;
         if !readable {
             return Ok(Installed::Unusable { why });
         }
-    } else if schema::version(&conn)? == 0 {
+    } else if schema::version(conn)? == 0 {
         // An empty file: an index whose creation did not commit.
         return Ok(Installed::None);
     }
@@ -429,7 +453,7 @@ pub(crate) fn installed(
             why: RebuildReason::OtherArchive,
         });
     };
-    match current(&conn)? {
+    match current(conn)? {
         Installed::Current {
             archive: built_from,
             position: taken_in,

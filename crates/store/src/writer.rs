@@ -224,10 +224,17 @@ fn open_index_writer(archive: &Archive) -> Result<index_connection::IndexConnect
     if !archive.index_files()?.serves() {
         return Ok(index_connection::IndexConnection::Absent(archive.clone()));
     }
-    let index = open_runtime_writer(
-        &crate::index::file::Paths::of(&archive.root).index,
-        archive.memory_budget().writer_cache_mib(),
-    )?;
+    let cache_mib = archive.memory_budget().writer_cache_mib();
+    let index = match archive.index_build.take_prepared_index() {
+        Some(index) => {
+            crate::archive::writer_settings(&index, cache_mib)?;
+            index
+        }
+        None => open_runtime_writer(
+            &crate::index::file::Paths::of(&archive.root).index,
+            cache_mib,
+        )?,
+    };
     let uri = format!("file:{}?mode=ro", archive.archive_db().display());
     index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
     crate::source::views(&index)?;
