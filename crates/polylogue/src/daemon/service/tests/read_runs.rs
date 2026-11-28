@@ -381,7 +381,10 @@ fn a_listing_continuation_reuses_its_durable_original_run() {
     );
     let listing = |selection: &str, cursor: Option<&str>| {
         Call::new("rows", json!({"selection":selection, "page_size":1}))
-            .channel(command_surface::Via::Cli)
+            .authorship(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            })
             .cursor(cursor)
             .answer(&daemon.daemon)
     };

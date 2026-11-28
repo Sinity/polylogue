@@ -628,6 +628,51 @@ fn record_stream(
     )
 }
 
+fn addressed_source(scope: &session::Scope) -> polylogue_model::Reference {
+    match scope.range.as_ref() {
+        None => polylogue_model::Reference::Session(scope.session.clone()),
+        Some((first, last)) if first == last => polylogue_model::Reference::Message(first.clone()),
+        Some((first, last)) => polylogue_model::Reference::MessageRange {
+            first: first.clone(),
+            last: last.clone(),
+        },
+    }
+}
+
+/// Use the resolved source address for an individual session reading. The
+/// accepted request retains any logical scope or item the caller named.
+fn record_addressed_page(
+    reader: &Reader<'_>,
+    services: &impl ReadServices,
+    operation: &Arc<Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    reference: polylogue_model::Reference,
+    history: Option<HistorySlot>,
+) -> Result<(), Error> {
+    if history.is_none() {
+        return Ok(());
+    }
+    let target = reference.to_string();
+    services.compiled(reader, operation, &target, |compile| {
+        let selection = reader.prepare_selection(&target, &compile.options)?;
+        record_compiled(
+            reader,
+            services,
+            operation,
+            request,
+            reading,
+            &Compiled {
+                selection: &selection,
+                options: &compile.options,
+                ranking_identity: compile.ranking_identity,
+                history: None,
+            },
+            history,
+        )
+    })
+}
+
 /// A reading's seed is its target's, so a sampled or shuffled reading
 /// keeps its order across pages. `ReadServices::compiled` implementations
 /// compile with this seed.
@@ -821,11 +866,22 @@ pub fn page(
     let (reading, cursor) = reading(request)?;
     require_page_delivery(&reading)?;
     let page = match route {
-        Route::Session(scope) => session::page(reader, services, request, operation, scope)?,
-        Route::Links(scope) => (
-            links::page(reader, services, request, operation, scope)?,
-            vec![],
-        ),
+        Route::Session(scope) => {
+            let addressed = addressed_source(&scope);
+            let page = session::page(reader, services, request, operation, scope)?;
+            record_addressed_page(
+                reader, services, operation, request, &reading, addressed, history,
+            )?;
+            page
+        }
+        Route::Links(scope) => {
+            let addressed = addressed_source(&scope);
+            let page = links::page(reader, services, request, operation, scope)?;
+            record_addressed_page(
+                reader, services, operation, request, &reading, addressed, history,
+            )?;
+            (page, vec![])
+        }
         Route::Trace | Route::Object(_) | Route::Rows => {
             return prepared(
                 reader,
@@ -860,7 +916,7 @@ pub fn page(
                             ReadFooter::default(),
                         )
                     };
-                    if cursor.is_none() && history.is_some() && executes_query(&reading, compiled) {
+                    if cursor.is_none() && executes_query(&reading, compiled) {
                         // The beginning and outcome use the writer's ordinary
                         // acknowledged queue. Release the completed-read slot.
                         drop(history);
