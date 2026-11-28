@@ -753,6 +753,7 @@ impl Inner {
                     let _ = reply.send(Ok(vec![false; write.len()]));
                     continue;
                 }
+                let _doing = crate::activity::doing("writing session summaries");
                 let result = self
                     .index
                     .get()
@@ -764,6 +765,7 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for (entries, reply) in search_writes.drain(..) {
+                let _doing = crate::activity::doing("writing search entries");
                 let result = self
                     .index
                     .get()
@@ -777,11 +779,13 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for (input, chain, length, reading, reply) in replacements.drain(..) {
+                let _doing = crate::activity::doing("replacing a chain reading");
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
                     self.replace_chain(input, chain, length, reading)
                 }));
             }
             for reply in installs.drain(..) {
+                let _doing = crate::activity::doing("installing the rebuilt index");
                 let _ = reply.send(self.install_build());
             }
 
@@ -882,6 +886,7 @@ impl Inner {
             self.published.publish(followed);
             return Ok(());
         }
+        let _doing = crate::activity::doing("applying archive commits");
         let after: i64 = kept.and_then(|kept| kept.parse().ok()).unwrap_or(-1);
         let tx = self
             .index
@@ -1157,6 +1162,7 @@ impl Inner {
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: Vec<capture::Parsed>) {
+        let _doing = crate::activity::doing("writing parsed rows");
         if group.iter().any(|parsed| parsed.batches.is_empty())
             && let Err(error) = self.follow_archive()
         {
